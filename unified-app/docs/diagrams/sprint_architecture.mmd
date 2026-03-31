@@ -1,0 +1,24 @@
+flowchart TD
+    UI[ui/panels/task_input_panel.py]
+    CORE[orchestrator/orchestrator_core.py]
+    MP[orchestrator/macro_planner.py]
+    TB[orchestrator/trinity_bridge.py]
+    TE[trinity_core/trinity.py]
+    BA[trinity_core/adapters/browser.py]
+    BG[browser-gui-automation/src/core/planner.py]
+    IO[browser-gui-automation/src/core/io_models.py]
+    GM[testing/gemini_mock]
+    T1[test_full_loop_integration.py]
+    T2[browser tests]
+
+    UI --> CORE
+    CORE --> MP
+    CORE --> TB
+    TB --> TE
+    TE --> BA
+    BA --> BG
+    BG --> IO
+    MP --> GM
+    BG --> GM
+    T1 -. sprint 1 .-> CORE
+    T2 -. sprint 1 .-> BG

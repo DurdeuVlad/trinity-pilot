@@ -1,0 +1,54 @@
+{
+  "name": "The Multitasker",
+  "description": "Interrupt and resume patterns, task queue integrity testing",
+  "scenarios": [
+    {
+      "id": "ST-01",
+      "input": "List all Python files in C:/Projects.",
+      "domain": "cli",
+      "expected_status": "completed",
+      "min_steps": 1,
+      "pass_criteria": [
+        "Task completes",
+        "No queue corruption"
+      ],
+      "chaos": null
+    },
+    {
+      "id": "ST-02",
+      "input": "Open Firefox.",
+      "domain": "browser",
+      "expected_status": "completed",
+      "min_steps": 1,
+      "pass_criteria": [
+        "Task completes after previous task",
+        "State transparency maintained"
+      ],
+      "chaos": null
+    },
+    {
+      "id": "ST-04",
+      "input": "Count files in Desktop.",
+      "domain": "cli",
+      "expected_status": "completed",
+      "min_steps": 1,
+      "pass_criteria": [
+        "Task completes",
+        "Correct count returned"
+      ],
+      "chaos": null
+    },
+    {
+      "id": "ST-05",
+      "input": "Open Calculator app.",
+      "domain": "desktop",
+      "expected_status": "completed",
+      "min_steps": 1,
+      "pass_criteria": [
+        "App opens",
+        "Task marked complete"
+      ],
+      "chaos": null
+    }
+  ]
+}
