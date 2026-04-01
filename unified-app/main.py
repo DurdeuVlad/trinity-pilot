@@ -221,6 +221,8 @@ async def run_preflight(config: StartupConfig) -> StartupReadiness:
     if _is_mock_startup(config):
         return _mock_startup_readiness(config.provider_name)
 
+    provider = None
+    cli_planner = None
     try:
         provider = make_provider(config.provider_name, config.api_key or "")
         await asyncio.wait_for(provider.probe(), timeout=STARTUP_PREFLIGHT_TIMEOUT_SECONDS)
@@ -238,6 +240,14 @@ async def run_preflight(config: StartupConfig) -> StartupReadiness:
             user_message=_format_preflight_block_message(exc, config.provider_name),
             block_task_submission=True,
         )
+    finally:
+        provider_close = getattr(provider, "close", None)
+        if callable(provider_close):
+            await provider_close()
+        planner_client = getattr(cli_planner, "client", None)
+        planner_close = getattr(planner_client, "close", None)
+        if callable(planner_close):
+            await asyncio.to_thread(planner_close)
 
     source = f" ({config.key_source})" if config.key_source != "missing" else ""
     return StartupReadiness(
@@ -341,7 +351,7 @@ class MainWindow(QMainWindow):
 
         # Bottom container: execution plan (left) + status log (right)
         self.bottom_widget = QWidget()
-        self.bottom_widget.setMinimumHeight(320)
+        self.bottom_widget.setMinimumHeight(180)
         bottom_layout = QVBoxLayout(self.bottom_widget)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(0)
@@ -357,15 +367,15 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(self.status_log_panel)
 
         self.main_splitter.setStretchFactor(0, 2)
-        self.main_splitter.setStretchFactor(1, 3)
+        self.main_splitter.setStretchFactor(1, 2)
         bottom_layout.addWidget(self.main_splitter)
         self.run_splitter.addWidget(self.bottom_widget)
 
-        # Initial proportions keep the inbox compact and the lower panels usable.
-        self.run_splitter.setStretchFactor(0, 2)
-        self.run_splitter.setStretchFactor(1, 3)
-        self.run_splitter.setSizes([250, 380])
-        self.main_splitter.setSizes([360, 520])
+        # Initial proportions favor interaction over passive monitoring.
+        self.run_splitter.setStretchFactor(0, 4)
+        self.run_splitter.setStretchFactor(1, 2)
+        self.run_splitter.setSizes([420, 210])
+        self.main_splitter.setSizes([620, 360])
 
         run_layout.addWidget(self.run_splitter, stretch=1)
 
@@ -388,6 +398,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.message_sent.connect(self._on_chat_message_sent)
         self.chat_panel.run_requested.connect(self._on_run_requested)
         self.chat_panel.cancel_requested.connect(self.event_bus.task_cancel_requested.emit)
+        self.chat_panel.objective_regenerate_requested.connect(self._on_objective_regenerate_requested)
 
         # ── Clarification replies back to chat ────────────────────────────
         self.event_bus.chat_message.connect(
@@ -397,6 +408,7 @@ class MainWindow(QMainWindow):
             lambda role, _text: self.chat_panel.set_input_enabled(True) if role == "assistant" else None
         )
         self.event_bus.clarification_ready.connect(self.chat_panel.set_run_ready)
+        self.event_bus.objectives_preview_ready.connect(self.chat_panel.show_objective_editor)
 
         # ── Task result back to chat ───────────────────────────────────────
         self.event_bus.task_result_ready.connect(
@@ -414,7 +426,8 @@ class MainWindow(QMainWindow):
         self.event_bus.step_failed.connect(lambda idx, _message: self.execution_plan_panel.update_step_status(idx, "failed"))
         self.event_bus.status_update.connect(self.status_log_panel.append_log)
         self.event_bus.app_busy.connect(self.chat_panel.set_executing)
-        self.event_bus.execution_complete.connect(lambda _payload: self.history_view.load_history())
+        self.event_bus.app_busy.connect(self._on_app_busy)
+        self.event_bus.execution_complete.connect(self._on_execution_complete)
         self.settings_view.settings_saved.connect(self._apply_runtime_settings)
         self.event_bus.desktop_takeover_started.connect(self._on_takeover_started)
         self.event_bus.desktop_takeover_ended.connect(self._on_takeover_ended)
@@ -432,12 +445,18 @@ class MainWindow(QMainWindow):
 
     def _on_chat_message_sent(self, text: str) -> None:
         """Route a user chat message to the clarification engine."""
+        self.orchestrator.set_plan_override(None)
         self.orchestrator.handle_chat_message(text)
 
-    def _on_run_requested(self, confirmed_task: str) -> None:
-        """User clicked Run Workflow and confirmed the task."""
+    def _on_run_requested(self, confirmed_task: str, approved_objectives: list[str]) -> None:
+        """User approved a task and optionally curated its objective list."""
+        self.orchestrator.set_plan_override(approved_objectives)
         domain = _detect_domain(confirmed_task)
         self._submit_task(confirmed_task, domain)
+
+    def _on_objective_regenerate_requested(self, confirmed_task: str) -> None:
+        """Refresh the proposed objective list without executing the task."""
+        self.orchestrator.regenerate_objective_preview(confirmed_task)
 
     def _submit_task(self, task_description: str, domain: str) -> None:
         """Submit a task through the shared run entrypoint."""
@@ -456,6 +475,7 @@ class MainWindow(QMainWindow):
             self.event_bus.emit_status(f"Could not load task {task_id} into chat", "warning")
             return
         self.tabs.setCurrentIndex(0)
+        self.orchestrator.set_plan_override(None)
         self.chat_panel.set_input_enabled(True)
         self.chat_panel.load_task_draft(
             seed,
@@ -470,6 +490,7 @@ class MainWindow(QMainWindow):
             self.event_bus.emit_status(f"Could not rerun task {task_id}", "warning")
             return
         self.tabs.setCurrentIndex(0)
+        self.orchestrator.set_plan_override(None)
         self.chat_panel.reset_for_new_session()
         self.chat_panel.add_message("assistant", f"Rerunning saved task {task_id}.")
         self.chat_panel.load_task_draft(
@@ -539,15 +560,43 @@ class MainWindow(QMainWindow):
                 self.start_async_preflight(new_config)
 
     def _apply_initial_run_layout(self) -> None:
-        """Give the lower Run workspace dominant space on first paint."""
+        """Give the Run workspace a chat-first layout on first paint."""
         if self._run_layout_initialized:
             return
         total_height = max(self.run_splitter.height(), self.height())
-        top_height = max(220, int(total_height * 0.28))
-        bottom_height = max(360, total_height - top_height)
+        top_height = max(420, int(total_height * 0.67))
+        bottom_height = max(210, total_height - top_height)
         self.run_splitter.setSizes([top_height, bottom_height])
-        self.main_splitter.setSizes([420, 620])
+        self.main_splitter.setSizes([620, 360])
+        self._set_execution_panels_collapsed(True)
         self._run_layout_initialized = True
+
+    def _on_app_busy(self, busy: bool) -> None:
+        """Expand monitoring during execution and collapse it again when idle."""
+        self._set_execution_panels_collapsed(not busy)
+
+    def _on_execution_complete(self, _payload: dict) -> None:
+        """Refresh history and return the Run tab to a chat-first layout."""
+        self.history_view.load_history()
+        self._set_execution_panels_collapsed(True)
+
+    def _set_execution_panels_collapsed(self, collapsed: bool) -> None:
+        """Bias the vertical splitter toward chat while keeping monitoring visible."""
+        total_height = max(self.run_splitter.height(), self.height(), 640)
+        if collapsed:
+            top_height = total_height
+            bottom_height = 0
+            self.bottom_widget.setMinimumHeight(180)
+            self.bottom_widget.setMaximumHeight(240)
+            self.bottom_widget.hide()
+        else:
+            self.bottom_widget.show()
+            top_height = max(380, int(total_height * 0.58))
+            bottom_height = max(240, total_height - top_height)
+            self.bottom_widget.setMinimumHeight(220)
+            self.bottom_widget.setMaximumHeight(16777215)
+            self.main_splitter.setSizes([620, 360])
+        self.run_splitter.setSizes([top_height, bottom_height])
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """Cleanup module resources on app close."""

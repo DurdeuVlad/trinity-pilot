@@ -114,6 +114,15 @@ class TrinityExecutor:
                 logger.error(f"Health check failed for {domain}: {e}")
                 results[domain] = False
         return results
+
+    async def close_browser_session(self, session_id: str) -> None:
+        """Close a reusable browser session if the browser adapter supports it."""
+        adapter = self.adapters.get("web")
+        if adapter is None:
+            return
+        close_session = getattr(adapter, "close_session", None)
+        if callable(close_session):
+            await close_session(session_id)
     
     async def get_capabilities_all(self) -> Dict[str, Dict]:
         """Get capabilities of all modules."""

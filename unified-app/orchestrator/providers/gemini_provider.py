@@ -135,4 +135,11 @@ class GeminiProvider(LLMProvider):
 
     async def close(self) -> None:
         """Close the async Gemini client before the worker loop exits."""
-        await self._client.aio.aclose()
+        aio_client = getattr(self._client, "aio", None)
+        aio_close = getattr(aio_client, "aclose", None)
+        sync_close = getattr(self._client, "close", None)
+
+        if callable(aio_close):
+            await aio_close()
+        if callable(sync_close):
+            sync_close()

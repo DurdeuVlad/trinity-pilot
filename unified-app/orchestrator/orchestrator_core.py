@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import uuid
@@ -20,9 +21,28 @@ from .screenshot_watcher import ScreenshotWatcher
 from .settings_manager import SettingsManager
 from .trinity_bridge import TrinityBridge
 
+logger = logging.getLogger(__name__)
+
 CONTRACT_TIMEOUT_SECONDS = 600
 CONTRACT_MAX_RETRIES = 3
 THREAD_CLEANUP_TIMEOUT_MS = 3000
+
+
+def _shutdown_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Drain pending tasks before closing an ad-hoc worker loop."""
+    try:
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        shutdown_default_executor = getattr(loop, "shutdown_default_executor", None)
+        if callable(shutdown_default_executor):
+            loop.run_until_complete(shutdown_default_executor())
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
 class OrchestratorWorker(QObject):
@@ -42,6 +62,7 @@ class OrchestratorWorker(QObject):
         max_retries: int = CONTRACT_MAX_RETRIES,
         frame_rate_limit: int = 5,
         max_frame_count: int = 100,
+        approved_plan: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.task_description = task_description
@@ -52,6 +73,7 @@ class OrchestratorWorker(QObject):
         self.max_retries = max_retries
         self.frame_rate_limit = frame_rate_limit
         self.max_frame_count = max_frame_count
+        self.approved_plan = list(approved_plan or [])
         self.event_bus = get_event_bus()
         self.history_manager = HistoryManager()
         self.error_handler = ErrorHandler()
@@ -74,7 +96,7 @@ class OrchestratorWorker(QObject):
         except Exception as exc:  # pragma: no cover - guarded by tests on error signal path
             self.error.emit(str(exc))
         finally:
-            loop.close()
+            _shutdown_event_loop(loop)
             self.finished.emit()
 
     def _ensure_screenshot_watcher(self) -> ScreenshotWatcher:
@@ -108,6 +130,7 @@ class OrchestratorWorker(QObject):
             screenshot_watcher=self._ensure_screenshot_watcher(),
             cancel_requested=lambda: self._cancelled,
             cancel_event=self._cancel_event,
+            approved_plan=self.approved_plan,
             provider_name=self.provider_name,
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
@@ -130,6 +153,7 @@ class OrchestratorCore(QObject):
         self._clarification_engine: Optional[ClarificationEngine] = None
         self._clarification_thread: Optional[threading.Thread] = None
         self._task_running = False
+        self._approved_plan_override: list[str] | None = None
 
         self.event_bus.task_submitted.connect(
             self.on_task_submitted,
@@ -148,6 +172,7 @@ class OrchestratorCore(QObject):
             return
 
         self._pending_worker_error = None
+        self.event_bus.emit_status("Task accepted. Starting orchestrator...", "info")
         self.event_bus.set_busy(True)
         if domain in {"browser", "desktop", "mixed"}:
             self.event_bus.desktop_takeover_started.emit(domain)
@@ -162,22 +187,37 @@ class OrchestratorCore(QObject):
         def _run() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            display_text = user_text
             try:
                 engine = self._get_clarification_engine()
                 result = loop.run_until_complete(engine.process(user_text))
                 if result.ready:
                     display_text = result.confirmed_task or user_text
+                    preview_steps = loop.run_until_complete(
+                        self._generate_objective_preview(display_text)
+                    )
                     self.event_bus.chat_message.emit(
                         "assistant",
-                        f"Got it - I'm ready to run:\n\"{display_text}\"\n\nClick Run Workflow to start, or keep chatting to refine.",
+                        (
+                            f'Got it. I turned "{display_text}" into a proposed execution plan. '
+                            "Review the objectives below, edit anything that looks off, then approve to run."
+                        ),
                     )
-                    self.event_bus.clarification_ready.emit(display_text)
+                    self.event_bus.objectives_preview_ready.emit(display_text, preview_steps)
                 else:
                     self.event_bus.chat_message.emit("assistant", result.text)
             except Exception as exc:  # pragma: no cover - defensive
-                self.event_bus.chat_message.emit("assistant", f"Sorry, I hit an error: {exc}")
+                logger.warning("Objective preview failed; falling back to direct run readiness: %s", exc)
+                self.event_bus.chat_message.emit(
+                    "assistant",
+                    (
+                        f'Got it - I am ready to run "{display_text}". '
+                        "I could not build the editable objective list this time, but you can still run it or keep refining."
+                    ),
+                )
+                self.event_bus.clarification_ready.emit(display_text)
             finally:
-                loop.close()
+                _shutdown_event_loop(loop)
 
         self._clarification_thread = threading.Thread(target=_run, daemon=True)
         self._clarification_thread.start()
@@ -195,6 +235,7 @@ class OrchestratorCore(QObject):
         """Clear clarification history so a new conversation starts fresh."""
         if self._clarification_engine is not None:
             self._clarification_engine.reset()
+        self._approved_plan_override = None
 
     def set_startup_guard(self, message: Optional[str]) -> None:
         """Block task submission until startup readiness is satisfied."""
@@ -214,6 +255,43 @@ class OrchestratorCore(QObject):
         merged.update(settings)
         self.runtime_settings = merged
 
+    def set_plan_override(self, approved_plan: list[str] | None) -> None:
+        """Store a user-approved objective list for the next submitted task."""
+        self._approved_plan_override = [step.strip() for step in (approved_plan or []) if step.strip()] or None
+
+    def regenerate_objective_preview(self, task_summary: str) -> None:
+        """Rebuild the editable objective preview without submitting the task."""
+        if self._startup_guard_message is not None:
+            self.event_bus.chat_message.emit("assistant", self._startup_guard_message)
+            return
+
+        def _run() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                preview_steps = loop.run_until_complete(
+                    self._generate_objective_preview(task_summary)
+                )
+                self.event_bus.chat_message.emit(
+                    "assistant",
+                    "I refreshed the objectives. Review the updated plan and approve it when it looks right.",
+                )
+                self.event_bus.objectives_preview_ready.emit(task_summary, preview_steps)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Objective regeneration failed: %s", exc)
+                self.event_bus.chat_message.emit(
+                    "assistant",
+                    (
+                        "I could not regenerate the objectives automatically right now. "
+                        "You can keep editing the current list or run it as-is."
+                    ),
+                )
+            finally:
+                _shutdown_event_loop(loop)
+
+        self._clarification_thread = threading.Thread(target=_run, daemon=True)
+        self._clarification_thread.start()
+
     def _resolve_api_key(self, provider_name: str) -> str:
         """Read the active API key from env or saved settings."""
         if provider_name == "openai":
@@ -225,6 +303,8 @@ class OrchestratorCore(QObject):
     def _start_worker(self, task_description: str, domain: str) -> None:
         provider_name = str(self.runtime_settings.get("ai_provider", "gemini")).lower()
         api_key = self._resolve_api_key(provider_name)
+        approved_plan = list(self._approved_plan_override or [])
+        self._approved_plan_override = None
 
         self.current_thread = QThread()
         self.current_worker = OrchestratorWorker(
@@ -236,6 +316,7 @@ class OrchestratorCore(QObject):
             max_retries=int(self.runtime_settings.get("max_retries", 3)),
             frame_rate_limit=int(self.runtime_settings.get("frame_rate_limit", 5)),
             max_frame_count=int(self.runtime_settings.get("max_frame_count", 100)),
+            approved_plan=approved_plan,
         )
         self._task_running = True
         self.current_worker.moveToThread(self.current_thread)
@@ -307,3 +388,37 @@ class OrchestratorCore(QObject):
                 return False
         self._cleanup_worker_state()
         return True
+
+    async def _generate_objective_preview(self, task_summary: str) -> list[str]:
+        """Build a pre-execution objective list for user review."""
+        from .macro_planner import MacroPlanner
+        from .prompt_registry import PromptRegistry
+
+        provider_name = str(self.runtime_settings.get("ai_provider", "gemini")).lower()
+        api_key = self._resolve_api_key(provider_name)
+        provider = make_provider(provider_name, api_key)
+        try:
+            planner = MacroPlanner(provider, registry=PromptRegistry(provider_name))
+            domain = self._detect_domain(task_summary)
+            plan = await planner.generate_plan(task_summary, domain)
+            return [step.strip() for step in plan.steps if step.strip()] or [task_summary]
+        finally:
+            provider_close = getattr(provider, "close", None)
+            if callable(provider_close):
+                await provider_close()
+
+    def _detect_domain(self, description: str) -> str:
+        """Infer a coarse execution domain for pre-run objective generation."""
+        lowered = description.lower()
+        web_tokens = ("browser", "website", "google", "navigate", "search", "wikipedia", "web page", "url", "site")
+        desktop_tokens = ("notepad", "calculator", "window", "desktop", "application", "tab")
+        cli_tokens = ("directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory")
+        hits = {
+            "web": any(token in lowered for token in web_tokens),
+            "desktop": any(token in lowered for token in desktop_tokens),
+            "cli": any(token in lowered for token in cli_tokens),
+        }
+        matched = [domain for domain, active in hits.items() if active]
+        if len(matched) > 1:
+            return "mixed"
+        return matched[0] if matched else "cli"

@@ -55,6 +55,18 @@ _AMBIGUOUS_PYTHON_FILES_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_DIRECT_PYTHON_FILE_LISTING_PATTERNS = (
+    re.compile(
+        r"^\s*(?:list|show|display|print|enumerate)\s+(?:all\s+)?python files?\s+"
+        r"(?:in|from|under)\s+(?:the\s+)?(?:current\s+working|current|working)\s+directory[.!]?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:list|show|display|print|enumerate)\s+(?:the\s+)?"
+        r"(?:current\s+working|current|working)\s+directory(?:'s)?\s+python files?[.!]?\s*$",
+        re.IGNORECASE,
+    ),
+)
 _DIRECT_APP_VERSION_QUERY_PATTERNS = (
     re.compile(
         r"^\s*(?:open|launch|start)\b.*\bapplication\b.*\bversion number\b",
@@ -195,6 +207,9 @@ def _deterministic_objectives(task_description: str) -> list[str] | None:
     if _extract_direct_desktop_open_objective(task_description):
         return [task_description.strip()]
 
+    if _looks_like_python_file_listing_task(task_description):
+        return [_PROJECT_PYTHON_FILES_OBJECTIVE]
+
     if any(pattern.search(lowered) for pattern in _AMBIGUOUS_PYTHON_FILES_PATTERNS):
         return [_PROJECT_PYTHON_FILES_OBJECTIVE]
 
@@ -216,6 +231,12 @@ def _deterministic_objectives(task_description: str) -> list[str] | None:
     if matches_productivity and not has_concrete_context:
         return [_PRODUCTIVITY_GUIDANCE_OBJECTIVE]
     return None
+
+
+def _looks_like_python_file_listing_task(task_description: str) -> bool:
+    """Keep exact/simple Python file listing asks on the deterministic path."""
+    normalized = (task_description or "").strip()
+    return any(pattern.match(normalized) for pattern in _DIRECT_PYTHON_FILE_LISTING_PATTERNS)
 
 
 def _looks_like_current_directory_listing_task(lowered_task: str) -> bool:

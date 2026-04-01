@@ -1,6 +1,7 @@
 """Regression tests for startup preflight launch from the app entrypoint."""
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -101,3 +102,60 @@ def test_main_skips_async_preflight_in_mock_mode(monkeypatch):
     assert seen["window_readiness"] is startup_readiness
     assert seen["show_maximized"] is True
     assert "preflight_config" not in seen
+
+
+def test_run_preflight_closes_provider_on_success(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="gemini",
+        api_key="live-key",
+        key_source="environment",
+        env_path=None,
+    )
+    seen: dict[str, bool] = {"probe": False, "close": False, "planner_probe": False}
+
+    class FakeProvider:
+        async def probe(self) -> None:
+            seen["probe"] = True
+
+        async def close(self) -> None:
+            seen["close"] = True
+
+    class FakePlanner:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+            self.client = None
+
+        def probe_live_model(self) -> None:
+            seen["planner_probe"] = True
+
+    monkeypatch.setattr(app_main, "make_provider", lambda *args, **kwargs: FakeProvider())
+    monkeypatch.setattr(app_main, "_load_cli_planner_class", lambda: FakePlanner)
+
+    readiness = asyncio.run(app_main.run_preflight(config))
+
+    assert readiness.ready is True
+    assert seen == {"probe": True, "close": True, "planner_probe": True}
+
+
+def test_run_preflight_closes_provider_on_failure(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="gemini",
+        api_key="live-key",
+        key_source="environment",
+        env_path=None,
+    )
+    seen: dict[str, bool] = {"close": False}
+
+    class FakeProvider:
+        async def probe(self) -> None:
+            raise RuntimeError("API_KEY_INVALID")
+
+        async def close(self) -> None:
+            seen["close"] = True
+
+    monkeypatch.setattr(app_main, "make_provider", lambda *args, **kwargs: FakeProvider())
+
+    readiness = asyncio.run(app_main.run_preflight(config))
+
+    assert readiness.ready is False
+    assert seen["close"] is True
