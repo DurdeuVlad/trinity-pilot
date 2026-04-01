@@ -33,10 +33,14 @@ config/secrets/
 
 # Runtime & temp
 _runtime/
+sessions/
 *.log
 *.tmp
 *.cache
 .cache/
+
+# Archive dirs (old code kept locally, not published)
+archive/
 
 # Testing
 .pytest_cache/

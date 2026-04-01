@@ -1,70 +1,73 @@
 # TrinityPilot
 
-An AI-powered desktop automation orchestrator that controls **desktop**, **browser**, and **CLI** environments through a unified interface.
+An AI-powered desktop automation orchestrator that controls **desktop**, **browser**, and **CLI** environments through a unified GUI.
+
+Give it a natural-language task like *"find the top search result and paste the title into Notepad"* — it breaks it into steps, routes each one to the right backend, and executes end-to-end.
 
 ## What it does
-
-TrinityPilot lets an AI agent execute multi-step tasks across three domains simultaneously:
 
 - **Desktop** — Windows UI automation via UIA/COM (click, type, read windows)
 - **Browser** — Web automation via Playwright (navigate, interact, scrape)
 - **CLI** — Shell/PowerShell automation (run commands, parse output)
 
-A single natural-language task like *"find the top result on Google and open it in Notepad"* gets broken into steps, routed to the right backend, and executed end-to-end.
-
-## Modules
-
-| Module | Description |
-|--------|-------------|
-| `unified-app` | Main orchestrator GUI — task input, live HUD, execution history |
-| `api-accessibility-poc` | Desktop automation backend (Windows UIA/COM) |
-| `browser-gui-automation` | Browser automation backend (Playwright/Node.js) |
-| `cli-automation-poc` | CLI/PowerShell automation backend |
-| `audit-debugger` | Debugging and audit tooling |
+Cross-domain tasks work too: the browser agent can scrape a page and hand the result to the desktop agent to paste into an app.
 
 ## Architecture
 
 ```
-unified-app (orchestrator)
+unified-app/          ← PyQt6 GUI + orchestrator (LLM plan→act→reflect loop)
     │
-    ├── api-accessibility-poc   ← Desktop domain
-    ├── browser-gui-automation  ← Browser domain
-    └── cli-automation-poc      ← CLI domain
+    └── trinity_core/ ← Unified adapter layer — routes tasks to the right backend
+            ├── CLIAdapter     → cli-automation-poc/
+            ├── DesktopAdapter → api-accessibility-poc/
+            └── BrowserAdapter → browser-gui-automation/
 ```
 
-The orchestrator receives a task, uses an LLM (Gemini) to plan steps, and dispatches each step to the appropriate backend. Results flow back through a shared `ExecutionContext`.
+| Module | Role |
+|--------|------|
+| `unified-app` | Orchestrator GUI — task input, live HUD, execution history |
+| `trinity_core` | Adapter layer — dispatches tasks to the correct backend |
+| `api-accessibility-poc` | Desktop automation backend (Windows UIA/COM) |
+| `browser-gui-automation` | Browser automation backend (Playwright/Node.js) |
+| `cli-automation-poc` | CLI/PowerShell automation backend |
+| `audit-debugger` | Debugging and audit tooling |
 
 ## Requirements
 
 - Python 3.10+
 - Windows 10/11 (desktop automation requires Windows UIA)
 - Node.js 18+ (browser automation)
-- Gemini API key
+- Gemini API key ([get one free](https://aistudio.google.com/apikey))
 
 ## Setup
 
 ```bash
-# Clone the repo
-git clone https://github.com/DurdeuVlad/trinity-pilot.git
+git clone https://github.com/your-username/trinity-pilot.git
 cd trinity-pilot
 
-# Install Python dependencies (per module)
+# Python dependencies
 pip install -r unified-app/requirements.txt
 pip install -r api-accessibility-poc/requirements.txt
 pip install -r cli-automation-poc/requirements.txt
 
-# Install browser automation dependencies
-cd browser-gui-automation && npm install
+# Browser automation dependencies (Node.js)
+cd browser-gui-automation && npm install && cd ..
 
-# Set your API key
+# API key
 cp .env.example .env
-# Edit .env and add your GEMINI_API_KEY
+# Edit .env — add your GEMINI_API_KEY
 ```
 
-## Running
+## Run
 
 ```bash
 python unified-app/main.py
+```
+
+## Tests
+
+```bash
+pytest unified-app/tests trinity_core/tests -q
 ```
 
 ## License
