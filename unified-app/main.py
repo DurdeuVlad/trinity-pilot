@@ -13,6 +13,11 @@ from pathlib import Path
 _REPO_ROOT = str(Path(__file__).parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+# Add backend module directories so trinity_core adapters can import their deps.
+for _backend_name in ("api-accessibility-poc", "browser-gui-automation", "cli-automation-poc"):
+    _backend_path = str(Path(_REPO_ROOT) / _backend_name)
+    if _backend_path not in sys.path:
+        sys.path.insert(0, _backend_path)
 
 from dotenv import load_dotenv
 
