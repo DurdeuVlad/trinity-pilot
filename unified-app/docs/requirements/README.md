@@ -182,4 +182,4 @@ All documents follow IEEE 29148 structure with these standard sections:
 - **Project docs:** `unified-app/docs/`
 - **Sprint reports:** completion reports under `unified-app/docs/`
 - **User manual:** `unified-app/docs/USER_MANUAL.md`
-- **Context:** `unified-app/.ai/CONTEXT.md`
+- **Context:** `CLAUDE.md`

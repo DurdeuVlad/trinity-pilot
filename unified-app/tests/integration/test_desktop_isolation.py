@@ -85,14 +85,11 @@ def test_desktop_manager_initialization():
     assert hasattr(manager, 'isolate_unified_app')
 
 
+@pytest.mark.skip(reason="_find_window_by_title was removed from VirtualDesktopManager")
 def test_find_window_returns_none_when_not_running():
     """Test that find_window returns None when app not running."""
     manager = VirtualDesktopManager()
-    
-    # Try to find a window that definitely doesn't exist
-    # (using a fake window title)
     hwnd = manager._find_window_by_title("ThisWindowDefinitelyDoesNotExist12345")
-    
     assert hwnd is None
 
 

@@ -249,6 +249,6 @@ def test_desktop_runner_passes_absolute_pythonpath_to_child(monkeypatch: pytest.
 
     child_env = subprocess_run.call_args.kwargs["env"]
     pythonpath_entries = child_env["PYTHONPATH"].split(os.pathsep)
-    assert any(entry.endswith("desktop-ai-poc-modules") for entry in pythonpath_entries)
-    assert any(entry.endswith("desktop-ai-poc-modules\\unified-app") for entry in pythonpath_entries)
+    assert any(entry.endswith("trinity-pilot") for entry in pythonpath_entries)
+    assert any(entry.endswith("trinity-pilot\\unified-app") for entry in pythonpath_entries)
     assert all(not entry.startswith(".") for entry in pythonpath_entries)

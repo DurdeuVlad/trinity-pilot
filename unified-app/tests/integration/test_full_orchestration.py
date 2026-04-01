@@ -158,17 +158,17 @@ class TestAgentLoop:
             "module": None,
             "parameters": {},
             "done": True,
-            "result_summary": "Calculator is open",
+            "result_summary": "Task is complete",
         })])
-        result = asyncio.run(loop.act("Open calculator", obj_index=1))
-        assert result == "Calculator is open"
+        result = asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1))
+        assert result == "Task is complete"
 
     def test_act_then_done(self) -> None:
         act_response = json.dumps({
-            "rationale": "opening calculator",
-            "action_type": "desktop",
-            "module": "desktop_app",
-            "parameters": {"action": "open", "app": "calc"},
+            "rationale": "renaming file",
+            "action_type": "cli",
+            "module": "cli",
+            "parameters": {"command": "Rename-Item report.txt summary.txt"},
             "done": False,
             "result_summary": None,
         })
@@ -178,11 +178,11 @@ class TestAgentLoop:
             "module": None,
             "parameters": {},
             "done": True,
-            "result_summary": "Calculator opened",
+            "result_summary": "File renamed",
         })
         loop = self._loop([act_response, done_response])
-        result = asyncio.run(loop.act("Open calculator", obj_index=1))
-        assert result == "Calculator opened"
+        result = asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1))
+        assert result == "File renamed"
 
     def test_adapt_hint_injected_on_first_call(self) -> None:
         captured: list[str] = []
@@ -209,7 +209,7 @@ class TestAgentLoop:
             cancel_requested=lambda: False,
             registry=registry,
         )
-        asyncio.run(loop.act("Open calculator", obj_index=1, adapt_hint="Try keyboard shortcut"))
+        asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1, adapt_hint="Try keyboard shortcut"))
         assert any("Try keyboard shortcut" in c for c in captured)
 
     def test_cancelled_returns_sentinel(self) -> None:
