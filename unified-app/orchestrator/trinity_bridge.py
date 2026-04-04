@@ -72,3 +72,11 @@ class TrinityBridge:
         if self.executor is not None:
             await self.executor.shutdown()
             self.executor = None
+
+    async def close_browser_session(self, session_id: str) -> None:
+        """Close a reusable browser session held by Trinity Core."""
+        if self.executor is None:
+            return
+        close_browser_session = getattr(self.executor, "close_browser_session", None)
+        if callable(close_browser_session):
+            await close_browser_session(session_id)

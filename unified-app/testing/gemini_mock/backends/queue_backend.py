@@ -13,6 +13,11 @@ _DEFAULT_AGENT_LOOP_RESPONSE = (
     '{"rationale":"Task complete via mock","action_type":"done","module":null,'
     '"parameters":{},"done":true,"result_summary":"Mock task completed successfully"}'
 )
+_DEFAULT_AGENT_LOOP_FIRST_ACTION = (
+    '{"rationale":"Running required action","action_type":"cli","module":"cli_runner",'
+    '"parameters":{"command":"Write-Output","args":["step executed"]},'
+    '"done":false,"result_summary":null}'
+)
 _DEFAULT_REFLECTION_RESPONSE = '{"achieved":true,"confidence":0.95,"critique":null}'
 _DEFAULT_REPLAN_RESPONSE = '{"revised_objectives":[],"rationale":"no remaining objectives needed"}'
 _DEFAULT_CLI_RESPONSE = (
@@ -62,8 +67,11 @@ class QueueBackend:
         # MacroPlanner.replan system prompt
         if "revised_objectives" in lowered:
             return _DEFAULT_REPLAN_RESPONSE
-        # AgentLoop system prompt
+        # AgentLoop system prompt — return an action on the first call (no RESULT: yet),
+        # done on subsequent calls (execution history present)
         if "autonomous computer-use agent" in lowered:
+            if "RESULT:" not in prompt_text:
+                return _DEFAULT_AGENT_LOOP_FIRST_ACTION
             return _DEFAULT_AGENT_LOOP_RESPONSE
         if (
             "primary domain: web" in lowered

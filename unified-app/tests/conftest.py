@@ -37,7 +37,11 @@ if os.getenv("LIVE_GEMINI_SMOKE", "0") != "1":
     os.environ.setdefault("GEMINI_API_KEY", "mock")
 
 
-_LIVE_SMOKE_NODE_FRAGMENT = "tests/integration/test_live_cli_smoke.py".replace("/", os.sep)
+_LIVE_SMOKE_NODE_FRAGMENTS = (
+    "tests/integration/test_live_cli_smoke.py".replace("/", os.sep),
+    "tests/integration/test_live_browser_smoke.py".replace("/", os.sep),
+    "tests/integration/test_live_desktop_smoke.py".replace("/", os.sep),
+)
 _RELOAD_MODULES = (
     "orchestrator.trinity_bridge",
     "orchestrator.orchestrator_core",
@@ -75,7 +79,7 @@ def configure_live_gemini_module_state(request: pytest.FixtureRequest) -> Genera
 
     module_path = str(getattr(request.module, "__file__", "")).replace("/", os.sep)
     live_enabled = os.getenv("LIVE_GEMINI_SMOKE", "0") == "1"
-    should_unmock = _LIVE_SMOKE_NODE_FRAGMENT in module_path and live_enabled
+    should_unmock = any(fragment in module_path for fragment in _LIVE_SMOKE_NODE_FRAGMENTS) and live_enabled
     if not should_unmock:
         yield
         return

@@ -29,71 +29,6 @@ logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 12
 MAX_WALL_SECONDS = 240
-_WIKIPEDIA_TOPIC_PATTERNS = (
-    re.compile(r"wikipedia page for ([a-z0-9 _()-]+)", re.IGNORECASE),
-    re.compile(r"navigate to (?:the )?[\"']?([a-z0-9 _()-]+)[\"']? page", re.IGNORECASE),
-    re.compile(r"from (?:the )?[\"']([a-z0-9 _()-]+)[\"'] wikipedia page", re.IGNORECASE),
-    re.compile(r"page of ([a-z0-9 _()-]+)", re.IGNORECASE),
-)
-_BLANK_DOCUMENT_APPS = {"notepad", "wordpad"}
-_URL_PATTERN = re.compile(r"https?://[^\s)>\]\"']+", re.IGNORECASE)
-_APP_EXECUTABLES = {
-    "calculator": "calc.exe",
-    "calc": "calc.exe",
-    "notepad": "notepad.exe",
-    "paint": "mspaint.exe",
-    "wordpad": "write.exe",
-}
-_DIRECT_DESKTOP_APP_ALIASES = {
-    "calculator": "Calculator",
-    "calc": "Calculator",
-    "notepad": "Notepad",
-    "paint": "Paint",
-    "wordpad": "WordPad",
-}
-_VAGUE_PRODUCTIVITY_PATTERNS = (
-    re.compile(r"\bwork faster\b", re.IGNORECASE),
-    re.compile(r"\bmore productive\b", re.IGNORECASE),
-    re.compile(r"\b(improve|speed up|make faster)\b.*\b(computer|pc|laptop)\b", re.IGNORECASE),
-)
-_PRODUCTIVITY_GUIDANCE_PATTERN = re.compile(
-    r"provide brief general productivity guidance .* (app|workflow|slowdown symptom)",
-    re.IGNORECASE,
-)
-_PYTHON_FILE_LISTING_PATTERNS = (
-    re.compile(r"\blist\b.*\bpython files?\b", re.IGNORECASE),
-    re.compile(r"\bidentify\b.*\bpython files?\b", re.IGNORECASE),
-    re.compile(r"\bshow\b.*\bpython files?\b", re.IGNORECASE),
-    re.compile(r"\bfind\b.*\bpython files?\b", re.IGNORECASE),
-)
-_CURRENT_DIRECTORY_PATH_PATTERNS = (
-    re.compile(
-        r"^\s*(?:get|show|display|return|print|tell me)\s+(?:the\s+)?(?:current|working)\s+directory\s+(?:path|location)\s*[.!]?\s*$",
-        re.IGNORECASE,
-    ),
-)
-_CURRENT_DIRECTORY_CONTENTS_PATTERNS = (
-    re.compile(
-        r"^\s*(?:list|show|display|print|enumerate)\s+(?:the\s+)?(?:contents|files|items|entries)\s+"
-        r"(?:of\s+(?:the\s+)?)?(?:current|working)\s+directory\s*[.!]?\s*$",
-        re.IGNORECASE,
-    ),
-)
-_PYTHON_VERSION_OBJECTIVE_PATTERNS = (
-    re.compile(r"^\s*(?:py|python)(?:\.exe)?\s+(?:--version|-v)\s*[.!]?\s*$", re.IGNORECASE),
-    re.compile(r"^\s*(?:show|get|display|tell me|what is)\s+(?:the\s+)?python\s+version\s*[.!]?\s*$", re.IGNORECASE),
-)
-_SEARCH_QUERY_PATTERNS = (
-    re.compile(r"search(?: the web)? for ['\"]([^'\"]+)['\"]", re.IGNORECASE),
-    re.compile(
-        r"search(?: the web)? for ([a-z0-9][^.,;\n]+?)(?:\s+(?:using|and|then|in|on)\b|$)",
-        re.IGNORECASE,
-    ),
-)
-_FIRST_SEARCH_RESULT_TITLE_PATTERNS = (
-    re.compile(r"\bfirst search result\b", re.IGNORECASE),
-    re.compile(r"\bfirst result title\b", re.IGNORECASE),
-)
 _APP_UNAVAILABLE_MARKERS = (
     "app not found",
     "application not found",
@@ -106,47 +41,6 @@ _APP_UNAVAILABLE_MARKERS = (
     "not available",
     "not recognized",
     "window_not_found",
-)
-_DIRECT_DESKTOP_OPEN_PATTERNS = (
-    re.compile(
-        r"^\s*(?:open|launch|start)\s+(?:the\s+)?(?:windows\s+)?"
-        r"(calculator|calc|notepad|paint|wordpad)"
-        r"(?:\s+application|\s+app)?[.!]?\s*$",
-        re.IGNORECASE,
-    ),
-)
-_APP_VERSION_QUERY_PATTERNS = (
-    re.compile(
-        r"^\s*(?:open|launch|start)\s+an?\s+application\s+called\s+['\"]([^'\"]+)['\"].*\bversion(?: number)?\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*(?:open|launch|start)\s+([a-z0-9_. -]+?)\s+and\s+tell me\s+(?:its|the)\s+version(?: number)?\b",
-        re.IGNORECASE,
-    ),
-)
-_EXPLICIT_APP_OPEN_PATTERNS = (
-    re.compile(
-        r"^\s*attempt\s+to\s+open\s+the\s+application\s+['\"]([^'\"]+)['\"][.!]?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*attempt\s+to\s+open\s+the\s+['\"]([^'\"]+)['\"]\s+application[.!]?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*open\s+the\s+application\s+['\"]([^'\"]+)['\"][.!]?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*open\s+the\s+['\"]([^'\"]+)['\"]\s+application[.!]?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*(?:attempt\s+to\s+open|open|launch|start)\s+(?:an?|the)\s+application\s+called\s+['\"]([^'\"]+)['\"]"
-        r"(?:\s+that\s+does\s+not\s+exist)?[.!]?\s*$",
-        re.IGNORECASE,
-    ),
 )
 
 
@@ -198,6 +92,11 @@ class AgentLoop:
         self._cancel_event = cancel_event
         self.last_step_payload: dict[str, Any] | None = None
 
+    @staticmethod
+    def _browser_session_state_key(obj_index: int) -> str:
+        del obj_index
+        return "task_browser_session_id"
+
     async def act(
         self,
         objective: str,
@@ -220,26 +119,6 @@ class AgentLoop:
         loop_guard_hits = 0
         deadline = asyncio.get_running_loop().time() + MAX_WALL_SECONDS
         exec_ctx = context or self._context
-
-        fast_path_result = await self._try_objective_fast_path(
-            objective=objective,
-            obj_index=obj_index,
-            context=exec_ctx,
-        )
-        if fast_path_result is not None:
-            lower_objective = objective.lower()
-            stripped_result = fast_path_result.strip()
-            if (
-                exec_ctx is not None
-                and "first paragraph" in lower_objective
-                and ("wikipedia" in lower_objective or "page" in lower_objective)
-                and len(stripped_result) >= 20
-                and not fast_path_result.startswith("ERROR:")
-                and not any(stripped_result.startswith(p) for p in _STATUS_PREFIXES)
-            ):
-                exec_ctx.update_state("latest_text_result", stripped_result)
-                exec_ctx.world_state.last_text_artifact = stripped_result
-            return fast_path_result
 
         while state.iteration < MAX_ITERATIONS:
             if self._cancel():
@@ -276,6 +155,19 @@ class AgentLoop:
             # ── Done check ─────────────────────────────────────────────────
             if action.get("done"):
                 summary = action.get("result_summary") or "Step complete."
+                if _requires_execution_evidence(state.objective) and not _has_successful_execution_history(state.history):
+                    state.adapt_hint = (
+                        "You cannot mark this objective as done yet. "
+                        "This objective requires a real tool action to run successfully first. "
+                        "Execute the missing browser, desktop, or CLI action and only mark done after you have concrete evidence."
+                    )
+                    self._emit(
+                        "That completion claim isn't grounded in a successful action yet. Trying again…",
+                        "warning",
+                    )
+                    if state.iteration < MAX_ITERATIONS:
+                        continue
+                    return "[stuck: objective marked done without execution evidence]"
                 self._emit(summary[:160], "success")
                 return summary
 
@@ -344,229 +236,6 @@ class AgentLoop:
             state.history.append(_Turn(action=action, result=result))
 
         return "[max iterations reached — objective may be incomplete]"
-
-    async def _try_objective_fast_path(
-        self,
-        *,
-        objective: str,
-        obj_index: int,
-        context: Optional[ExecutionContext],
-    ) -> str | None:
-        lower = objective.lower().strip()
-
-        if _is_vague_productivity_objective(lower):
-            guidance = (
-                "To work faster, first identify the biggest bottleneck: slow startup, a specific slow app, "
-                "or repetitive tasks. Quick wins are to close unnecessary startup apps and browser tabs, "
-                "keep Windows and your main apps updated, and use keyboard shortcuts or simple automation "
-                "for repeated work. Tell me which app, workflow, or slowdown symptom is costing you the "
-                "most time and I can give targeted next steps."
-            )
-            self.last_step_payload = {
-                "status": "success",
-                "output": guidance,
-                "artifacts": [],
-                "execution_log": [],
-                "metadata": {"fast_path": "vague_productivity_guidance"},
-            }
-            return guidance
-
-        direct_app = _extract_direct_desktop_open_app(objective)
-        if direct_app:
-            app_key = direct_app.lower()
-            description = (
-                f"Open {direct_app} and create a new blank document"
-                if app_key in _BLANK_DOCUMENT_APPS
-                else f"Open {direct_app}"
-            )
-            return await self._execute_direct_bridge_task(
-                description=description,
-                domain="desktop",
-                obj_index=obj_index,
-                turn=1,
-                extra_context={
-                    "app_name": direct_app,
-                    "app_exe_path": _APP_EXECUTABLES.get(app_key),
-                },
-                action={
-                    "action_type": "desktop",
-                    "parameters": {"app": direct_app, "action": "open"},
-                },
-            )
-
-        version_query_app = _extract_app_version_query_target(objective)
-        if version_query_app:
-            open_result = await self._execute(
-                {
-                    "action_type": "desktop",
-                    "parameters": {"app": version_query_app, "action": "open"},
-                },
-                obj_index,
-                1,
-            )
-            if _looks_like_app_unavailable_result(open_result):
-                return (
-                    f"ERROR: The application '{version_query_app}' could not be found. "
-                    "Therefore, its version number cannot be determined."
-                )
-            return None
-
-        explicit_open_app = _extract_explicit_app_open_target(objective)
-        if explicit_open_app:
-            return await self._execute(
-                {
-                    "action_type": "desktop",
-                    "parameters": {"app": explicit_open_app, "action": "open"},
-                },
-                obj_index,
-                1,
-            )
-
-        if _looks_like_python_file_listing_objective(objective):
-            result = await self._execute_direct_bridge_task(
-                description="List all Python files in the current working directory",
-                domain="cli",
-                obj_index=obj_index,
-                turn=1,
-            )
-            if _is_generic_success_marker(result):
-                return "Listed Python files in the current working directory."
-            return result
-
-        if _looks_like_current_directory_path_objective(objective):
-            return await self._execute_direct_bridge_task(
-                description="Get the current directory path",
-                domain="cli",
-                obj_index=obj_index,
-                turn=1,
-            )
-
-        if _looks_like_current_directory_contents_objective(objective):
-            return await self._execute_direct_bridge_task(
-                description="List the contents of the current directory",
-                domain="cli",
-                obj_index=obj_index,
-                turn=1,
-            )
-
-        if _looks_like_python_version_objective(objective):
-            result = await self._execute_direct_bridge_task(
-                description="python --version",
-                domain="cli",
-                obj_index=obj_index,
-                turn=1,
-            )
-            if _is_generic_success_marker(result):
-                return "Successfully found the installed Python version using the command 'python --version'."
-            return result
-
-        query = _extract_search_query(objective)
-        if query and "wikipedia" not in lower:
-            return await self._execute(
-                {
-                    "action_type": "browse",
-                    "parameters": {"action": "search", "text": query},
-                },
-                obj_index,
-                1,
-            )
-
-        if _looks_like_first_search_result_title_objective(objective):
-            return await self._execute_direct_bridge_task(
-                description=objective,
-                domain="web",
-                obj_index=obj_index,
-                turn=1,
-            )
-
-        topic = _infer_wikipedia_topic(objective, context)
-        if (
-            topic
-            and "wikipedia" in lower
-            and "first paragraph" not in lower
-            and ("open" in lower or "navigate" in lower or "search" in lower)
-        ):
-            return await self._execute(
-                {
-                    "action_type": "browse",
-                    "parameters": {"action": "search", "text": f"{topic} wikipedia"},
-                },
-                obj_index,
-                1,
-            )
-
-        if (
-            topic
-            and "first paragraph" in lower
-            and ("wikipedia" in lower or "page" in lower)
-        ):
-            return await self._execute(
-                {
-                    "action_type": "browse",
-                    "parameters": {"action": "copy", "text": "first paragraph from the Wikipedia page"},
-                },
-                obj_index,
-                1,
-            )
-
-        if lower in {"open notepad", "open notepad."}:
-            return await self._execute(
-                {
-                    "action_type": "desktop",
-                    "parameters": {"app": "Notepad", "action": "open"},
-                },
-                obj_index,
-                1,
-            )
-
-        if "paste the copied paragraph into notepad" in lower:
-            return await self._execute(
-                {
-                    "action_type": "desktop",
-                    "parameters": {"app": "Notepad", "action": "paste"},
-                },
-                obj_index,
-                1,
-            )
-
-        direct_desktop_match = re.match(
-            r"open\s+(notepad|wordpad)\s+and\s+type\s+(.+)",
-            objective.strip(),
-            re.IGNORECASE,
-        )
-        if direct_desktop_match:
-            app_name = direct_desktop_match.group(1).capitalize()
-            app_key = direct_desktop_match.group(1).lower()
-            return await self._execute_direct_bridge_task(
-                description=objective,
-                domain="desktop",
-                obj_index=obj_index,
-                turn=1,
-                extra_context={
-                    "app_name": app_name,
-                    "app_exe_path": _APP_EXECUTABLES.get(app_key),
-                },
-                action={
-                    "action_type": "desktop",
-                    "parameters": {
-                        "app": app_name,
-                        "action": "type",
-                        "text": direct_desktop_match.group(2),
-                    },
-                },
-            )
-
-        if _URL_PATTERN.search(objective) and any(
-            token in lower for token in ("screenshot", "capture")
-        ):
-            return await self._execute_direct_bridge_task(
-                description=objective,
-                domain="web",
-                obj_index=obj_index,
-                turn=1,
-            )
-
-        return None
 
     # ── Message builder ────────────────────────────────────────────────────
 
@@ -677,10 +346,7 @@ class AgentLoop:
             verb = params.get("action", "")
             text = params.get("text", "")
             if verb == "open":
-                if app.lower() in _BLANK_DOCUMENT_APPS:
-                    description = f"Open {app} and create a new blank document"
-                else:
-                    description = f"Open {app}"
+                description = f"Open {app}"
             elif verb == "focus":
                 # Explicit focus/activate — brings the window to the foreground
                 # so subsequent type/paste actions land in the right app.
@@ -708,8 +374,6 @@ class AgentLoop:
             else:
                 description = f"{verb} {app} {text}".strip()
             ctx["app_name"] = app or "Windows Desktop"
-            if app.lower() in _APP_EXECUTABLES:
-                ctx["app_exe_path"] = _APP_EXECUTABLES[app.lower()]
             logger.info(
                 "[AgentLoop] desktop: app=%s verb=%s description=%s", app, verb, description
             )
@@ -727,11 +391,11 @@ class AgentLoop:
 
             if browse_action == "navigate" and url:
                 description = f"Open the page at {url}"
-            elif browse_action == "search" and text:
-                description = f"Search the web for {text}"
             elif browse_action in {"read", "copy"}:
                 target = selector or text or "the current page"
                 description = f"{browse_action.title()} content from {target}"
+            elif browse_action == "search" and text:
+                description = f"Find information about {text}"
             elif browse_action == "click":
                 target = selector or text or url or "the current page"
                 description = f"Click {target}"
@@ -740,6 +404,16 @@ class AgentLoop:
                 description = f"Type '{text}' into {target}".strip()
             else:
                 description = " ".join(part for part in (browse_action, url, text, selector) if part).strip()
+            progress_label = "browser action" if browse_action == "search" else (browse_action or "browser action")
+            self._emit(f"Launching browser automation for {progress_label}…", "info")
+            if exec_ctx is not None:
+                session_key = self._browser_session_state_key(obj_index)
+                browser_session_id = exec_ctx.accumulated_state.get(session_key)
+                if not isinstance(browser_session_id, str) or not browser_session_id.strip():
+                    browser_session_id = f"obj{obj_index}_browser_{uuid.uuid4().hex[:8]}"
+                    exec_ctx.update_state(session_key, browser_session_id)
+                ctx["_browser_session_id"] = browser_session_id
+                ctx["_reuse_browser_session"] = True
 
         else:
             description = json.dumps({"action": action_type, **params})
@@ -757,6 +431,8 @@ class AgentLoop:
             )
             result_str = _extract_result(result)
             self.last_step_payload = _build_step_payload(result, result_str)
+            if action_type == "browse":
+                self._emit("Browser automation returned a result.", "info")
         except Exception as exc:
             self.last_step_payload = {
                 "status": "failure",
@@ -773,63 +449,24 @@ class AgentLoop:
 
         return result_str
 
-    async def _execute_direct_bridge_task(
+    async def cleanup_browser_session(
         self,
-        *,
-        description: str,
-        domain: str,
         obj_index: int,
-        turn: int,
-        extra_context: Optional[dict[str, Any]] = None,
-        action: Optional[dict[str, Any]] = None,
-    ) -> str:
-        """Execute a direct single-step objective without an intermediate LLM action."""
-        task_id = f"obj{obj_index}_t{turn}_{uuid.uuid4().hex[:6]}"
-        exec_ctx = self._context
-        ctx = dict(extra_context or {})
+        context: Optional[ExecutionContext] = None,
+    ) -> None:
+        """Close the reusable browser session for an objective, if one exists."""
+        exec_ctx = context or self._context
+        if exec_ctx is None:
+            return
 
-        if exec_ctx is not None and exec_ctx.accumulated_state:
-            prior: dict[str, dict] = {}
-            i = 1
-            while f"objective_{i}_desc" in exec_ctx.accumulated_state:
-                desc = exec_ctx.accumulated_state[f"objective_{i}_desc"]
-                result = exec_ctx.accumulated_state.get(f"objective_{i}_result", "")
-                prior[f"obj{i}"] = {
-                    "desc": str(desc)[:200],
-                    "result": str(result)[:400],
-                }
-                i += 1
-            if prior:
-                ctx["_prior_results"] = prior
+        session_key = self._browser_session_state_key(obj_index)
+        session_id = exec_ctx.accumulated_state.pop(session_key, None)
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
 
-        if exec_ctx is not None and exec_ctx.world_state.has_state():
-            ctx["_world_state"] = exec_ctx.world_state.to_context_dict()
-
-        try:
-            result = await self._bridge.execute_task(
-                task_id=task_id,
-                description=description,
-                domain=domain,
-                context=ctx,
-                expected_outcome=None,
-                timeout=60,
-                max_retries=1,
-                cancel_event=self._cancel_event,
-            )
-            result_str = _extract_result(result)
-            self.last_step_payload = _build_step_payload(result, result_str)
-            if self._context is not None and action is not None:
-                self._context.update_world_state_from_action(action, result_str)
-            return result_str
-        except Exception as exc:
-            self.last_step_payload = {
-                "status": "failure",
-                "output": f"ERROR: {exc}",
-                "artifacts": [],
-                "execution_log": [],
-                "metadata": {},
-            }
-            return f"ERROR: {exc}"
+        close_browser_session = getattr(self._bridge, "close_browser_session", None)
+        if callable(close_browser_session):
+            await close_browser_session(session_id)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -940,93 +577,74 @@ def _serialize_result(result: Any) -> dict[str, Any]:
     }
 
 
-def _infer_wikipedia_topic(objective: str, context: Optional[ExecutionContext]) -> str | None:
-    candidates = [objective]
-    if context is not None:
-        for key, value in context.accumulated_state.items():
-            if key.endswith("_desc") or key.endswith("_result"):
-                candidates.append(str(value))
-
-    for candidate in candidates:
-        for pattern in _WIKIPEDIA_TOPIC_PATTERNS:
-            match = pattern.search(candidate)
-            if match:
-                topic = match.group(1).strip().strip(" .,!?:;")
-                if topic:
-                    return topic
-    return None
-
-
-def _is_vague_productivity_objective(objective: str) -> bool:
-    normalized = (objective or "").strip().lower()
-    return bool(_PRODUCTIVITY_GUIDANCE_PATTERN.search(normalized)) or any(
-        pattern.search(normalized) for pattern in _VAGUE_PRODUCTIVITY_PATTERNS
-    )
-
-
-def _extract_direct_desktop_open_app(objective: str) -> str | None:
-    normalized = (objective or "").strip()
-    for pattern in _DIRECT_DESKTOP_OPEN_PATTERNS:
-        match = pattern.match(normalized)
-        if not match:
-            continue
-        return _DIRECT_DESKTOP_APP_ALIASES.get(match.group(1).lower())
-    return None
-
-
-def _looks_like_python_file_listing_objective(objective: str) -> bool:
-    normalized = (objective or "").strip().lower()
-    if "python file" not in normalized:
-        return False
-    return any(pattern.search(normalized) for pattern in _PYTHON_FILE_LISTING_PATTERNS)
-
-
-def _looks_like_current_directory_path_objective(objective: str) -> bool:
-    normalized = (objective or "").strip()
-    return any(pattern.match(normalized) for pattern in _CURRENT_DIRECTORY_PATH_PATTERNS)
-
-
-def _looks_like_current_directory_contents_objective(objective: str) -> bool:
-    normalized = (objective or "").strip()
-    return any(pattern.match(normalized) for pattern in _CURRENT_DIRECTORY_CONTENTS_PATTERNS)
-
-
-def _looks_like_python_version_objective(objective: str) -> bool:
-    normalized = (objective or "").strip()
-    return any(pattern.match(normalized) for pattern in _PYTHON_VERSION_OBJECTIVE_PATTERNS)
-
-
-def _is_generic_success_marker(result: str) -> bool:
-    normalized = (result or "").strip()
+def _requires_execution_evidence(objective: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (objective or "").strip().lower())
     if not normalized:
         return False
-    if re.fullmatch(r"Result \d+: success", normalized, re.IGNORECASE):
+
+    informational_prefixes = (
+        "report ",
+        "explain ",
+        "inform ",
+        "notify ",
+        "tell the user",
+        "summarize ",
+        "answer ",
+    )
+    if normalized.startswith(informational_prefixes):
+        return False
+
+    execution_markers = (
+        "open ",
+        "launch ",
+        "start ",
+        "search ",
+        "go to ",
+        "navigate ",
+        "click ",
+        "type ",
+        "paste ",
+        "copy ",
+        "read ",
+        "extract ",
+        "capture ",
+        "screenshot ",
+        "focus ",
+        "list ",
+        "show ",
+        "display ",
+        "find ",
+        "run ",
+        "execute ",
+        "rename ",
+        "move ",
+        "delete ",
+        "close ",
+        "use cli",
+        "use the cli",
+        "use browser",
+        "use the browser",
+        "use desktop",
+        "use the desktop",
+    )
+    return any(marker in normalized for marker in execution_markers)
+
+
+def _has_successful_execution_history(history: list[_Turn]) -> bool:
+    for turn in history:
+        result = str(turn.result or "").strip()
+        if result.startswith((
+            "ERROR:",
+            "[AI error:",
+            "[stuck:",
+            "[schema error:",
+            "[cancelled]",
+            "[timeout after",
+            "[max iterations",
+        )):
+            continue
         return True
-    return normalized in {"OK (status=success)", "success"}
-
-
-def _extract_app_version_query_target(objective: str) -> str | None:
-    normalized = (objective or "").strip()
-    for pattern in _APP_VERSION_QUERY_PATTERNS:
-        match = pattern.match(normalized)
-        if not match:
-            continue
-        app_name = match.group(1).strip()
-        if app_name:
-            return app_name
-    return None
-
-
-def _extract_explicit_app_open_target(objective: str) -> str | None:
-    normalized = (objective or "").strip()
-    for pattern in _EXPLICIT_APP_OPEN_PATTERNS:
-        match = pattern.match(normalized)
-        if not match:
-            continue
-        app_name = match.group(1).strip()
-        if app_name:
-            return app_name
-    return None
+    return False
 
 
 def _looks_like_app_unavailable_result(result: str) -> bool:
@@ -1034,24 +652,6 @@ def _looks_like_app_unavailable_result(result: str) -> bool:
         return False
     lowered = result.lower()
     return any(marker in lowered for marker in _APP_UNAVAILABLE_MARKERS)
-
-
-def _extract_search_query(objective: str) -> str | None:
-    normalized = (objective or "").strip()
-    for pattern in _SEARCH_QUERY_PATTERNS:
-        match = pattern.search(normalized)
-        if not match:
-            continue
-        query = match.group(1).strip().strip(" .,!?:;")
-        if query:
-            return query
-    return None
-
-
-def _looks_like_first_search_result_title_objective(objective: str) -> bool:
-    normalized = (objective or "").strip().lower()
-    return any(pattern.search(normalized) for pattern in _FIRST_SEARCH_RESULT_TITLE_PATTERNS)
-
 
 def _is_terminal_app_unavailable_failure(action: dict[str, Any], result: str) -> bool:
     if action.get("action_type") != "desktop":

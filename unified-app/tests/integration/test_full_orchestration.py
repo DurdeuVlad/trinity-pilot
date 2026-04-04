@@ -13,9 +13,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from orchestrator.agent_loop import AgentLoop
 from orchestrator.execution_context import ExecutionContext
-from orchestrator.macro_planner import MacroPlanner
+from orchestrator.macro_planner import MacroPlanner, _build_missing_resource_report_objective
 from orchestrator.output_validator import OutputValidator
 from orchestrator.prompt_registry import PromptRegistry
+from orchestrator.execution_runner import (
+    _completion_lacks_execution_evidence,
+    _is_missing_resource_failure,
+    _text_indicates_missing_resource,
+)
 from orchestrator.reflection_engine import ReflectionEngine
 
 
@@ -151,23 +156,41 @@ class TestAgentLoop:
             registry=registry,
         )
 
-    def test_done_on_first_turn(self) -> None:
-        loop = self._loop([json.dumps({
+    def test_done_requires_execution_evidence_for_operational_objectives(self) -> None:
+        done_response = json.dumps({
             "rationale": "all done",
             "action_type": "done",
             "module": None,
             "parameters": {},
             "done": True,
             "result_summary": "Task is complete",
-        })])
+        })
+        act_response = json.dumps({
+            "rationale": "renaming file",
+            "action_type": "cli",
+            "module": "cli_runner",
+            "parameters": {"command": "Rename-Item report.txt summary.txt"},
+            "done": False,
+            "result_summary": None,
+        })
+        final_done_response = json.dumps({
+            "rationale": "done",
+            "action_type": "done",
+            "module": None,
+            "parameters": {},
+            "done": True,
+            "result_summary": "Task is complete",
+        })
+        loop = self._loop([done_response, act_response, final_done_response])
         result = asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1))
         assert result == "Task is complete"
+        assert len(loop._bridge.calls) == 1
 
     def test_act_then_done(self) -> None:
         act_response = json.dumps({
             "rationale": "renaming file",
             "action_type": "cli",
-            "module": "cli",
+            "module": "cli_runner",
             "parameters": {"command": "Rename-Item report.txt summary.txt"},
             "done": False,
             "result_summary": None,
@@ -230,6 +253,23 @@ class TestAgentLoop:
         assert result.startswith("[schema error:") or result.startswith("[max iterations")
 
 
+class TestExecutionEvidenceGuards:
+    def test_browser_objective_with_empty_payload_lacks_evidence(self) -> None:
+        assert _completion_lacks_execution_evidence("Search for Lady Gaga on YouTube", {}) is True
+
+    def test_informational_objective_does_not_require_payload_evidence(self) -> None:
+        assert _completion_lacks_execution_evidence("Inform the user that the browser search failed", {}) is False
+
+    def test_payload_with_execution_log_counts_as_evidence(self) -> None:
+        payload = {
+            "status": "success",
+            "execution_log": [{"action": "search", "details": "Results loaded"}],
+            "artifacts": [],
+            "metadata": {},
+        }
+        assert _completion_lacks_execution_evidence("Search for Lady Gaga on YouTube", payload) is False
+
+
 # ── MacroPlanner ──────────────────────────────────────────────────────────────
 
 class TestMacroPlanner:
@@ -283,3 +323,54 @@ class TestMacroPlanner:
         planner = MacroPlanner(ScriptedProvider([]), registry=PromptRegistry("gemini"))
         revised = asyncio.run(planner.replan("task", [], [], []))
         assert revised == []
+
+    def test_replan_missing_resource_returns_failure_report_objective(self) -> None:
+        planner = MacroPlanner(ScriptedProvider([]), registry=PromptRegistry("gemini"))
+        revised = asyncio.run(planner.replan(
+            original_task="Open MissingApp and tell me its version",
+            completed=[],
+            failed=[("Open MissingApp", "ERROR: MissingApp was not found on this system")],
+            remaining=["Tell me the app version"],
+        ))
+        assert revised == [_build_missing_resource_report_objective(False)]
+
+    def test_replan_missing_resource_after_progress_preserves_partial_path(self) -> None:
+        planner = MacroPlanner(ScriptedProvider([]), registry=PromptRegistry("gemini"))
+        revised = asyncio.run(planner.replan(
+            original_task="Get Python version and write it into MissingApp",
+            completed=["Get the installed Python version"],
+            failed=[("Open MissingApp", "ERROR: MissingApp does not exist")],
+            remaining=["Write the version into MissingApp"],
+        ))
+        assert revised == [_build_missing_resource_report_objective(True)]
+
+
+class TestFailureDetectionHelpers:
+    def test_missing_resource_failure_detected_from_result_text(self) -> None:
+        assert _is_missing_resource_failure(
+            "ERROR: Application MissingApp was not found",
+            {"status": "failure"},
+        ) is True
+
+    def test_missing_resource_failure_detected_from_raw_result_payload(self) -> None:
+        payload = {
+            "status": "failure",
+            "metadata": {
+                "raw_result": {
+                    "status": "failure",
+                    "error": "ERROR: target does not exist",
+                }
+            },
+        }
+        assert _is_missing_resource_failure("step failed", payload) is True
+
+    def test_non_missing_failure_does_not_trigger_missing_resource_path(self) -> None:
+        assert _is_missing_resource_failure(
+            "ERROR: timed out waiting for response",
+            {"status": "failure"},
+        ) is False
+
+    def test_reflection_critique_missing_resource_is_detected(self) -> None:
+        assert _text_indicates_missing_resource(
+            "The target application could not be found on this system."
+        ) is True

@@ -5,6 +5,7 @@ from typing import Dict, List
 
 from cli_backend import run_cli_automation
 from cli_io_models import CLITaskResult
+from cli_validator import CommandValidator
 from ..adapter import TaskAdapter
 from ..models import TaskInput, TaskResult, ExecutionLog
 
@@ -142,5 +143,7 @@ class CLIAdapter(TaskAdapter):
             "thread_safe": False,  # Serial execution only
             "glass_box": True,
             "flight_reports": True,
-            "platforms": ["Windows"]
+            "platforms": ["Windows"],
+            "safe_capability_families": sorted(CommandValidator.CAPABILITY_FAMILIES.keys()),
+            "policy_bounded": True,
         }

@@ -39,7 +39,7 @@ SCHEMA (all fields required):
 }}
 
 MODULE PARAMETERS:
-  web_browser → {{"action": "navigate|click|type|read|search", "url": "...", "selector": "...", "text": "..."}}
+  web_browser → {{"action": "navigate|click|type|read", "url": "...", "selector": "...", "text": "..."}}
   desktop_app → {{"action": "open|focus|click|type|paste|read", "app": "calc|notepad|...", "text": "..."}}
   cli_runner  → {{"command": "...", "args": ["..."]}}
 
@@ -79,7 +79,7 @@ Required schema:
 }}
 
 Parameters by module:
-  web_browser → {{"action": "navigate|click|type|read|search", "url": "...", "selector": "...", "text": "..."}}
+  web_browser → {{"action": "navigate|click|type|read", "url": "...", "selector": "...", "text": "..."}}
   desktop_app → {{"action": "open|focus|click|type|paste|read", "app": "calc|notepad|...", "text": "..."}}
   cli_runner  → {{"command": "...", "args": [...]}}
 

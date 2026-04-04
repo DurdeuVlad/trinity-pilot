@@ -27,6 +27,7 @@ class EventBus(QObject):
     # ── Chat / clarification signals ────────────────────────────────────
     chat_message = pyqtSignal(str, str)   # (role: "user"|"assistant", text)
     clarification_ready = pyqtSignal(str) # confirmed task summary
+    objectives_preview_ready = pyqtSignal(str, list)  # confirmed task summary, proposed objectives
     task_result_ready = pyqtSignal(str)   # final answer to show back in chat
 
     def emit_status(self, message: str, level: str = "info") -> None:

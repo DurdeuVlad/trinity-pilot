@@ -1,8 +1,6 @@
 """Full-screen AI control HUD shown during desktop-takeover executions."""
 from __future__ import annotations
 
-import ctypes
-import sys
 from typing import Optional
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSignal
@@ -70,7 +68,9 @@ _PULSE_CHARS = (">", ":")
 
 
 class _GlassPaneOverlay(QWidget):
-    """Full-screen semi-transparent dim that stays click-through on Windows."""
+    """Full-screen semi-transparent lock layer that blocks desktop interaction."""
+
+    stop_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__(
@@ -78,25 +78,67 @@ class _GlassPaneOverlay(QWidget):
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setWindowOpacity(0.0)
         self._anim: Optional[QPropertyAnimation] = None
+        self._build_ui()
         self.hide()
 
-    def show_glass(self) -> None:
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(0)
+        action_row.addStretch(1)
+
+        dock = QFrame()
+        dock.setObjectName("StopDock")
+        dock.setStyleSheet(
+            f"QFrame#StopDock {{ background-color: rgba(13, 17, 23, 228); border: 1px solid {BORDER}; border-radius: 12px; }}"
+        )
+        dock_layout = QHBoxLayout(dock)
+        dock_layout.setContentsMargins(10, 8, 10, 8)
+        dock_layout.setSpacing(8)
+
+        label = QLabel("AI is controlling this screen")
+        label.setStyleSheet(f"color: {TEXT}; font-size: 11px; background: transparent;")
+        dock_layout.addWidget(label)
+
+        hint = QLabel("Ctrl+Alt+End")
+        hint.setStyleSheet(f"color: {TEXT_WEAK}; font-size: 10px; background: transparent;")
+        dock_layout.addWidget(hint)
+
+        stop_btn = QPushButton("STOP AI")
+        stop_btn.setFixedHeight(30)
+        stop_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {ERROR}; color: #ffffff; border: none; border-radius: 8px; font-size: 11px; font-weight: 700; padding: 0 12px; }}"
+            "QPushButton:hover { background-color: #ff7b72; }"
+            "QPushButton:pressed { background-color: #da3633; }"
+        )
+        stop_btn.clicked.connect(self.stop_requested.emit)
+        dock_layout.addWidget(stop_btn)
+
+        action_row.addWidget(dock)
+        layout.addLayout(action_row)
+
+    def show_glass(self, geometry, *, focus: bool = False) -> None:
         if not _supports_overlay_windows():
             self.hide()
             return
-        screen = _target_screen()
-        if screen is None:
+        if geometry is None:
             return
-        self.setGeometry(screen.geometry())
+        self.setGeometry(geometry)
         self.show()
         self.raise_()
-        self._make_click_through()
+        if focus:
+            self.activateWindow()
+            self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._fade(0.0, 1.0, 320)
 
     def hide_glass(self, on_done=None) -> None:
@@ -113,16 +155,6 @@ class _GlassPaneOverlay(QWidget):
 
         self._fade(self.windowOpacity(), 0.0, 220, on_done=_finish)
 
-    def _make_click_through(self) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            hwnd = int(self.winId())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-            ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x00000020 | 0x00080000)
-        except Exception:
-            pass
-
     def _fade(self, from_v: float, to_v: float, ms: int, on_done=None) -> None:
         self._anim = QPropertyAnimation(self, b"windowOpacity")
         self._anim.setDuration(ms)
@@ -137,6 +169,27 @@ class _GlassPaneOverlay(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, _GLASS_ALPHA))
         painter.end()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        event.accept()
 
 
 class _StepRow(QWidget):
@@ -216,7 +269,7 @@ class ExecutionOverlay(QWidget):
         self.setFixedWidth(_PANEL_W)
         self.setWindowOpacity(0.0)
 
-        self._glass = _GlassPaneOverlay()
+        self._glass_panes: list[_GlassPaneOverlay] = []
         self._step_rows: list[_StepRow] = []
         self._running_idx: Optional[int] = None
         self._pulse_frame = 0
@@ -227,6 +280,11 @@ class ExecutionOverlay(QWidget):
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(550)
         self._pulse_timer.timeout.connect(self._on_pulse)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.screenAdded.connect(self._refresh_glass_panes)
+            app.screenRemoved.connect(self._refresh_glass_panes)
 
         self._build_ui()
         self.hide()
@@ -366,10 +424,12 @@ class ExecutionOverlay(QWidget):
         self._clear_steps()
         if not _supports_overlay_windows():
             return
-        self._glass.show_glass()
+        self._show_glass_panes()
         self._reposition()
         self.show()
         self.raise_()
+        self.activateWindow()
+        self._stop_btn.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self._fade(0.0, 1.0, 320)
         self._pulse_timer.start()
 
@@ -378,9 +438,9 @@ class ExecutionOverlay(QWidget):
         self._pulse_timer.stop()
         if not _supports_overlay_windows():
             self.hide()
-            self._glass.hide()
+            self._clear_glass_panes()
             return
-        self._glass.hide_glass()
+        self._hide_glass_panes()
         self._fade(self.windowOpacity(), 0.0, 220, on_done=self.hide)
 
     def update_step(self, idx: int, description: str) -> None:
@@ -495,6 +555,35 @@ class ExecutionOverlay(QWidget):
             self._pulse_dot.setStyleSheet(
                 f"color: {BORDER}; font-size: 10px; background: transparent;"
             )
+
+    def _show_glass_panes(self) -> None:
+        """Cover every attached screen with an input-blocking pane."""
+        self._clear_glass_panes()
+        for screen in QApplication.screens():
+            pane = _GlassPaneOverlay()
+            pane.stop_requested.connect(self.stop_requested.emit)
+            pane.show_glass(screen.geometry(), focus=False)
+            self._glass_panes.append(pane)
+
+    def _hide_glass_panes(self) -> None:
+        """Fade out and destroy every screen-specific blocker pane."""
+        panes = list(self._glass_panes)
+        self._glass_panes.clear()
+        for pane in panes:
+            pane.hide_glass(on_done=pane.deleteLater)
+
+    def _clear_glass_panes(self) -> None:
+        """Immediately remove any existing blocker panes."""
+        panes = list(self._glass_panes)
+        self._glass_panes.clear()
+        for pane in panes:
+            pane.hide()
+            pane.deleteLater()
+
+    def _refresh_glass_panes(self, *_args) -> None:
+        """Rebuild blockers if the monitor topology changes mid-run."""
+        if self.isVisible():
+            self._show_glass_panes()
 
 
 def _target_screen():

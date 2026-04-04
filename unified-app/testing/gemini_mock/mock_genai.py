@@ -260,7 +260,13 @@ class _TypesModule:
 
     @dataclass
     class Part:
-        text: str
+        text: str | None = None
+        inline_data: Any = None
+
+    @dataclass
+    class Blob:
+        mime_type: str
+        data: Any
 
     @dataclass
     class GenerateContentConfig:

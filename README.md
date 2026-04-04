@@ -28,7 +28,7 @@ unified-app/          ← PyQt6 GUI + orchestrator (LLM plan→act→reflect loo
 | `unified-app` | Orchestrator GUI — task input, live HUD, execution history |
 | `trinity_core` | Adapter layer — dispatches tasks to the correct backend |
 | `api-accessibility-poc` | Desktop automation backend (Windows UIA/COM) |
-| `browser-gui-automation` | Browser automation backend (Playwright/Node.js) |
+| `browser-gui-automation` | Browser automation backend (Python Playwright) |
 | `cli-automation-poc` | CLI/PowerShell automation backend |
 | `audit-debugger` | Debugging and audit tooling |
 
@@ -36,38 +36,101 @@ unified-app/          ← PyQt6 GUI + orchestrator (LLM plan→act→reflect loo
 
 - Python 3.10+
 - Windows 10/11 (desktop automation requires Windows UIA)
-- Node.js 18+ (browser automation)
 - Gemini API key ([get one free](https://aistudio.google.com/apikey))
 
-## Setup
+## Quick Start
+
+### 1. Clone and Install
 
 ```bash
 git clone https://github.com/your-username/trinity-pilot.git
 cd trinity-pilot
 
-# Python dependencies
+# Install Python dependencies
 pip install -r unified-app/requirements.txt
 pip install -r api-accessibility-poc/requirements.txt
 pip install -r cli-automation-poc/requirements.txt
+pip install -r browser-gui-automation/requirements.txt
 
-# Browser automation dependencies (Node.js)
-cd browser-gui-automation && npm install && cd ..
-
-# API key
-cp .env.example .env
-# Edit .env — add your GEMINI_API_KEY
+# Install Playwright browsers
+playwright install chromium
 ```
 
-## Run
+### 2. Configure API Key
 
 ```bash
-python unified-app/main.py
+# Copy the example config
+cp .env.example unified-app/.env
+
+# Edit unified-app/.env and add your Gemini API key
+# Get a free key at: https://aistudio.google.com/apikey
 ```
+
+Your `unified-app/.env` should look like:
+```
+GEMINI_API_KEY=your_actual_api_key_here
+```
+
+### 3. Run
+
+```bash
+cd unified-app
+python main.py
+```
+
+The GUI will open maximized. Try a simple task like:
+- *"list files in the current directory"* (CLI)
+- *"open Notepad and type hello world"* (Desktop)
+- *"navigate to example.com"* (Browser)
+
+## Examples
+
+**CLI Task:** *"show me the current directory and list its contents"*
+- Routes to CLI backend
+- Executes PowerShell commands
+- Returns output in the status log
+
+**Desktop Task:** *"open Calculator and type 5+5"*
+- Uses Windows UIA to find and launch Calculator
+- Simulates keyboard input
+- Captures screenshots during execution
+
+**Browser Task:** *"go to google.com and search for python"*
+- Launches Chromium via Playwright
+- Navigates and interacts with the page
+- Returns search results
+
+**Cross-Domain:** *"search google for 'AI news' and paste the first result title into Notepad"*
+- Browser agent scrapes Google
+- Desktop agent opens Notepad
+- Data flows between domains
+
+## Troubleshooting
+
+**"No API key found"**
+- Ensure `unified-app/.env` exists with `GEMINI_API_KEY=...`
+- Verify the key is valid at https://aistudio.google.com/apikey
+
+**"Browser automation failed"**
+- Run `playwright install chromium` to install browser binaries
+- Verify Playwright is installed: `pip list | grep playwright`
+
+**"Desktop automation not working"**
+- Windows 10/11 required (uses UIA)
+- Run as administrator if accessing system apps
+
+**GUI doesn't open**
+- Check Python 3.10+ is installed
+- Verify PyQt6 installed: `pip list | grep PyQt6`
 
 ## Tests
 
 ```bash
-pytest unified-app/tests trinity_core/tests -q
+# Run all tests
+pytest unified-app/tests trinity_core/tests -v
+
+# Run with coverage
+pytest unified-app/tests --cov=unified-app/orchestrator --cov=unified-app/ui
 ```
 
 ## License

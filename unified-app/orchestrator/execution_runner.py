@@ -20,6 +20,7 @@ from .agent_loop import AgentLoop
 from .checkpoint_manager import CheckpointManager
 from .database import TaskStatus
 from .execution_context import ErrorRecord, ExecutionContext
+from .macro_planner import ExecutionPlan
 from .output_validator import OutputValidator
 from .prompt_registry import PromptRegistry
 from .reflection_engine import ReflectionEngine
@@ -48,6 +49,18 @@ _FAILURE_REPORT_MARKERS = (
     "unavailable",
     "missing",
 )
+_MISSING_RESOURCE_MARKERS = (
+    "not found",
+    "does not exist",
+    "doesn't exist",
+    "could not be found",
+    "could not find",
+    "couldn't find",
+    "unable to locate",
+    "not installed",
+    "missing",
+    "no such",
+)
 
 
 class TaskExecutionRunner:
@@ -68,6 +81,7 @@ class TaskExecutionRunner:
         screenshot_watcher: Any,
         cancel_requested: Callable[[], bool],
         cancel_event: Any,
+        approved_plan: list[str] | None = None,
         provider_name: str = "gemini",
         timeout_seconds: int = 600,
         max_retries: int = 3,
@@ -84,6 +98,7 @@ class TaskExecutionRunner:
         self.screenshot_watcher = screenshot_watcher
         self.cancel_requested = cancel_requested
         self.cancel_event = cancel_event
+        self.approved_plan = [step.strip() for step in (approved_plan or []) if step.strip()]
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
 
@@ -95,6 +110,7 @@ class TaskExecutionRunner:
     async def execute(self) -> None:
         """Run the full orchestration lifecycle."""
         try:
+            self._status("Preparing automation runtime...", "info")
             await self.bridge.initialize()
             self.screenshot_watcher.start_watching()
             self._signal("execution_started")
@@ -107,14 +123,26 @@ class TaskExecutionRunner:
                 confidence=0.0,
             )
             self.history_manager.start_task(self.run_id)
+            self._status("Analyzing your task...", "thinking")
             self._status("Thinking about how to approach your task…", "thinking")
 
             # ── Plan ───────────────────────────────────────────────────────
-            try:
-                plan = await self.planner.generate_plan(self.task_description, self.domain)
-            except Exception as plan_exc:
-                self._handle_plan_failure(plan_exc)
-                return
+            if self.approved_plan:
+                self._status("Using the objectives you approved before execution...", "info")
+                plan = ExecutionPlan(
+                    description=self.task_description,
+                    domain=self.domain,
+                    steps=self.approved_plan,
+                    estimated_duration=len(self.approved_plan) * 60,
+                    confidence=0.95,
+                )
+            else:
+                try:
+                    self._status("Breaking the task into objectives...", "info")
+                    plan = await self.planner.generate_plan(self.task_description, self.domain)
+                except Exception as plan_exc:
+                    self._handle_plan_failure(plan_exc)
+                    return
 
             if hasattr(self.history_manager, "update_task_plan"):
                 self.history_manager.update_task_plan(
@@ -125,6 +153,7 @@ class TaskExecutionRunner:
                 )
             self._signal("plan_generated", plan.steps)
             n = len(plan.steps)
+            self._status("Starting execution...", "info")
             self._status(f"Got it — I'll tackle this in {n} step{'s' if n != 1 else ''}.", "success")
 
             # ── Checkpoint resume ──────────────────────────────────────────
@@ -170,6 +199,10 @@ class TaskExecutionRunner:
                 self.history_manager.add_step(self.run_id, display_index, objective)
                 self._signal("step_started", display_index, objective)
                 self._status(
+                    f"Executing objective {display_index} of {len(objectives)}...",
+                    "info",
+                )
+                self._status(
                     f"{display_index}/{len(objectives)}|{objective}", "step"
                 )
                 self.history_manager.update_step_status(
@@ -183,10 +216,15 @@ class TaskExecutionRunner:
 
                 for attempt in range(MAX_ATTEMPTS_PER_OBJECTIVE):
                     if self.cancel_requested():
+                        await agent_loop.cleanup_browser_session(display_index, context)
                         self._complete_as_cancelled(active_step=display_index)
                         return
 
                     if attempt > 0:
+                        self._status(
+                            f"Retrying objective {display_index} with a different approach...",
+                            "thinking",
+                        )
                         self._status(
                             "Hmm, that didn't quite work. Let me try a different approach…",
                             "thinking",
@@ -201,6 +239,7 @@ class TaskExecutionRunner:
                     )
 
                     if result == "[cancelled]":
+                        await agent_loop.cleanup_browser_session(display_index, context)
                         self._complete_as_cancelled(active_step=display_index)
                         return
 
@@ -213,8 +252,50 @@ class TaskExecutionRunner:
                         attempt=attempt,
                     )
 
+                    step_payload = dict(agent_loop.last_step_payload or {})
+                    if reflection.achieved and _completion_lacks_execution_evidence(objective, step_payload):
+                        critique = (
+                            "The previous attempt claimed completion without any successful execution evidence. "
+                            "Actually perform the required browser, desktop, or CLI action and only finish after a concrete result is recorded."
+                        )
+                        self._status(
+                            "That completion claim had no real execution evidence. Retrying…",
+                            "warning",
+                        )
+                        if hasattr(self.provider, "report_cache_failure"):
+                            self.provider.report_cache_failure()
+                        context.add_error(ErrorRecord(
+                            error_type="missing_execution_evidence",
+                            error_message=critique,
+                            attempted_action={"objective": objective, "attempt": attempt},
+                            timestamp=time.time(),
+                        ))
+                        continue
+
                     if reflection.achieved:
                         objective_achieved = True
+                        break
+
+                    if (
+                        _is_missing_resource_failure(final_result, step_payload)
+                        or _text_indicates_missing_resource(reflection.critique)
+                    ):
+                        critique = (
+                            "The required target could not be found. Stop retrying alternate execution paths and "
+                            "replan the remaining objectives around this failure."
+                        )
+                        self._status(
+                            "The required target could not be found. Moving to failure handling...",
+                            "warning",
+                        )
+                        if hasattr(self.provider, "report_cache_failure"):
+                            self.provider.report_cache_failure()
+                        context.add_error(ErrorRecord(
+                            error_type="missing_resource_failure",
+                            error_message=critique,
+                            attempted_action={"objective": objective, "attempt": attempt},
+                            timestamp=time.time(),
+                        ))
                         break
 
                     # Not achieved — prepare critique for next attempt
@@ -224,6 +305,10 @@ class TaskExecutionRunner:
                     )
                     self._status(
                         "That attempt didn't fully achieve the goal. Retrying…",
+                        "warning",
+                    )
+                    self._status(
+                        f"Objective {display_index} is not complete yet. Retrying...",
                         "warning",
                     )
                     # Notify the cache that the most recent cached response may
@@ -297,12 +382,18 @@ class TaskExecutionRunner:
                         )
                         if revised != remaining_tail:
                             self._status(
+                                "Adjusting the remaining plan based on what happened...",
+                                "thinking",
+                            )
+                            self._status(
                                 "Adjusting my plan based on what I've learned…",
                                 "thinking",
                             )
                             objectives = objectives[: index + 1] + revised
 
                 index += 1
+
+            await agent_loop.cleanup_browser_session(0, context)
 
             # ── Cleanup & final status ─────────────────────────────────────
             try:
@@ -358,6 +449,13 @@ class TaskExecutionRunner:
             )
 
         finally:
+            agent_loop_obj = locals().get("agent_loop")
+            context_obj = locals().get("context")
+            if agent_loop_obj is not None:
+                try:
+                    await agent_loop_obj.cleanup_browser_session(0, context_obj)
+                except Exception:
+                    pass
             provider_close = getattr(self.provider, "close", None)
             if callable(provider_close):
                 await provider_close()
@@ -495,6 +593,166 @@ def _step_indicates_failure(result_text: str, payload: dict[str, Any]) -> bool:
                 return True
 
     return False
+
+
+def _is_missing_resource_failure(result_text: str, payload: dict[str, Any]) -> bool:
+    if not _step_indicates_failure(result_text, payload):
+        return False
+
+    blob = " ".join(
+        part for part in (
+            str(result_text or ""),
+            _payload_failure_text(payload),
+        )
+        if part
+    )
+    return _text_indicates_missing_resource(blob)
+
+
+def _payload_failure_text(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    parts = [
+        str(payload.get("output", "") or ""),
+        str(payload.get("error", "") or ""),
+    ]
+
+    metadata = payload.get("metadata", {})
+    if isinstance(metadata, dict):
+        parts.append(str(metadata.get("output", "") or ""))
+        parts.append(str(metadata.get("text_output", "") or ""))
+        raw_result = metadata.get("raw_result", {})
+        if isinstance(raw_result, dict):
+            parts.append(str(raw_result.get("output", "") or ""))
+            parts.append(str(raw_result.get("error", "") or ""))
+
+    return " ".join(part for part in parts if part)
+
+
+def _text_indicates_missing_resource(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return any(marker in normalized for marker in _MISSING_RESOURCE_MARKERS)
+
+
+def _completion_lacks_execution_evidence(objective: str, payload: dict[str, Any]) -> bool:
+    if not _objective_requires_execution_evidence(objective):
+        return False
+    return not _payload_has_execution_evidence(payload)
+
+
+def _objective_requires_execution_evidence(objective: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (objective or "").strip().lower())
+    if not normalized:
+        return False
+
+    informational_prefixes = (
+        "report ",
+        "explain ",
+        "inform ",
+        "notify ",
+        "tell the user",
+        "summarize ",
+        "answer ",
+    )
+    if normalized.startswith(informational_prefixes):
+        return False
+
+    execution_markers = (
+        "open ",
+        "launch ",
+        "start ",
+        "search ",
+        "go to ",
+        "navigate ",
+        "click ",
+        "type ",
+        "paste ",
+        "copy ",
+        "read ",
+        "extract ",
+        "capture ",
+        "screenshot ",
+        "focus ",
+        "list ",
+        "show ",
+        "display ",
+        "find ",
+        "run ",
+        "execute ",
+        "rename ",
+        "move ",
+        "delete ",
+        "close ",
+        "use cli",
+        "use the cli",
+        "use browser",
+        "use the browser",
+        "use desktop",
+        "use the desktop",
+    )
+    return any(marker in normalized for marker in execution_markers)
+
+
+def _payload_has_execution_evidence(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+
+    status = str(payload.get("status", "")).strip().lower()
+    if status == "failure":
+        return False
+
+    if payload.get("execution_log") or payload.get("artifacts"):
+        return True
+
+    if _is_meaningful_payload_text(payload.get("output")):
+        return True
+
+    metadata = payload.get("metadata", {})
+    if isinstance(metadata, dict):
+        if _is_meaningful_payload_text(metadata.get("text_output")):
+            return True
+        if _is_meaningful_payload_text(metadata.get("output")):
+            return True
+
+        raw_result = metadata.get("raw_result", {})
+        if isinstance(raw_result, dict):
+            raw_status = str(raw_result.get("status", "")).strip().lower()
+            if raw_status == "failure":
+                return False
+            if raw_result.get("execution_log") or raw_result.get("artifacts"):
+                return True
+            if _is_meaningful_payload_text(raw_result.get("output")):
+                return True
+
+            raw_metadata = raw_result.get("metadata", {})
+            if isinstance(raw_metadata, dict):
+                if _is_meaningful_payload_text(raw_metadata.get("text_output")):
+                    return True
+                if _is_meaningful_payload_text(raw_metadata.get("output")):
+                    return True
+
+    return False
+
+
+def _is_meaningful_payload_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.startswith((
+        "ERROR:",
+        "OK (status=",
+        "OK (no output)",
+        "Navigated",
+        "Opened",
+        "Focused",
+        "Clicked",
+        "Typed",
+        "Pasted",
+        "Closed",
+    )):
+        return False
+    return True
 
 
 def _counts_toward_task_completion(objective: str) -> bool:

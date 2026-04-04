@@ -13,6 +13,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MISSING_RESOURCE_MARKERS = (
+    "not found",
+    "does not exist",
+    "doesn't exist",
+    "could not find",
+    "couldn't find",
+    "unable to locate",
+    "not installed",
+    "missing",
+    "no such",
+)
+
 
 @dataclass(eq=True, frozen=True)
 class PlanStep:
@@ -80,6 +92,8 @@ class MacroPlanner:
         """
         if not remaining:
             return []
+        if _failed_due_to_missing_resource(failed):
+            return [_build_missing_resource_report_objective(bool(completed))]
 
         completed_block = (
             "\n".join(f"  ✓ {obj}" for obj in completed) if completed else "  (none)"
@@ -148,3 +162,22 @@ def _parse_json(raw: str) -> dict:
         if match:
             return json.loads(match.group(0))
         raise ValueError(f"Cannot parse planner JSON: {raw[:200]}")
+
+
+def _failed_due_to_missing_resource(failed: list[tuple[str, str]]) -> bool:
+    for _objective, reason in failed:
+        normalized = str(reason or "").strip().lower()
+        if any(marker in normalized for marker in _MISSING_RESOURCE_MARKERS):
+            return True
+    return False
+
+
+def _build_missing_resource_report_objective(has_completed_steps: bool) -> str:
+    if has_completed_steps:
+        return (
+            "Tell the user that the required target could not be found, so the remaining steps "
+            "cannot be completed."
+        )
+    return (
+        "Tell the user that the required target could not be found, so the task cannot be completed."
+    )
