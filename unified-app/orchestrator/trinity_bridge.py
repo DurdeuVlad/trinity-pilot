@@ -29,6 +29,18 @@ class TrinityBridge:
             self.executor = TrinityExecutor()
         await self.executor.initialize()
 
+    async def get_capabilities(self) -> dict:
+        """Return the capability map of all initialized adapters."""
+        if self.executor is None:
+            return {}
+        fn = getattr(self.executor, "get_capabilities_all", None)
+        if callable(fn):
+            try:
+                return await fn()
+            except Exception:
+                return {}
+        return {}
+
     async def execute_task(
         self,
         task_id: str,
@@ -43,6 +55,13 @@ class TrinityBridge:
         """Execute one task through Trinity Core."""
         if self.executor is None:
             raise RuntimeError("TrinityBridge is not initialized")
+        available = getattr(self.executor, "adapters", {})
+        if domain not in available:
+            live = ", ".join(available.keys()) if available else "none"
+            raise RuntimeError(
+                f"Domain '{domain}' is not available (initialized adapters: {live}). "
+                "Check that the backend is enabled in config."
+            )
         if TaskInput is None:
             task = SimpleNamespace(
                 task_id=task_id,

@@ -135,7 +135,7 @@ class ObjectivesDecomposer:
         self._provider = provider
         self._registry = registry
 
-    async def decompose(self, task_description: str) -> list[str]:
+    async def decompose(self, task_description: str, capabilities: dict | None = None) -> list[str]:
         """Return a list of high-level objective strings for the given task.
 
         Falls back to a single-item list containing the raw task if parsing fails.
@@ -149,9 +149,13 @@ class ObjectivesDecomposer:
             if self._registry is not None
             else _FALLBACK_SYSTEM_PROMPT
         )
+        user_content = f"Task: {task_description}"
+        if capabilities:
+            available = ", ".join(capabilities.keys())
+            user_content += f"\n\nAvailable execution adapters: {available}"
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": f"Task: {task_description}"},
+            {"role": "user",   "content": user_content},
         ]
 
         try:

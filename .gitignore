@@ -38,6 +38,11 @@ sessions/
 *.tmp
 *.cache
 .cache/
+screenshot_*_end.jpg
+unified-app/screenshot_*_end.jpg
+
+# Local AI handoff scratch notes
+api-accessibility-poc/HANDOFF_*.md
 
 # Archive dirs (old code kept locally, not published)
 archive/

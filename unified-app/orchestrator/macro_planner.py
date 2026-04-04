@@ -62,12 +62,14 @@ class MacroPlanner:
         self._provider = provider
         self._registry = registry
 
-    async def generate_plan(self, task_description: str, domain: str) -> ExecutionPlan:
+    async def generate_plan(
+        self, task_description: str, domain: str, capabilities: dict | None = None
+    ) -> ExecutionPlan:
         """Decompose the task into objectives and return an ExecutionPlan."""
         from .objectives_decomposer import ObjectivesDecomposer
 
         decomposer = ObjectivesDecomposer(self._provider, registry=self._registry)
-        objectives = await decomposer.decompose(task_description)
+        objectives = await decomposer.decompose(task_description, capabilities=capabilities)
         steps = objectives or [task_description]
         return ExecutionPlan(
             description=task_description,

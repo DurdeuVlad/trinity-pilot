@@ -139,7 +139,14 @@ class TaskExecutionRunner:
             else:
                 try:
                     self._status("Breaking the task into objectives...", "info")
-                    plan = await self.planner.generate_plan(self.task_description, self.domain)
+                    capabilities: dict = {}
+                    try:
+                        capabilities = await self.bridge.get_capabilities()
+                    except Exception:
+                        pass
+                    plan = await self.planner.generate_plan(
+                        self.task_description, self.domain, capabilities=capabilities
+                    )
                 except Exception as plan_exc:
                     self._handle_plan_failure(plan_exc)
                     return

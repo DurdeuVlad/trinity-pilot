@@ -50,6 +50,11 @@ DESKTOP WINDOW RULES (CRITICAL — violations cause paste/type to go to wrong wi
 - NEVER use cli_runner to send keyboard shortcuts (Ctrl+V, Ctrl+C etc.) to desktop apps —
   cli_runner has no way to guarantee a desktop window has keyboard focus.
 
+RECOVERY RULES:
+- App not ready or element not found: insert a desktop wait or cli "timeout /t 2 /nobreak" before retrying.
+- Unexpected popup or dialog blocking the UI: close it first (desktop click × or press Escape), then continue.
+- After 2 consecutive failures on the same action: stop looping — set done=true and explain the blocker in result_summary.
+
 RULES:
 1. done=true ONLY when the objective is fully and verifiably achieved.
 2. When done=true: module=null, parameters={{}}, result_summary must be filled.
@@ -82,6 +87,11 @@ Parameters by module:
   web_browser → {{"action": "navigate|click|type|read", "url": "...", "selector": "...", "text": "..."}}
   desktop_app → {{"action": "open|focus|click|type|paste|read", "app": "calc|notepad|...", "text": "..."}}
   cli_runner  → {{"command": "...", "args": [...]}}
+
+Recovery:
+- App not ready or element not found: insert a wait step (desktop wait or cli "timeout /t 2 /nobreak") before retrying.
+- Unexpected popup blocking the UI: close it first, then continue with the original action.
+- After 2 consecutive failures on the same action: set done=true and describe the blocker in result_summary.
 
 Critical:
 - Set done=true only when the objective is fully verifiable complete.
