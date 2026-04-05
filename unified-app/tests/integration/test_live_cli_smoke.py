@@ -23,8 +23,8 @@ def live_runtime(monkeypatch: pytest.MonkeyPatch) -> RecordingHistoryManager:
 
 
 @pytest.mark.skipif(
-    os.getenv("LIVE_GEMINI_SMOKE", "0") != "1",
-    reason="Set LIVE_GEMINI_SMOKE=1 to run the live Gemini CLI smoke test.",
+    not os.getenv("GEMINI_API_KEY", "").strip(),
+    reason="GEMINI_API_KEY is required for live Gemini CLI smoke test.",
 )
 async def test_live_cli_directory_inspection_reaches_completed(
     live_runtime: RecordingHistoryManager,

@@ -23,7 +23,7 @@ except ImportError:
         )
 
 from ..adapter import TaskAdapter
-from ..models import ExecutionLog, TaskInput, TaskResult
+from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retriable
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +87,19 @@ class BrowserAdapter(TaskAdapter):
             category,
             error,
         )
+        metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
+        metadata["adapter_name"] = self.module_name
+        metadata["domain"] = task.domain
         return TaskResult(
             task_id=task.task_id,
             status="failure",
             category=category,
+            code=failure_code(category),
+            retriable=is_retriable(category),
             error=error,
             execution_log=[],
             artifacts=[],
-            metadata=self._contract_metadata(task, effective_timeout=effective_timeout),
+            metadata=metadata,
         )
 
     def _normalize_category(self, status: str, error: str | None) -> str:
@@ -252,14 +257,22 @@ class BrowserAdapter(TaskAdapter):
         await close_browser_session(session_id)
 
     def get_capabilities(self) -> Dict:
-        """Return browser module capabilities."""
+        """Return browser module capabilities conforming to schema v1."""
         return {
+            "schema_version": "1.0",
             "domain": "web",
-            "async": True,
-            "thread_safe": True,
+            "actions": ["navigate", "click", "type", "scroll", "screenshot", "extract"],
+            "limits": {
+                "timeout_seconds": DEFAULT_CONTRACT_TIMEOUT_SECONDS,
+                "max_concurrent_sessions": 3,
+            },
+            "constraints": {
+                "thread_safe": True,
+                "async": True,
+                "platforms": ["Windows", "macOS", "Linux"],
+            },
             "glass_box": True,
             "flight_reports": True,
-            "platforms": ["Windows", "macOS", "Linux"],
         }
 
     def _map_status(self, result: str) -> str:

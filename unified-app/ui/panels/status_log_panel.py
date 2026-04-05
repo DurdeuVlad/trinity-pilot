@@ -94,6 +94,16 @@ def _html_fail(msg: str, ts: str) -> str:
     )
 
 
+def _html_cancelled(msg: str, ts: str) -> str:
+    """Distinct cancellation banner — amber border, muted label."""
+    safe = _esc(msg)
+    return (
+        f'<div style="margin:12px 6px 4px 6px; padding:8px 12px; '
+        f'background:#1f1a0f; border-left:3px solid {_AMBER}; border-radius:0 4px 4px 0;">'
+        f'<span style="color:{_AMBER}; font-weight:bold; font-size:13px;">[cancelled] {safe}</span></div>'
+    )
+
+
 def _html_startup(msg: str, ts: str) -> str:
     """Quiet startup line - small and muted."""
     safe = _esc(msg)
@@ -122,6 +132,7 @@ _RENDERERS = {
     "step": _html_step,
     "done": _html_done,
     "fail": _html_fail,
+    "cancelled": _html_cancelled,
     "startup": _html_startup,
 }
 

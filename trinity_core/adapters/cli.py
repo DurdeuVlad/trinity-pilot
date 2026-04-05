@@ -7,7 +7,7 @@ from cli_backend import run_cli_automation
 from cli_io_models import CLITaskResult
 from cli_validator import CommandValidator
 from ..adapter import TaskAdapter
-from ..models import TaskInput, TaskResult, ExecutionLog
+from ..models import TaskInput, TaskResult, ExecutionLog, failure_code, is_retriable
 
 
 DEFAULT_CONTRACT_TIMEOUT_SECONDS = 600
@@ -40,14 +40,19 @@ class CLIAdapter(TaskAdapter):
         return metadata
 
     def _contract_failure(self, task: TaskInput, *, effective_timeout: int, category: str, error: str) -> TaskResult:
+        metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
+        metadata["adapter_name"] = self.module_name
+        metadata["domain"] = task.domain
         return TaskResult(
             task_id=task.task_id,
             status="failure",
             category=category,
+            code=failure_code(category),
+            retriable=is_retriable(category),
             error=error,
             execution_log=[],
             artifacts=[],
-            metadata=self._contract_metadata(task, effective_timeout=effective_timeout),
+            metadata=metadata,
         )
 
     def _normalize_category(self, typed_result: CLITaskResult) -> str:
@@ -136,14 +141,22 @@ class CLIAdapter(TaskAdapter):
             return False
     
     def get_capabilities(self) -> Dict:
-        """Return CLI module capabilities."""
+        """Return CLI module capabilities conforming to schema v1."""
+        capability_families = getattr(CommandValidator, "CAPABILITY_FAMILIES", {})
         return {
+            "schema_version": "1.0",
             "domain": "cli",
-            "async": False,
-            "thread_safe": False,  # Serial execution only
+            "actions": sorted(capability_families.keys()) or ["run_command"],
+            "limits": {
+                "timeout_seconds": DEFAULT_CONTRACT_TIMEOUT_SECONDS,
+                "max_retries": 5,
+            },
+            "constraints": {
+                "thread_safe": False,
+                "async": False,
+                "platforms": ["Windows"],
+            },
             "glass_box": True,
             "flight_reports": True,
-            "platforms": ["Windows"],
-            "safe_capability_families": sorted(CommandValidator.CAPABILITY_FAMILIES.keys()),
             "policy_bounded": True,
         }

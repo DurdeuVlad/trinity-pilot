@@ -30,6 +30,7 @@ class FakeExecutor:
     def __init__(self) -> None:
         self.initialized = False
         self.last_task = None
+        self.adapters = {"cli": object(), "desktop": object(), "web": object()}
 
     async def initialize(self) -> None:
         self.initialized = True

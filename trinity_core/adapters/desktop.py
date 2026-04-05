@@ -17,7 +17,7 @@ from desktop_io_models import DesktopTaskResult
 logger = logging.getLogger(__name__)
 
 from ..adapter import TaskAdapter
-from ..models import ExecutionLog, TaskInput, TaskResult
+from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retriable
 
 
 DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS = 600.0
@@ -322,14 +322,19 @@ class DesktopAdapter(TaskAdapter):
         return metadata
 
     def _contract_failure(self, task: TaskInput, *, effective_timeout: float, category: str, error: str) -> TaskResult:
+        metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
+        metadata["adapter_name"] = self.module_name
+        metadata["domain"] = task.domain
         return TaskResult(
             task_id=task.task_id,
             status="failure",
             category=category,
+            code=failure_code(category),
+            retriable=is_retriable(category),
             error=error,
             execution_log=[],
             artifacts=[],
-            metadata=self._contract_metadata(task, effective_timeout=effective_timeout),
+            metadata=metadata,
         )
 
     def _normalize_category(self, typed_result: DesktopTaskResult) -> str:
@@ -444,12 +449,20 @@ class DesktopAdapter(TaskAdapter):
             return False
 
     def get_capabilities(self) -> Dict:
-        """Return desktop module capabilities."""
+        """Return desktop module capabilities conforming to schema v1."""
         return {
+            "schema_version": "1.0",
             "domain": "desktop",
-            "async": False,
-            "thread_safe": False,
+            "actions": ["click", "type", "open_app", "close_app", "read_element", "screenshot"],
+            "limits": {
+                "timeout_seconds": DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS,
+                "max_retries": 3,
+            },
+            "constraints": {
+                "thread_safe": False,
+                "async": False,
+                "platforms": ["Windows"],
+            },
             "glass_box": True,
             "flight_reports": True,
-            "platforms": ["Windows"],
         }

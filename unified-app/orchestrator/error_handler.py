@@ -3,6 +3,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+_BACKEND_UNAVAILABLE_MARKERS = (
+    "is not available",
+    "not initialized",
+    "not available in this environment",
+    "trinity core is not available",
+    "not enabled in config",
+    "adapter is not available",
+)
+
+_DOMAIN_NEXT_ACTION_HINTS: dict[str, str] = {
+    "cli": "Ensure the CLI backend is installed and enabled in Settings → General.",
+    "web": "Ensure the Browser backend is running (requires Playwright) and enabled in Settings.",
+    "desktop": "Ensure the Desktop backend is enabled and running on Windows with UIA support.",
+}
+
 
 class ErrorHandler:
     """Normalize exceptions into UI/log-friendly payloads."""
@@ -63,11 +78,29 @@ class ErrorHandler:
             return "The request timed out — try again or reduce the task complexity."
         if resolved_category == "backend_error":
             return "The backend encountered an error — check the run log for details."
+        if resolved_category == "health_check_failed":
+            return "The backend failed its health check — check the run log for details."
         if resolved_category == "user_error":
             return "The request could not be understood — try rephrasing the objective."
         if resolved_category == "cancelled":
             return "The task was cancelled."
         return self.normalize_user_message(message)
+
+    def map_backend_unavailable_reason(self, domain: str, error_text: str) -> str | None:
+        """Return a domain-specific, hint-bearing message if error_text signals a backend-unavailable failure.
+
+        Returns None when the error does not look like a backend-unavailable failure.
+        The returned message includes the domain name and a next-action hint so the
+        operator knows immediately what to fix.
+        """
+        lowered = (error_text or "").lower()
+        if not any(marker in lowered for marker in _BACKEND_UNAVAILABLE_MARKERS):
+            return None
+        hint = _DOMAIN_NEXT_ACTION_HINTS.get(
+            domain,
+            "Check that the backend is enabled in Settings → General.",
+        )
+        return f"The {domain} backend is not available. {hint}"
 
     def normalize_user_message(self, message: str) -> str:
         """Return a user-safe error line without traceback noise."""

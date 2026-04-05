@@ -173,6 +173,7 @@ class OrchestratorCore(QObject):
 
         self._pending_worker_error = None
         self.event_bus.emit_status("Task accepted. Starting orchestrator...", "info")
+        self.event_bus.emit_status(f"Effective domain: {domain}.", "info")
         self.event_bus.set_busy(True)
         if domain in {"browser", "desktop", "mixed"}:
             self.event_bus.desktop_takeover_started.emit(domain)

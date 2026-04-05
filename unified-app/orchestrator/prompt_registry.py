@@ -16,6 +16,16 @@ _OS_CONTEXT = (
     )
 )
 
+# Canonical error-handling rules injected into every action-loop prompt.
+# Edit here to keep both provider variants in sync.
+_ACTION_ERROR_HANDLING_RULES = """\
+Error-handling rules:
+- If an action fails due to a timeout or temporary API error, retry it once before reporting failure.
+- If an unexpected dialog or popup appears, dismiss it (close/cancel) and continue.
+- If a target element, file, or resource does not exist and cannot be created, immediately report
+  the objective as infeasible rather than retrying.
+- Never loop more than 3 times on the same action without making visible progress."""
+
 # ── Gemini — action loop ───────────────────────────────────────────────────
 # Gemini tends to over-explain and hedge. Tighter constraints, explicit rules,
 # and a clear schema repetition suppress that behaviour.
@@ -55,6 +65,8 @@ RECOVERY RULES:
 - Unexpected popup or dialog blocking the UI: close it first (desktop click × or press Escape), then continue.
 - After 2 consecutive failures on the same action: stop looping — set done=true and explain the blocker in result_summary.
 
+{_ACTION_ERROR_HANDLING_RULES}
+
 RULES:
 1. done=true ONLY when the objective is fully and verifiably achieved.
 2. When done=true: module=null, parameters={{}}, result_summary must be filled.
@@ -92,6 +104,8 @@ Recovery:
 - App not ready or element not found: insert a wait step (desktop wait or cli "timeout /t 2 /nobreak") before retrying.
 - Unexpected popup blocking the UI: close it first, then continue with the original action.
 - After 2 consecutive failures on the same action: set done=true and describe the blocker in result_summary.
+
+{_ACTION_ERROR_HANDLING_RULES}
 
 Critical:
 - Set done=true only when the objective is fully verifiable complete.

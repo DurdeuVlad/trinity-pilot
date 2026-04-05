@@ -55,6 +55,9 @@ class ExecutionPlan:
         ]
 
 
+_CAPABILITY_PAYLOAD_MAX_CHARS = 2000
+
+
 class MacroPlanner:
     """Decompose user tasks into objectives; replan when objectives fail mid-run."""
 
@@ -69,7 +72,20 @@ class MacroPlanner:
         from .objectives_decomposer import ObjectivesDecomposer
 
         decomposer = ObjectivesDecomposer(self._provider, registry=self._registry)
-        objectives = await decomposer.decompose(task_description, capabilities=capabilities)
+        capability_prompt = ""
+        if capabilities:
+            caps_payload = _truncate_capabilities(capabilities)
+            capability_prompt = (
+                "\n\nBackend capabilities for this task:\n"
+                f"{json.dumps(caps_payload, indent=2)}\n"
+                "Only plan steps that fit within these capabilities."
+            )
+
+        objectives = await decomposer.decompose(
+            task_description,
+            capabilities=capabilities,
+            prompt_suffix=capability_prompt,
+        )
         steps = objectives or [task_description]
         return ExecutionPlan(
             description=task_description,
@@ -183,3 +199,21 @@ def _build_missing_resource_report_objective(has_completed_steps: bool) -> str:
     return (
         "Tell the user that the required target could not be found, so the task cannot be completed."
     )
+
+
+def _truncate_capabilities(capabilities: dict) -> dict:
+    """Return the capabilities dict unchanged if it fits within the prompt budget.
+
+    If the serialized size exceeds _CAPABILITY_PAYLOAD_MAX_CHARS, log a warning
+    and return a compact summary containing only the top-level key names with
+    their value types, to preserve intent without bloating the prompt.
+    """
+    serialized = json.dumps(capabilities)
+    if len(serialized) <= _CAPABILITY_PAYLOAD_MAX_CHARS:
+        return capabilities
+    logger.warning(
+        "[MacroPlanner] Capability payload (%d chars) exceeds limit (%d); sending compact summary.",
+        len(serialized),
+        _CAPABILITY_PAYLOAD_MAX_CHARS,
+    )
+    return {key: type(value).__name__ for key, value in capabilities.items()}

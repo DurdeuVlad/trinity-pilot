@@ -28,8 +28,8 @@ async def test_browser_adapter_capabilities():
     adapter = BrowserAdapter()
     caps = adapter.get_capabilities()
     assert caps["domain"] == "web"
-    assert caps["async"] is True
-    assert caps["thread_safe"] is True
+    assert caps["constraints"]["async"] is True
+    assert caps["constraints"]["thread_safe"] is True
     assert caps["glass_box"] is True
 
 @pytest.mark.asyncio
@@ -37,15 +37,15 @@ async def test_desktop_adapter_capabilities():
     adapter = DesktopAdapter()
     caps = adapter.get_capabilities()
     assert caps["domain"] == "desktop"
-    assert caps["async"] is False
-    assert caps["thread_safe"] is False
+    assert caps["constraints"]["async"] is False
+    assert caps["constraints"]["thread_safe"] is False
 
 @pytest.mark.asyncio
 async def test_cli_adapter_capabilities():
     adapter = CLIAdapter()
     caps = adapter.get_capabilities()
     assert caps["domain"] == "cli"
-    assert caps["async"] is False
+    assert caps["constraints"]["async"] is False
 
 
 @pytest.mark.asyncio

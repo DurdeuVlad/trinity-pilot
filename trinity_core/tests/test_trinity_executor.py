@@ -1,6 +1,8 @@
 """Tests for TrinityExecutor."""
 import pytest
 import asyncio
+from types import SimpleNamespace
+
 from trinity_core.trinity import TrinityExecutor
 from trinity_core.models import TaskInput
 
@@ -35,6 +37,27 @@ async def test_trinity_executor_capabilities():
     """Test capability reporting."""
     async with TrinityExecutor() as executor:
         caps = await executor.get_capabilities_all()
-        assert caps["web"]["thread_safe"] is True
-        assert caps["desktop"]["thread_safe"] is False
-        assert caps["cli"]["thread_safe"] is False
+        assert caps["web"]["constraints"]["thread_safe"] is True
+        assert caps["desktop"]["constraints"]["thread_safe"] is False
+        assert caps["cli"]["constraints"]["thread_safe"] is False
+
+
+@pytest.mark.asyncio
+async def test_trinity_executor_returns_failure_when_backend_unhealthy():
+    """Unhealthy adapters should fail fast with a clean TaskResult payload."""
+    async with TrinityExecutor() as executor:
+        async def _unhealthy() -> bool:
+            return False
+
+        executor.adapters["cli"] = SimpleNamespace(
+            health_check=_unhealthy,
+            execute=None,
+        )
+
+        result = await executor.execute(
+            TaskInput(task_id="task-unhealthy", description="list files", domain="cli")
+        )
+
+    assert result.status == "failure"
+    assert "not available" in (result.error or "")
+    assert result.metadata.get("reason") == "health_check_failed"

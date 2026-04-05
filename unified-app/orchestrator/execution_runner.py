@@ -20,6 +20,7 @@ from .agent_loop import AgentLoop
 from .checkpoint_manager import CheckpointManager
 from .database import TaskStatus
 from .execution_context import ErrorRecord, ExecutionContext
+from .failure_classifier import FailureKind, classify
 from .macro_planner import ExecutionPlan
 from .output_validator import OutputValidator
 from .prompt_registry import PromptRegistry
@@ -48,18 +49,6 @@ _FAILURE_REPORT_MARKERS = (
     "unable to",
     "unavailable",
     "missing",
-)
-_MISSING_RESOURCE_MARKERS = (
-    "not found",
-    "does not exist",
-    "doesn't exist",
-    "could not be found",
-    "could not find",
-    "couldn't find",
-    "unable to locate",
-    "not installed",
-    "missing",
-    "no such",
 )
 
 
@@ -110,366 +99,434 @@ class TaskExecutionRunner:
     async def execute(self) -> None:
         """Run the full orchestration lifecycle."""
         try:
-            self._status("Preparing automation runtime...", "info")
-            await self.bridge.initialize()
-            self.screenshot_watcher.start_watching()
-            self._signal("execution_started")
-            self.history_manager.create_task(
-                task_id=self.run_id,
+            await self._initialize_run()
+            plan = await self._plan_phase()
+            if plan is None:
+                return
+            context, start_index, agent_loop = self._build_attempt_context(plan)
+            result = await self._attempt_phase(plan.steps, context, start_index, agent_loop)
+            if result is not None:
+                completed, failed = result
+                await self._finalize_phase(plan.steps, completed, failed)
+        finally:
+            await self._teardown()
+
+    # ── Phase: Initialize ──────────────────────────────────────────────────
+
+    async def _initialize_run(self) -> None:
+        """Set up bridge, watchers, and history record for the new run."""
+        self._status("Preparing automation runtime...", "info")
+        await self.bridge.initialize()
+        self.screenshot_watcher.start_watching()
+        self._signal("execution_started")
+        self.history_manager.create_task(
+            task_id=self.run_id,
+            description=self.task_description,
+            domain=self.domain,
+            plan_steps=[],
+            estimated_duration=0,
+            confidence=0.0,
+        )
+        self.history_manager.start_task(self.run_id)
+        self._status("Analyzing your task...", "thinking")
+        self._status("Thinking about how to approach your task…", "thinking")
+
+    # ── Phase: Plan ────────────────────────────────────────────────────────
+
+    async def _plan_phase(self) -> ExecutionPlan | None:
+        """Generate or restore the execution plan.
+
+        Returns None when plan generation fails (failure is handled internally).
+        """
+        if self.approved_plan:
+            self._status("Using the objectives you approved before execution...", "info")
+            plan = ExecutionPlan(
                 description=self.task_description,
                 domain=self.domain,
-                plan_steps=[],
-                estimated_duration=0,
-                confidence=0.0,
+                steps=self.approved_plan,
+                estimated_duration=len(self.approved_plan) * 60,
+                confidence=0.95,
             )
-            self.history_manager.start_task(self.run_id)
-            self._status("Analyzing your task...", "thinking")
-            self._status("Thinking about how to approach your task…", "thinking")
-
-            # ── Plan ───────────────────────────────────────────────────────
-            if self.approved_plan:
-                self._status("Using the objectives you approved before execution...", "info")
-                plan = ExecutionPlan(
-                    description=self.task_description,
-                    domain=self.domain,
-                    steps=self.approved_plan,
-                    estimated_duration=len(self.approved_plan) * 60,
-                    confidence=0.95,
-                )
-            else:
-                try:
-                    self._status("Breaking the task into objectives...", "info")
-                    capabilities: dict = {}
-                    try:
-                        capabilities = await self.bridge.get_capabilities()
-                    except Exception:
-                        pass
-                    plan = await self.planner.generate_plan(
-                        self.task_description, self.domain, capabilities=capabilities
-                    )
-                except Exception as plan_exc:
-                    self._handle_plan_failure(plan_exc)
-                    return
-
-            if hasattr(self.history_manager, "update_task_plan"):
-                self.history_manager.update_task_plan(
-                    self.run_id,
-                    plan_steps=plan.steps,
-                    estimated_duration=plan.estimated_duration,
-                    confidence=plan.confidence,
-                )
-            self._signal("plan_generated", plan.steps)
-            n = len(plan.steps)
-            self._status("Starting execution...", "info")
-            self._status(f"Got it — I'll tackle this in {n} step{'s' if n != 1 else ''}.", "success")
-
-            # ── Checkpoint resume ──────────────────────────────────────────
-            checkpoint_id = self.checkpoint_manager.get_latest_checkpoint(self.run_id)
-            if checkpoint_id:
-                self._status("Picking up where I left off…", "info")
-                context, start_index = self.checkpoint_manager.load_checkpoint(checkpoint_id)
-                context.objective = self.task_description
-            else:
-                context = ExecutionContext(objective=self.task_description)
-                start_index = 0
-
-            agent_loop = AgentLoop(
-                provider=self.provider,
-                bridge=self.bridge,
-                emit_status=self._status,
-                cancel_requested=self.cancel_requested,
-                registry=self.registry,
-                context=context,
-                output_validator=self.output_validator,
-                cancel_event=self.cancel_event,
-            )
-
-            # Live list — replan may shrink/reshape the tail
-            objectives: list[str] = list(plan.steps)
-            completed: list[tuple[int, str]] = []
-            failed: list[tuple[int, str, str]] = []
-
-            index = 0
-            while index < len(objectives):
-                objective = objectives[index]
-                display_index = index + 1  # 1-based for UI
-
-                if display_index <= start_index:
-                    completed.append((display_index, objective))
-                    index += 1
-                    continue
-
-                if self.cancel_requested():
-                    self._complete_as_cancelled()
-                    return
-
-                self.history_manager.add_step(self.run_id, display_index, objective)
-                self._signal("step_started", display_index, objective)
-                self._status(
-                    f"Executing objective {display_index} of {len(objectives)}...",
-                    "info",
-                )
-                self._status(
-                    f"{display_index}/{len(objectives)}|{objective}", "step"
-                )
-                self.history_manager.update_step_status(
-                    self.run_id, display_index, TaskStatus.RUNNING
-                )
-
-                # ── Act → Reflect loop ─────────────────────────────────────
-                objective_achieved = False
-                final_result = ""
-                critique = ""
-
-                for attempt in range(MAX_ATTEMPTS_PER_OBJECTIVE):
-                    if self.cancel_requested():
-                        await agent_loop.cleanup_browser_session(display_index, context)
-                        self._complete_as_cancelled(active_step=display_index)
-                        return
-
-                    if attempt > 0:
-                        self._status(
-                            f"Retrying objective {display_index} with a different approach...",
-                            "thinking",
-                        )
-                        self._status(
-                            "Hmm, that didn't quite work. Let me try a different approach…",
-                            "thinking",
-                        )
-
-                    # ACT
-                    result = await agent_loop.act(
-                        objective=objective,
-                        obj_index=display_index,
-                        context=context,
-                        adapt_hint=critique,
-                    )
-
-                    if result == "[cancelled]":
-                        await agent_loop.cleanup_browser_session(display_index, context)
-                        self._complete_as_cancelled(active_step=display_index)
-                        return
-
-                    final_result = result
-
-                    # REFLECT
-                    reflection = await self.reflection_engine.reflect(
-                        objective=objective,
-                        result=result,
-                        attempt=attempt,
-                    )
-
-                    step_payload = dict(agent_loop.last_step_payload or {})
-                    if reflection.achieved and _completion_lacks_execution_evidence(objective, step_payload):
-                        critique = (
-                            "The previous attempt claimed completion without any successful execution evidence. "
-                            "Actually perform the required browser, desktop, or CLI action and only finish after a concrete result is recorded."
-                        )
-                        self._status(
-                            "That completion claim had no real execution evidence. Retrying…",
-                            "warning",
-                        )
-                        if hasattr(self.provider, "report_cache_failure"):
-                            self.provider.report_cache_failure()
-                        context.add_error(ErrorRecord(
-                            error_type="missing_execution_evidence",
-                            error_message=critique,
-                            attempted_action={"objective": objective, "attempt": attempt},
-                            timestamp=time.time(),
-                        ))
-                        continue
-
-                    if reflection.achieved:
-                        objective_achieved = True
-                        break
-
-                    if (
-                        _is_missing_resource_failure(final_result, step_payload)
-                        or _text_indicates_missing_resource(reflection.critique)
-                    ):
-                        critique = (
-                            "The required target could not be found. Stop retrying alternate execution paths and "
-                            "replan the remaining objectives around this failure."
-                        )
-                        self._status(
-                            "The required target could not be found. Moving to failure handling...",
-                            "warning",
-                        )
-                        if hasattr(self.provider, "report_cache_failure"):
-                            self.provider.report_cache_failure()
-                        context.add_error(ErrorRecord(
-                            error_type="missing_resource_failure",
-                            error_message=critique,
-                            attempted_action={"objective": objective, "attempt": attempt},
-                            timestamp=time.time(),
-                        ))
-                        break
-
-                    # Not achieved — prepare critique for next attempt
-                    critique = (
-                        reflection.critique
-                        or "The previous attempt did not fully achieve the objective. Try a different approach."
-                    )
-                    self._status(
-                        "That attempt didn't fully achieve the goal. Retrying…",
-                        "warning",
-                    )
-                    self._status(
-                        f"Objective {display_index} is not complete yet. Retrying...",
-                        "warning",
-                    )
-                    # Notify the cache that the most recent cached response may
-                    # have contributed to this failure so it can evict the entry
-                    # after BYPASS_THRESHOLD failures.
-                    if hasattr(self.provider, "report_cache_failure"):
-                        self.provider.report_cache_failure()
-                    context.add_error(ErrorRecord(
-                        error_type="reflection_failure",
-                        error_message=critique,
-                        attempted_action={"objective": objective, "attempt": attempt},
-                        timestamp=time.time(),
-                    ))
-
-                # ── Outcome ────────────────────────────────────────────────
-                step_payload = dict(agent_loop.last_step_payload or {})
-                if objective_achieved and _step_indicates_failure(final_result, step_payload):
-                    objective_achieved = False
-
-                if objective_achieved:
-                    completed.append((display_index, objective))
-                    # Persist objective result into shared context so subsequent
-                    # objectives know what has already been accomplished and what
-                    # state the world is in (e.g. which app is open, which file
-                    # was created, which URL was navigated to).
-                    context.update_state(f"objective_{display_index}_desc", objective)
-                    context.update_state(f"objective_{display_index}_result", final_result)
-                    try:
-                        cp_id = self.checkpoint_manager.save_checkpoint(
-                            task_id=self.run_id,
-                            context=context,
-                            objective_index=display_index,
-                        )
-                        context.checkpoint_id = cp_id
-                    except Exception as cp_exc:
-                        self._status(f"Couldn't save my progress checkpoint: {cp_exc}", "warning")
-
-                    payload = step_payload
-                    payload["status"] = "success"
-                    payload["output"] = final_result or payload.get("output", "")
-                    payload.setdefault("artifacts", [])
-                    payload.setdefault("execution_log", [])
-                    payload.setdefault("metadata", {})
-                    self._signal("step_completed", display_index, payload)
-                    # agent_loop already emitted the result_summary as a green
-                    # success line — no extra _status() needed here to avoid duplicates.
-                    self.history_manager.update_step_status(
-                        self.run_id, display_index, TaskStatus.COMPLETED, result_data=payload
-                    )
-
-                else:
-                    # All attempts exhausted — try to replan the remaining tail
-                    failed.append((display_index, objective, final_result))
-                    self._signal("step_failed", display_index, final_result)
-                    self._status(
-                        "Couldn't complete this step after multiple attempts. Moving on…",
-                        "warning",
-                    )
-                    self.history_manager.update_step_status(
-                        self.run_id, display_index, TaskStatus.FAILED,
-                        error_message=final_result,
-                    )
-
-                    remaining_tail = objectives[index + 1:]
-                    if remaining_tail:
-                        revised = await self._try_replan(
-                            completed=[obj for _, obj in completed],
-                            failed=[(obj, reason) for _, obj, reason in failed],
-                            remaining=remaining_tail,
-                            constraints=list(context.learned_constraints),
-                        )
-                        if revised != remaining_tail:
-                            self._status(
-                                "Adjusting the remaining plan based on what happened...",
-                                "thinking",
-                            )
-                            self._status(
-                                "Adjusting my plan based on what I've learned…",
-                                "thinking",
-                            )
-                            objectives = objectives[: index + 1] + revised
-
-                index += 1
-
-            await agent_loop.cleanup_browser_session(0, context)
-
-            # ── Cleanup & final status ─────────────────────────────────────
+        else:
             try:
-                self.checkpoint_manager.delete_task_checkpoints(self.run_id)
-            except Exception:
-                pass
-
-            total = len(objectives)
-            effective_total = max(
-                1,
-                sum(1 for objective in objectives if _counts_toward_task_completion(objective)),
-            )
-            total = effective_total
-            n_done = sum(1 for _, objective in completed if _counts_toward_task_completion(objective))
-            n_failed = len(failed)
-
-            if n_failed == 0:
-                status, category = "success", "success"
-                msg = "All done! Everything completed successfully."
-                error_message = None
-            elif n_done == 0:
-                status, category = "failure", "failure"
-                msg = "I wasn't able to complete this task. Try rephrasing it or check your setup."
-                error_message = msg
-            else:
-                status, category = "partial", "partial"
-                msg = f"Partially done — completed {n_done} of {total} steps."
-                error_message = msg
-
-            self._signal("execution_complete", {"status": status, "category": category})
-            if status == "success":
-                self._status("Execution completed successfully.", "success")
-            level = "done" if status == "success" else ("fail" if status == "failure" else "warning")
-            self._status(msg, level)
-
-            # Post result summary back to chat
-            if status == "success":
-                chat_msg = f"Done! Task completed: {self.task_description}"
-                if n_done > 1:
-                    chat_msg += f" ({n_done} steps completed)"
-            elif status == "partial":
-                chat_msg = f"Partially done — {n_done} of {total} steps succeeded."
-            else:
-                chat_msg = "Task failed. Check the log below for details."
-            self._signal("task_result_ready", chat_msg)
-            if status == "failure" and failed:
-                core = _extract_error_core(failed[0][2])
-                self._status(self.error_handler.build_user_message(core), "error")
-            self.history_manager.complete_task(
-                self.run_id,
-                result_data={"status": status, "category": category},
-                error_message=error_message,
-            )
-
-        finally:
-            agent_loop_obj = locals().get("agent_loop")
-            context_obj = locals().get("context")
-            if agent_loop_obj is not None:
+                self._status("Breaking the task into objectives...", "info")
+                capabilities: dict = {}
                 try:
-                    await agent_loop_obj.cleanup_browser_session(0, context_obj)
+                    capability_map = await self.bridge.get_capabilities()
+                    capabilities = capability_map.get(self.domain, {}) if isinstance(capability_map, dict) else {}
                 except Exception:
                     pass
-            provider_close = getattr(self.provider, "close", None)
-            if callable(provider_close):
-                await provider_close()
-            self.screenshot_watcher.stop_watching()
-            self._signal("execution_ended")
-            await self.bridge.shutdown()
-            self.history_manager.close()
+                plan = await self.planner.generate_plan(
+                    self.task_description, self.domain, capabilities=capabilities
+                )
+            except Exception as plan_exc:
+                self._handle_plan_failure(plan_exc)
+                return None
+
+        if hasattr(self.history_manager, "update_task_plan"):
+            self.history_manager.update_task_plan(
+                self.run_id,
+                plan_steps=plan.steps,
+                estimated_duration=plan.estimated_duration,
+                confidence=plan.confidence,
+            )
+        self._signal("plan_generated", plan.steps)
+        n = len(plan.steps)
+        self._status("Starting execution...", "info")
+        self._status(f"Got it — I'll tackle this in {n} step{'s' if n != 1 else ''}.", "success")
+        return plan
+
+    # ── Phase: Build attempt context ───────────────────────────────────────
+
+    def _build_attempt_context(self, plan: ExecutionPlan) -> tuple["ExecutionContext", int, "AgentLoop"]:
+        """Restore checkpoint context or create a fresh one, then build the agent loop."""
+        checkpoint_id = self.checkpoint_manager.get_latest_checkpoint(self.run_id)
+        if checkpoint_id:
+            self._status("Picking up where I left off…", "info")
+            context, start_index = self.checkpoint_manager.load_checkpoint(checkpoint_id)
+            context.objective = self.task_description
+        else:
+            context = ExecutionContext(objective=self.task_description)
+            start_index = 0
+
+        agent_loop = AgentLoop(
+            provider=self.provider,
+            bridge=self.bridge,
+            emit_status=self._status,
+            cancel_requested=self.cancel_requested,
+            registry=self.registry,
+            context=context,
+            output_validator=self.output_validator,
+            cancel_event=self.cancel_event,
+        )
+        return context, start_index, agent_loop
+
+    # ── Phase: Attempt ─────────────────────────────────────────────────────
+
+    async def _attempt_phase(
+        self,
+        plan_steps: list[str],
+        context: "ExecutionContext",
+        start_index: int,
+        agent_loop: "AgentLoop",
+    ) -> tuple[list, list] | None:
+        """Drive the Act → Reflect → Replan loop for each objective.
+
+        Returns (completed, failed) on normal termination, or None if cancelled.
+        """
+        objectives: list[str] = list(plan_steps)
+        completed: list[tuple[int, str]] = []
+        failed: list[tuple[int, str, str]] = []
+
+        index = 0
+        while index < len(objectives):
+            objective = objectives[index]
+            display_index = index + 1
+
+            if display_index <= start_index:
+                completed.append((display_index, objective))
+                index += 1
+                continue
+
+            if self.cancel_requested():
+                self._complete_as_cancelled()
+                return None
+
+            self.history_manager.add_step(self.run_id, display_index, objective)
+            self._signal("step_started", display_index, objective)
+            self._status(
+                f"Executing objective {display_index} of {len(objectives)}...",
+                "info",
+            )
+            self._status(f"{display_index}/{len(objectives)}|{objective}", "step")
+            self.history_manager.update_step_status(
+                self.run_id, display_index, TaskStatus.RUNNING
+            )
+
+            objective_achieved, final_result = await self._run_attempts(
+                objective, display_index, context, agent_loop
+            )
+            if objective_achieved is None:
+                return None  # cancelled during attempts
+
+            step_payload = dict(agent_loop.last_step_payload or {})
+            if objective_achieved and _step_indicates_failure(final_result, step_payload):
+                objective_achieved = False
+
+            if objective_achieved:
+                completed.append((display_index, objective))
+                context.update_state(f"objective_{display_index}_desc", objective)
+                context.update_state(f"objective_{display_index}_result", final_result)
+                try:
+                    cp_id = self.checkpoint_manager.save_checkpoint(
+                        task_id=self.run_id,
+                        context=context,
+                        objective_index=display_index,
+                    )
+                    context.checkpoint_id = cp_id
+                except Exception as cp_exc:
+                    self._status(f"Couldn't save my progress checkpoint: {cp_exc}", "warning")
+
+                payload = step_payload
+                payload["status"] = "success"
+                payload["output"] = final_result or payload.get("output", "")
+                payload.setdefault("artifacts", [])
+                payload.setdefault("execution_log", [])
+                payload.setdefault("metadata", {})
+                self._signal("step_completed", display_index, payload)
+                self.history_manager.update_step_status(
+                    self.run_id, display_index, TaskStatus.COMPLETED, result_data=payload
+                )
+            else:
+                failed.append((display_index, objective, final_result))
+                self._signal("step_failed", display_index, final_result)
+                self._status(
+                    "Couldn't complete this step after multiple attempts. Moving on…",
+                    "warning",
+                )
+                self.history_manager.update_step_status(
+                    self.run_id, display_index, TaskStatus.FAILED,
+                    error_message=final_result,
+                )
+
+                remaining_tail = objectives[index + 1:]
+                if remaining_tail:
+                    revised = await self._try_replan(
+                        completed=[obj for _, obj in completed],
+                        failed=[(obj, reason) for _, obj, reason in failed],
+                        remaining=remaining_tail,
+                        constraints=list(context.learned_constraints),
+                    )
+                    if revised != remaining_tail:
+                        self._status(
+                            "Adjusting the remaining plan based on what happened...",
+                            "thinking",
+                        )
+                        self._status(
+                            "Adjusting my plan based on what I've learned…",
+                            "thinking",
+                        )
+                        objectives = objectives[: index + 1] + revised
+
+            index += 1
+
+        await agent_loop.cleanup_browser_session(0, context)
+        return completed, failed
+
+    # ── Phase: Per-objective attempts ──────────────────────────────────────
+
+    async def _run_attempts(
+        self,
+        objective: str,
+        display_index: int,
+        context: "ExecutionContext",
+        agent_loop: "AgentLoop",
+    ) -> tuple[bool | None, str]:
+        """Run Act → Reflect retries for one objective.
+
+        Returns (achieved, final_result).
+        achieved is None when a cancellation occurred.
+        """
+        objective_achieved = False
+        final_result = ""
+        critique = ""
+
+        for attempt in range(MAX_ATTEMPTS_PER_OBJECTIVE):
+            if self.cancel_requested():
+                await agent_loop.cleanup_browser_session(display_index, context)
+                self._complete_as_cancelled(active_step=display_index)
+                return None, ""
+
+            if attempt > 0:
+                self._status(
+                    f"Retrying objective {display_index} with a different approach...",
+                    "thinking",
+                )
+                self._status(
+                    "Hmm, that didn't quite work. Let me try a different approach…",
+                    "thinking",
+                )
+
+            result = await agent_loop.act(
+                objective=objective,
+                obj_index=display_index,
+                context=context,
+                adapt_hint=critique,
+            )
+
+            if result == "[cancelled]":
+                await agent_loop.cleanup_browser_session(display_index, context)
+                self._complete_as_cancelled(active_step=display_index)
+                return None, ""
+
+            final_result = result
+
+            reflection = await self.reflection_engine.reflect(
+                objective=objective,
+                result=result,
+                attempt=attempt,
+            )
+
+            step_payload = dict(agent_loop.last_step_payload or {})
+            if reflection.achieved and _completion_lacks_execution_evidence(objective, step_payload):
+                critique = (
+                    "The previous attempt claimed completion without any successful execution evidence. "
+                    "Actually perform the required browser, desktop, or CLI action and only finish after a concrete result is recorded."
+                )
+                self._status(
+                    "That completion claim had no real execution evidence. Retrying…",
+                    "warning",
+                )
+                if hasattr(self.provider, "report_cache_failure"):
+                    self.provider.report_cache_failure()
+                context.add_error(ErrorRecord(
+                    error_type="missing_execution_evidence",
+                    error_message=critique,
+                    attempted_action={"objective": objective, "attempt": attempt},
+                    timestamp=time.time(),
+                ))
+                continue
+
+            if reflection.achieved:
+                objective_achieved = True
+                break
+
+            failure_text = " ".join(
+                part for part in (
+                    str(final_result or ""),
+                    str(reflection.critique or ""),
+                    _payload_failure_text(step_payload),
+                ) if part
+            )
+            failure_kind = classify(failure_text)
+            self._status(
+                f"Failure on attempt {attempt + 1} classified as {failure_kind.value}.",
+                "info",
+            )
+            if failure_kind == FailureKind.PERMANENT or (
+                failure_kind == FailureKind.AMBIGUOUS and attempt >= 1
+            ):
+                if _is_missing_resource_failure(final_result, step_payload):
+                    critique = (
+                        "The required target could not be found. Stop retrying alternate execution paths and "
+                        "replan the remaining objectives around this failure."
+                    )
+                    error_type = "missing_resource_failure"
+                    self._status(
+                        "The required target could not be found. Moving to failure handling...",
+                        "warning",
+                    )
+                else:
+                    critique = (
+                        "This objective appears to be permanently blocked. Stop retrying and move to "
+                        "failure handling and replanning."
+                    )
+                    error_type = "permanent_failure"
+                    self._status(
+                        "This objective appears permanently blocked. Moving to failure handling...",
+                        "warning",
+                    )
+                if hasattr(self.provider, "report_cache_failure"):
+                    self.provider.report_cache_failure()
+                context.add_error(ErrorRecord(
+                    error_type=error_type,
+                    error_message=critique,
+                    attempted_action={"objective": objective, "attempt": attempt},
+                    timestamp=time.time(),
+                ))
+                break
+
+            critique = (
+                reflection.critique
+                or "The previous attempt did not fully achieve the objective. Try a different approach."
+            )
+            self._status("That attempt didn't fully achieve the goal. Retrying…", "warning")
+            self._status(
+                f"Objective {display_index} is not complete yet. Retrying...",
+                "warning",
+            )
+            if hasattr(self.provider, "report_cache_failure"):
+                self.provider.report_cache_failure()
+            context.add_error(ErrorRecord(
+                error_type="reflection_failure",
+                error_message=critique,
+                attempted_action={"objective": objective, "attempt": attempt},
+                timestamp=time.time(),
+            ))
+
+        return objective_achieved, final_result
+
+    # ── Phase: Finalize ────────────────────────────────────────────────────
+
+    async def _finalize_phase(
+        self,
+        plan_steps: list[str],
+        completed: list[tuple[int, str]],
+        failed: list[tuple[int, str, str]],
+    ) -> None:
+        """Compute final outcome, emit signals, and persist run record."""
+        try:
+            self.checkpoint_manager.delete_task_checkpoints(self.run_id)
+        except Exception:
+            pass
+
+        effective_total = max(
+            1,
+            sum(1 for obj in plan_steps if _counts_toward_task_completion(obj)),
+        )
+        n_done = sum(1 for _, obj in completed if _counts_toward_task_completion(obj))
+        n_failed = len(failed)
+
+        if n_failed == 0:
+            status, category = "success", "success"
+            msg = "All done! Everything completed successfully."
+            error_message = None
+        elif n_done == 0:
+            status, category = "failure", "failure"
+            msg = "I wasn't able to complete this task. Try rephrasing it or check your setup."
+            error_message = msg
+        else:
+            status, category = "partial", "partial"
+            msg = f"Partially done — completed {n_done} of {effective_total} steps."
+            error_message = msg
+
+        self._signal("execution_complete", {"status": status, "category": category})
+        if status == "success":
+            self._status("Execution completed successfully.", "success")
+        level = "done" if status == "success" else "fail"
+        self._status(msg, level)
+
+        if status == "success":
+            chat_msg = f"Done! Task completed: {self.task_description}"
+            if n_done > 1:
+                chat_msg += f" ({n_done} steps completed)"
+        elif status == "partial":
+            chat_msg = f"Partially done — {n_done} of {effective_total} steps succeeded."
+        else:
+            chat_msg = "Task failed. Check the log below for details."
+        self._signal("task_result_ready", chat_msg)
+
+        if status == "failure" and failed:
+            core = _extract_error_core(failed[0][2])
+            self._status(self.error_handler.build_user_message(core), "error")
+
+        self.history_manager.complete_task(
+            self.run_id,
+            result_data={"status": status, "category": category},
+            error_message=error_message,
+        )
+
+    # ── Phase: Teardown ────────────────────────────────────────────────────
+
+    async def _teardown(self) -> None:
+        """Release all runtime resources regardless of how execution terminated."""
+        provider_close = getattr(self.provider, "close", None)
+        if callable(provider_close):
+            await provider_close()
+        self.screenshot_watcher.stop_watching()
+        self._signal("execution_ended")
+        await self.bridge.shutdown()
+        self.history_manager.close()
 
     # ── Replan ────────────────────────────────────────────────────────────
 
@@ -498,6 +555,11 @@ class TaskExecutionRunner:
 
     def _handle_plan_failure(self, exc: Exception) -> None:
         error_payload = self.error_handler.handle(exc, context="Plan generation")
+        mapped = self.error_handler.map_backend_unavailable_reason(
+            self.domain, error_payload["message"]
+        )
+        if mapped:
+            error_payload["user_message"] = mapped
         existing_task = self.history_manager.get_task(self.run_id) if hasattr(self.history_manager, "get_task") else None
         if existing_task is None:
             self.history_manager.create_task(
@@ -520,7 +582,7 @@ class TaskExecutionRunner:
     # ── Cancellation ──────────────────────────────────────────────────────
 
     def _complete_as_cancelled(self, active_step: int | None = None) -> None:
-        self._status("Stopped — cancelled by you.", "warning")
+        self._status("Stopped — cancelled by you.", "cancelled")
         self._signal("execution_complete", {"status": "cancelled", "category": "cancelled"})
         if active_step is not None:
             self.history_manager.update_step_status(
@@ -639,7 +701,21 @@ def _payload_failure_text(payload: dict[str, Any]) -> str:
 
 def _text_indicates_missing_resource(value: Any) -> bool:
     normalized = str(value or "").strip().lower()
-    return any(marker in normalized for marker in _MISSING_RESOURCE_MARKERS)
+    return any(
+        marker in normalized
+        for marker in (
+            "not found",
+            "does not exist",
+            "doesn't exist",
+            "could not be found",
+            "could not find",
+            "couldn't find",
+            "unable to locate",
+            "not installed",
+            "missing",
+            "no such",
+        )
+    )
 
 
 def _completion_lacks_execution_evidence(objective: str, payload: dict[str, Any]) -> bool:
