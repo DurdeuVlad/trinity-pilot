@@ -1,5 +1,7 @@
 """CLI automation adapter."""
 import asyncio
+import os
+import time
 from datetime import datetime
 from typing import Dict, List
 
@@ -21,6 +23,8 @@ class CLIAdapter(TaskAdapter):
     
     def __init__(self):
         self.module_name = "cli-automation-poc"
+        self._last_output_text: str = ""
+        self._active_processes: dict[str, bool] = {}
 
     def _effective_timeout(self, task: TaskInput) -> int:
         return int(task.timeout) if task.timeout is not None else DEFAULT_CONTRACT_TIMEOUT_SECONDS
@@ -98,6 +102,9 @@ class CLIAdapter(TaskAdapter):
                 timeout=effective_timeout,
                 prior_results=prior_results,
             )
+            self._last_output_text = "\n".join(
+                (log.output or "") for log in typed_result.execution_log if log.output
+            )
             
             return TaskResult(
                 task_id=task.task_id,
@@ -160,3 +167,39 @@ class CLIAdapter(TaskAdapter):
             "flight_reports": True,
             "policy_bounded": True,
         }
+
+    async def wait_for_output_contains(self, text: str, timeout: float) -> None:
+        """Poll recent command output until expected text appears."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if text in self._last_output_text:
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for CLI output containing '{text}'")
+
+    async def wait_for_process_exit(self, process_id: str, timeout: float) -> None:
+        """Poll tracked process state until process is no longer active."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self._active_processes.get(process_id, False):
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for process '{process_id}' to exit")
+
+    async def wait_for_file_condition(self, file_path: str, condition: str, timeout: float) -> None:
+        """Poll file system conditions: exists, modified, or size."""
+        deadline = time.time() + timeout
+        normalized = condition.lower()
+        initial_mtime = os.path.getmtime(file_path) if os.path.exists(file_path) else None
+        while time.time() < deadline:
+            exists = os.path.exists(file_path)
+            if normalized == "exists" and exists:
+                return
+            if normalized == "modified" and exists and initial_mtime is not None and os.path.getmtime(file_path) > initial_mtime:
+                return
+            if normalized == "size" and exists and os.path.getsize(file_path) > 0:
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(
+            f"Timed out waiting for file condition '{condition}' on '{file_path}'"
+        )

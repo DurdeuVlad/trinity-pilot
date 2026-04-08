@@ -1,0 +1,16 @@
+[tool.coverage.run]
+source = ["trinity_core"]
+omit = ["*/tests/*", "*/conftest.py", "*/__pycache__/*"]
+concurrency = ["thread", "multiprocessing"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+fail_under = 80
+
+[tool.coverage.html]
+directory = "coverage_html"
+
+[tool.coverage.json]
+output = "coverage.json"

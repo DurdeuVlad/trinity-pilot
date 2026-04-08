@@ -49,6 +49,10 @@ class TrinityConfig(BaseModel):
     
     # Executor settings
     max_concurrent_browser_tasks: int = Field(5, ge=1, le=20, description="Max parallel browser tasks")
+
+    # Runtime layer - set True to route tasks through Architect-Executor-Reviewer runtimes.
+    # Defaults to False to preserve backward-compatible adapter-direct execution.
+    enable_runtimes: bool = Field(False, description="Enable tool-first runtime orchestration layer")
     
     # Module-specific configs
     browser: BrowserConfig = Field(default_factory=BrowserConfig)

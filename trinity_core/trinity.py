@@ -10,6 +10,9 @@ from .adapters.cli import CLIAdapter
 from .models import TaskInput, TaskResult, failure_code, is_retriable
 from .executor import TaskQueue
 from .config import TrinityConfig
+from .orchestrators.browser_runtime import BrowserRuntime
+from .orchestrators.desktop_runtime import DesktopRuntime
+from .orchestrators.cli_runtime import CLIRuntime
 from .telemetry import (
     emit_event, make_event_payload,
     TASK_STARTED, TASK_SUCCEEDED, TASK_FAILED, TASK_CANCELLED,
@@ -47,6 +50,18 @@ class TrinityExecutor:
             self.adapters["desktop"] = DesktopAdapter()
         if config.cli.enabled:
             self.adapters["cli"] = CLIAdapter()
+
+        # Runtime layer for tool-first orchestration.
+        # Only enabled when config.enable_runtimes is True to preserve
+        # backward-compatible adapter-direct execution by default.
+        self.runtimes: Dict[str, object] = {}
+        if config.enable_runtimes:
+            if config.browser.enabled and "web" in self.adapters:
+                self.runtimes["web"] = BrowserRuntime(self.adapters["web"])
+            if config.desktop.enabled and "desktop" in self.adapters:
+                self.runtimes["desktop"] = DesktopRuntime(self.adapters["desktop"])
+            if config.cli.enabled and "cli" in self.adapters:
+                self.runtimes["cli"] = CLIRuntime(self.adapters["cli"])
         
         # Task queue for serial execution (Desktop/CLI)
         self.task_queue = TaskQueue(name="desktop_cli_queue")
@@ -129,16 +144,23 @@ class TrinityExecutor:
                 },
             )
 
+        runtime = self.runtimes.get(task.domain)
+
         # Browser tasks: run directly with concurrency limit
         if task.domain == "web":
             async with self.browser_semaphore:
                 logger.debug(f"Executing browser task {task.task_id}")
-                result = await adapter.execute(task)
+                result = await self._execute_with_runtime_fallback(task, runtime, adapter)
         else:
             # Desktop/CLI tasks: use serial queue
             default_timeout = self.config.desktop.timeout if task.domain == "desktop" else self.config.cli.timeout
             timeout = task.timeout if task.timeout is not None else default_timeout
-            result = await self.task_queue.submit(task.task_id, adapter, task, timeout=float(timeout))
+            target = runtime if runtime is not None else adapter
+            try:
+                result = await self.task_queue.submit(task.task_id, target, task, timeout=float(timeout))
+            except Exception:
+                logger.exception("Runtime queue execution failed; falling back to adapter for task %s", task.task_id)
+                result = await self.task_queue.submit(task.task_id, adapter, task, timeout=float(timeout))
 
         duration_ms = (time.monotonic() - _t0) * 1000
         if result.status == "failure" and result.category == "cancelled":
@@ -157,6 +179,20 @@ class TrinityExecutor:
                 duration_ms=duration_ms,
             ))
         return result
+
+    async def _execute_with_runtime_fallback(
+        self,
+        task: TaskInput,
+        runtime: object,
+        adapter: TaskAdapter,
+    ) -> TaskResult:
+        if runtime is None:
+            return await adapter.execute(task)
+        try:
+            return await runtime.execute(task)
+        except Exception:
+            logger.exception("Runtime execution failed; falling back to adapter for task %s", task.task_id)
+            return await adapter.execute(task)
     
     async def health_check_all(self) -> Dict[str, bool]:
         """Check health of all modules."""

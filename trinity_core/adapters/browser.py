@@ -49,6 +49,9 @@ class BrowserAdapter(TaskAdapter):
 
     def __init__(self) -> None:
         self.module_name = "browser-gui-automation"
+        self.page = None
+        self._last_url: str = ""
+        self._last_text_snapshot: str = ""
 
     def _effective_timeout(self, task: TaskInput) -> float:
         return float(task.timeout) if task.timeout is not None else DEFAULT_CONTRACT_TIMEOUT_SECONDS
@@ -201,6 +204,8 @@ class BrowserAdapter(TaskAdapter):
             )
             if typed_result.extracted_text:
                 metadata["text_output"] = typed_result.extracted_text
+                self._last_text_snapshot = typed_result.extracted_text
+            self._last_url = str(metadata.get("raw_result", {}).get("current_url", "") or self._last_url)
 
             logger.info(
                 "Browser task completed: task_id=%s status=%s category=%s actions=%d",
@@ -255,6 +260,24 @@ class BrowserAdapter(TaskAdapter):
     async def close_session(self, session_id: str) -> None:
         """Release a reusable browser session once an objective is done."""
         await close_browser_session(session_id)
+
+    async def wait_for_selector(self, selector: str, timeout: float, state: str = "visible") -> None:
+        """Wait for a selector using Playwright page object when available."""
+        if self.page is None:
+            raise RuntimeError("Browser page handle is not available for wait_for_selector")
+        await self.page.wait_for_selector(selector, timeout=timeout * 1000, state=state)
+
+    async def wait_for_load_state(self, wait_until: str = "load", timeout: float = 30) -> None:
+        """Wait for page load state using Playwright page object when available."""
+        if self.page is None:
+            raise RuntimeError("Browser page handle is not available for wait_for_load_state")
+        await self.page.wait_for_load_state(wait_until, timeout=timeout * 1000)
+
+    async def get_current_url(self) -> str:
+        """Return current URL from active page or last known metadata."""
+        if self.page is not None:
+            return str(getattr(self.page, "url", ""))
+        return self._last_url
 
     def get_capabilities(self) -> Dict:
         """Return browser module capabilities conforming to schema v1."""

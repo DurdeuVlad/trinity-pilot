@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
@@ -303,6 +304,9 @@ class DesktopAdapter(TaskAdapter):
 
     def __init__(self):
         self.module_name = "api-accessibility-poc"
+        self._observed_windows: set[str] = set()
+        self._observed_elements: set[str] = set()
+        self._observed_text: str = ""
 
     def _effective_timeout(self, task: TaskInput) -> float:
         return float(task.timeout) if task.timeout is not None else DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS
@@ -447,6 +451,87 @@ class DesktopAdapter(TaskAdapter):
             return True
         except RuntimeError:
             return False
+
+    async def wait_for_process(self, app_name: str, timeout: float) -> None:
+        """Poll process availability by attempting a lightweight focus operation."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            probe = await self.execute(
+                TaskInput(
+                    task_id=f"wait-process-{int(time.time() * 1000)}",
+                    description=f"Focus window with title containing '{app_name}'",
+                    domain="desktop",
+                    context={"focus_only": True, "app_name": app_name},
+                )
+            )
+            if probe.status == "success":
+                self._observed_windows.add(app_name)
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for process '{app_name}'")
+
+    async def wait_for_window_title(self, title: str, timeout: float) -> None:
+        """Poll for a visible window title using adapter execution probes."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if title in self._observed_windows:
+                return
+            probe = await self.execute(
+                TaskInput(
+                    task_id=f"wait-window-{int(time.time() * 1000)}",
+                    description=f"Focus window with title containing '{title}'",
+                    domain="desktop",
+                    context={"focus_only": True},
+                )
+            )
+            if probe.status == "success":
+                self._observed_windows.add(title)
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for window title '{title}'")
+
+    async def wait_for_ui_element(self, element_name: str, element_type: str | None, timeout: float) -> None:
+        """Poll for a UI element by probing with an element-focused click objective."""
+        deadline = time.time() + timeout
+        identity = f"{element_name}:{element_type or ''}"
+        while time.time() < deadline:
+            if identity in self._observed_elements:
+                return
+            descriptor = f"{element_name} ({element_type})" if element_type else element_name
+            probe = await self.execute(
+                TaskInput(
+                    task_id=f"wait-element-{int(time.time() * 1000)}",
+                    description=f"Click desktop element '{descriptor}'",
+                    domain="desktop",
+                    context={},
+                )
+            )
+            if probe.status == "success":
+                self._observed_elements.add(identity)
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for desktop element '{element_name}'")
+
+    async def wait_for_text_in_window(self, text: str, timeout: float) -> None:
+        """Poll for text in active window via repeated read-style probes."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if text and text in self._observed_text:
+                return
+            probe = await self.execute(
+                TaskInput(
+                    task_id=f"wait-text-{int(time.time() * 1000)}",
+                    description=f"Read text in active window and look for '{text}'",
+                    domain="desktop",
+                    context={},
+                )
+            )
+            payload = str(probe.metadata.get("raw_result", {}))
+            if text in payload:
+                self._observed_text = payload
+                return
+            await asyncio.sleep(0.5)
+        raise TimeoutError(f"Timed out waiting for text '{text}' in active window")
 
     def get_capabilities(self) -> Dict:
         """Return desktop module capabilities conforming to schema v1."""

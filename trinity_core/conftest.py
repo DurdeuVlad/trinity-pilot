@@ -3,8 +3,21 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
+
+# Explicitly load .env so GEMINI_API_KEY (and other vars) are available
+# regardless of whether coverage is active or which modules happen to
+# import python-dotenv as a side effect.
+try:
+    from dotenv import load_dotenv
+    _repo_root = Path(__file__).parent.parent
+    _candidate = _repo_root / "unified-app" / ".env"
+    if _candidate.exists():
+        load_dotenv(_candidate, override=False)
+except ImportError:
+    pass
 
 
 collect_ignore_glob = ["demo_real_test.py"]
