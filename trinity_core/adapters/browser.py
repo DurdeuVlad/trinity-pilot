@@ -6,6 +6,7 @@ Uses generalistic Playwright-based browser automation for all tasks.
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List
 
 from browser_agent.core.io_models import BrowserAgentOutput
@@ -28,6 +29,7 @@ from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retri
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTRACT_TIMEOUT_SECONDS = 600.0
+_FLIGHT_REPORT_ROOT = Path(__file__).resolve().parents[2] / "unified-app" / "_runtime" / "flight_reports"
 AUTH_TOKENS = (
     "api_key_invalid",
     "invalid api key",
@@ -75,6 +77,15 @@ class BrowserAdapter(TaskAdapter):
         if raw_result is not None:
             metadata["raw_result"] = raw_result
         return metadata
+
+    def _flight_report_metadata(self, *, session_id: str | None, objective_id: str | None) -> dict[str, str]:
+        if not session_id or not objective_id:
+            return {}
+        return {
+            "flight_report_session_id": session_id,
+            "flight_report_objective_id": objective_id,
+            "flight_report_path": str(_FLIGHT_REPORT_ROOT / session_id / objective_id / "report.json"),
+        }
 
     def _contract_failure(
         self,
@@ -201,6 +212,12 @@ class BrowserAdapter(TaskAdapter):
                 task,
                 effective_timeout=effective_timeout,
                 raw_result=typed_result.model_dump(),
+            )
+            metadata.update(
+                self._flight_report_metadata(
+                    session_id=typed_result.session_id,
+                    objective_id=typed_result.objective_id,
+                )
             )
             if typed_result.extracted_text:
                 metadata["text_output"] = typed_result.extracted_text

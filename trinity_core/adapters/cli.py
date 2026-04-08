@@ -3,6 +3,7 @@ import asyncio
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List
 
 from cli_backend import run_cli_automation
@@ -13,6 +14,7 @@ from ..models import TaskInput, TaskResult, ExecutionLog, failure_code, is_retri
 
 
 DEFAULT_CONTRACT_TIMEOUT_SECONDS = 600
+_FLIGHT_REPORT_ROOT = Path(__file__).resolve().parents[2] / "unified-app" / "_runtime" / "flight_reports"
 AUTH_CATEGORY_TOKENS = {"auth", "auth_failure"}
 TIMEOUT_CATEGORY_TOKENS = {"timeout"}
 USER_ERROR_CATEGORY_TOKENS = {"user_error", "need_assistance"}
@@ -42,6 +44,15 @@ class CLIAdapter(TaskAdapter):
         if raw_result is not None:
             metadata["raw_result"] = raw_result
         return metadata
+
+    def _flight_report_metadata(self, *, session_id: str | None, objective_id: str | None) -> dict[str, str]:
+        if not session_id or not objective_id:
+            return {}
+        return {
+            "flight_report_session_id": session_id,
+            "flight_report_objective_id": objective_id,
+            "flight_report_path": str(_FLIGHT_REPORT_ROOT / session_id / objective_id / "report.json"),
+        }
 
     def _contract_failure(self, task: TaskInput, *, effective_timeout: int, category: str, error: str) -> TaskResult:
         metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
@@ -127,6 +138,10 @@ class CLIAdapter(TaskAdapter):
                         task,
                         effective_timeout=effective_timeout,
                         raw_result=typed_result.model_dump(),
+                    ),
+                    **self._flight_report_metadata(
+                        session_id=typed_result.metadata.get("session_id"),
+                        objective_id=typed_result.metadata.get("objective_id"),
                     ),
                     "success_rate": typed_result.success_rate,
                 }

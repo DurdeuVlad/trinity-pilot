@@ -102,7 +102,7 @@ class ReflectionEngine:
         ]
 
         try:
-            raw = await self._provider.call(messages, json_mode=True)
+            raw = await self._provider.call(messages, json_mode=True, purpose="reflection")
             data = _parse_json(raw)
             reflection = Reflection(
                 achieved=bool(data.get("achieved", False)),

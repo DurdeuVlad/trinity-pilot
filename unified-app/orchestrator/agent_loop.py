@@ -83,6 +83,7 @@ class AgentLoop:
         output_validator: Optional[OutputValidator] = None,
         cancel_event: Any = None,
         resume_event: Optional[threading.Event] = None,
+        performance_tracker: Any = None,
     ) -> None:
         self._provider = provider
         self._bridge = bridge
@@ -93,6 +94,7 @@ class AgentLoop:
         self._validator = output_validator or OutputValidator()
         self._cancel_event = cancel_event
         self._resume_event = resume_event
+        self._performance_tracker = performance_tracker
         self.last_step_payload: dict[str, Any] | None = None
 
     @staticmethod
@@ -137,7 +139,7 @@ class AgentLoop:
 
             # ── LLM call ──────────────────────────────────────────────────
             try:
-                raw = await self._provider.call(messages, json_mode=True)
+                raw = await self._provider.call(messages, json_mode=True, purpose="execution")
                 action = _parse_json(raw)
             except Exception as exc:
                 logger.warning("AI call failed obj=%d turn=%d: %s", obj_index, state.iteration, exc)
@@ -445,6 +447,16 @@ class AgentLoop:
         else:
             description = json.dumps({"action": action_type, **params})
 
+        action_timer = (
+            self._performance_tracker.start_action(
+                action_type=f"{action_type}_action",
+                action_description=description,
+                module=domain,
+                objective=description,
+            )
+            if self._performance_tracker is not None
+            else None
+        )
         try:
             result = await self._bridge.execute_task(
                 task_id=task_id,
@@ -457,10 +469,24 @@ class AgentLoop:
                 cancel_event=self._cancel_event,
             )
             result_str = _extract_result(result)
+            if action_timer is not None and self._performance_tracker is not None:
+                self._performance_tracker.finish_action(
+                    action_timer,
+                    status="success" if not result_str.startswith("ERROR:") else "failure",
+                    result_summary=result_str,
+                    data={"task_id": task_id, "action_type": action_type},
+                )
             self.last_step_payload = _build_step_payload(result, result_str)
             if action_type == "browse":
                 self._emit("Browser automation returned a result.", "info")
         except Exception as exc:
+            if self._performance_tracker is not None and action_timer is not None:
+                self._performance_tracker.finish_action(
+                    action_timer,
+                    status="failure",
+                    result_summary=str(exc),
+                    data={"task_id": task_id, "action_type": action_type},
+                )
             self.last_step_payload = {
                 "status": "failure",
                 "output": f"ERROR: {exc}",

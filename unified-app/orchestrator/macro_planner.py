@@ -144,7 +144,7 @@ class MacroPlanner:
         ]
 
         try:
-            raw = await self._provider.call(messages, json_mode=True)
+            raw = await self._provider.call(messages, json_mode=True, purpose="replanning")
             data = _parse_json(raw)
             revised = data.get("revised_objectives", [])
             if isinstance(revised, list) and revised:

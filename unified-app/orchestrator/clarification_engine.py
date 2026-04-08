@@ -57,7 +57,7 @@ class ClarificationEngine:
         messages = [{"role": "system", "content": _SYSTEM_PROMPT}] + self._history
 
         try:
-            raw = await self._provider.call(messages, json_mode=False)
+            raw = await self._provider.call(messages, json_mode=False, purpose="clarification")
         except Exception as exc:
             # On provider error, treat the request as ready to avoid blocking the user
             fallback = f"READY: {user_message}"

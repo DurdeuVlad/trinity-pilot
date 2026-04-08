@@ -22,6 +22,7 @@ from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retri
 
 
 DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS = 600.0
+_FLIGHT_REPORT_ROOT = Path(__file__).resolve().parents[2] / "unified-app" / "_runtime" / "flight_reports"
 AUTH_TOKENS = ("api_key_invalid", "invalid api key", "api key not valid", "unauthenticated", "authentication failed")
 USER_ERROR_TOKENS = ("clarify", "need assistance", "invalid objective", "unsafe request")
 
@@ -120,6 +121,16 @@ def _write_clipboard(text: str) -> None:
         logger.warning("[DesktopAdapter] clipboard write failed: %s", clip_exc)
 
 
+def _flight_report_metadata(session_id: str | None, objective_id: str | None) -> dict[str, str]:
+    if not session_id or not objective_id:
+        return {}
+    return {
+        "session_id": session_id,
+        "objective_id": objective_id,
+        "flight_report_path": str(_FLIGHT_REPORT_ROOT / session_id / objective_id / "report.json"),
+    }
+
+
 def _build_desktop_success_output(task: TaskInput, app_name: str) -> str | None:
     description = (task.description or "").strip().rstrip(".")
     lowered = description.lower()
@@ -146,10 +157,14 @@ def run_desktop_automation(
     clipboard_content: str | None = None,
     prior_results: dict | None = None,
     world_state: dict | None = None,
+    session_id: str | None = None,
+    objective_id: str | None = None,
 ) -> DesktopTaskResult:
     timeout_seconds = float(
         runtime_timeout_seconds or os.getenv("TRINITY_DESKTOP_TIMEOUT", DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS)
     )
+    session_id = session_id or f"desktop-session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    objective_id = objective_id or f"desktop-obj-{datetime.now().strftime('%H%M%S')}"
     # Layer 1: write OS clipboard before the subprocess launches so Ctrl+V finds content
     if clipboard_content:
         _write_clipboard(clipboard_content)
@@ -162,6 +177,8 @@ def run_desktop_automation(
         "app_exe_path": app_exe_path,
         "prior_results": prior_results,   # Layer 2: cross-objective context
         "world_state": world_state,        # Layer 3: structured world state
+        "session_id": session_id,
+        "objective_id": objective_id,
     }
     command = [
         sys.executable,
@@ -204,12 +221,17 @@ def run_desktop_automation(
             },
         )
 
-    return _parse_worker_output(
+    typed_result = _parse_worker_output(
         stdout=stdout,
         stderr=stderr,
         target_app=target_app,
         child_exit_code=completed.returncode,
     )
+    typed_result.metadata = {
+        **dict(typed_result.metadata or {}),
+        **_flight_report_metadata(session_id, objective_id),
+    }
+    return typed_result
 
 
 async def run_desktop_automation_async(
@@ -224,12 +246,16 @@ async def run_desktop_automation_async(
     prior_results: dict | None = None,
     world_state: dict | None = None,
     cancel_event: Any = None,
+    session_id: str | None = None,
+    objective_id: str | None = None,
 ) -> DesktopTaskResult:
     """Run desktop automation through an async subprocess to avoid threadpool waits."""
 
     timeout_seconds = float(
         runtime_timeout_seconds or os.getenv("TRINITY_DESKTOP_TIMEOUT", DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS)
     )
+    session_id = session_id or f"desktop-session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    objective_id = objective_id or f"desktop-obj-{datetime.now().strftime('%H%M%S')}"
     # Layer 1: write OS clipboard before the subprocess launches
     if clipboard_content:
         _write_clipboard(clipboard_content)
@@ -242,6 +268,8 @@ async def run_desktop_automation_async(
         "app_exe_path": app_exe_path,
         "prior_results": prior_results,   # Layer 2: cross-objective context
         "world_state": world_state,        # Layer 3: structured world state
+        "session_id": session_id,
+        "objective_id": objective_id,
     }
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -291,12 +319,17 @@ async def run_desktop_automation_async(
         await asyncio.gather(communicate_task, return_exceptions=True)
         raise
 
-    return _parse_worker_output(
+    typed_result = _parse_worker_output(
         stdout=stdout_bytes.decode("utf-8", errors="replace"),
         stderr=stderr_bytes.decode("utf-8", errors="replace"),
         target_app=target_app,
         child_exit_code=process.returncode or 0,
     )
+    typed_result.metadata = {
+        **dict(typed_result.metadata or {}),
+        **_flight_report_metadata(session_id, objective_id),
+    }
+    return typed_result
 
 
 class DesktopAdapter(TaskAdapter):
@@ -431,6 +464,10 @@ class DesktopAdapter(TaskAdapter):
                         task,
                         effective_timeout=effective_timeout,
                         raw_result=typed_result.model_dump(),
+                    ),
+                    **_flight_report_metadata(
+                        typed_result.metadata.get("session_id"),
+                        typed_result.metadata.get("objective_id"),
                     ),
                     "success_rate": typed_result.success_rate,
                     **({"output": success_output} if success_output else {}),

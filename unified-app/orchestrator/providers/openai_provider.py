@@ -33,18 +33,40 @@ class OpenAIProvider(LLMProvider):
     def provider_name(self) -> str:
         return "openai"
 
-    async def call(self, messages: list[dict], *, json_mode: bool = True) -> str:
+    async def call(
+        self,
+        messages: list[dict],
+        *,
+        json_mode: bool = True,
+        purpose: str | None = None,
+    ) -> str:
         """Send messages to OpenAI and return response text."""
         kwargs: dict = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
+        resolved_purpose = purpose or self._infer_purpose(messages)
+        call_id = self._log_prompt_event(
+            messages=messages,
+            model=self.MODEL,
+            temperature=None,
+            purpose=resolved_purpose,
+            json_mode=json_mode,
+        )
         response = await self._client.chat.completions.create(
             model=self.MODEL,
             messages=messages,
             **kwargs,
         )
-        return response.choices[0].message.content
+        text = response.choices[0].message.content
+        self._log_response_event(
+            response_obj=response,
+            response_text=text,
+            model=self.MODEL,
+            purpose=resolved_purpose,
+            call_id=call_id,
+        )
+        return text
 
     async def probe(self) -> None:
         """Cheap liveness check — one minimal OpenAI call."""

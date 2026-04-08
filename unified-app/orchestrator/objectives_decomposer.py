@@ -166,7 +166,7 @@ class ObjectivesDecomposer:
         ]
 
         try:
-            raw = await self._provider.call(messages, json_mode=True)
+            raw = await self._provider.call(messages, json_mode=True, purpose="planning")
             objectives = self._parse(raw)
             if objectives:
                 objectives = _filter_implied_objectives(task_description, objectives)
@@ -341,7 +341,7 @@ class ObjectivesModifier:
         ]
 
         try:
-            raw = await self._provider.call(messages, json_mode=True)
+            raw = await self._provider.call(messages, json_mode=True, purpose="planning")
             result = self._parse(raw, current_objectives)
             return result
         except Exception as exc:

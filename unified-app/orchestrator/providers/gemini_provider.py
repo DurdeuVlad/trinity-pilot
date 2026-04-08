@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from .base import LLMProvider
@@ -47,6 +48,7 @@ class GeminiProvider(LLMProvider):
         messages: list[dict],
         *,
         json_mode: bool = True,
+        purpose: str | None = None,
         force_bypass: bool = False,
     ) -> str:
         """Send messages to Gemini and return response text.
@@ -89,12 +91,29 @@ class GeminiProvider(LLMProvider):
             response_mime_type="application/json" if json_mode else "text/plain",
         )
 
+        resolved_purpose = purpose or self._infer_purpose(messages)
+        call_id = self._log_prompt_event(
+            messages=messages,
+            model=self.MODEL,
+            temperature=0.2,
+            purpose=resolved_purpose,
+            json_mode=json_mode,
+        )
+        started = time.perf_counter()
         response = await self._client.aio.models.generate_content(
             model=self.MODEL,
             contents=contents,
             config=config,
         )
         text = response.text
+        self._log_response_event(
+            response_obj=response,
+            response_text=text,
+            model=self.MODEL,
+            purpose=resolved_purpose,
+            call_id=call_id,
+            latency_ms={"total": max(1, int((time.perf_counter() - started) * 1000))},
+        )
 
         # ── Cache write ───────────────────────────────────────────────────────
         if self.cache is not None and self._last_cache_key is not None:
