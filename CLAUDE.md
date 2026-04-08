@@ -8,6 +8,13 @@ This is the real tracked project.
 - Do not create plans, handoffs, memory files, `.agents/`, scaffolding folders, or other AI-only artifacts here.
 - Put that material in `../.ai/`.
 
+## AI changelog rule
+
+- Every AI assistant must create and maintain a changelog entry in `../.ai/changelog/` while working.
+- Use dated files with a short title: `YYYY-MM-DD-short-title.md`.
+- Start from `../.ai/changelog/ENTRY_TEMPLATE.md` and keep sections updated as work progresses.
+- Log key decisions, file edits, command executions, and validation outcomes.
+
 ## Code style
 
 - Write code that looks like a normal human maintainer wrote it.
