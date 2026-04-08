@@ -1,0 +1,11 @@
+{"event": "llm_call", "domain": "web", "tokens_used": 0, "duration_ms": 0.007599999662488699, "timestamp": "2026-04-07T13:33:00.910355+00:00"}
+{"event": "tool_call", "tool_name": "navigate", "domain": "web", "status": "error", "duration_ms": 0.04499999340623617, "timestamp": "2026-04-07T13:33:00.910974+00:00"}
+{"event": "llm_call", "domain": "web", "tokens_used": 0, "duration_ms": 0.007299997378140688, "timestamp": "2026-04-07T13:33:00.911934+00:00"}
+{"event": "review", "domain": "web", "approved": true, "attempt_number": 1, "timestamp": "2026-04-07T13:33:00.912617+00:00"}
+{"event": "task", "task_id": "demo-1", "domain": "web", "status": "success", "duration_ms": 3.599200048483908, "timestamp": "2026-04-07T13:33:00.913140+00:00"}
+{"event": "llm_call", "domain": "web", "tokens_used": 0, "duration_ms": 0.00400003045797348, "timestamp": "2026-04-07T13:33:00.914739+00:00"}
+{"event": "review", "domain": "web", "approved": true, "attempt_number": 1, "timestamp": "2026-04-07T13:33:00.915282+00:00"}
+{"event": "task", "task_id": "demo-2", "domain": "web", "status": "success", "duration_ms": 1.742499996908009, "timestamp": "2026-04-07T13:33:00.915745+00:00"}
+{"event": "llm_call", "domain": "web", "tokens_used": 0, "duration_ms": 0.0035999692045152187, "timestamp": "2026-04-07T13:33:00.917180+00:00"}
+{"event": "review", "domain": "web", "approved": true, "attempt_number": 1, "timestamp": "2026-04-07T13:33:00.917721+00:00"}
+{"event": "task", "task_id": "demo-3", "domain": "web", "status": "success", "duration_ms": 1.8136000144295394, "timestamp": "2026-04-07T13:33:00.918221+00:00"}
