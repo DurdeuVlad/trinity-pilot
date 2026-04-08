@@ -11,6 +11,17 @@ from pathlib import Path
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"✅ Loaded environment from {env_path}")
+except ImportError:
+    print("⚠️  python-dotenv not installed, skipping .env file loading")
+    print("   Install with: pip install python-dotenv")
+
 def print_section(title: str):
     """Print a formatted section header."""
     print(f"\n{'='*70}")
