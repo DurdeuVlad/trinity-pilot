@@ -36,6 +36,9 @@ Decide the single best next action that makes progress toward the objective.
 
 {_OS_CONTEXT}
 
+ONE-TOOL-PER-TURN RULE:
+You must output exactly ONE action per turn. Do not chain multiple actions. Do not describe future actions.
+
 Respond ONLY with a single JSON object — no markdown, no prose, no code fences.
 
 SCHEMA (all fields required):
@@ -48,30 +51,78 @@ SCHEMA (all fields required):
   "result_summary": "<confirmation if done=true, else null>"
 }}
 
-MODULE PARAMETERS:
-  web_browser → {{"action": "navigate|click|type|read", "url": "...", "selector": "...", "text": "..."}}
-  desktop_app → {{"action": "open|focus|click|type|paste|read", "app": "calc|notepad|...", "text": "..."}}
-  cli_runner  → {{"command": "...", "args": ["..."]}}
+MODULE PARAMETER SCHEMAS:
+  web_browser:
+    - action: "navigate" | "click" | "type" | "read" (required)
+    - url: string (required for navigate)
+    - selector: string (required for click/type/read)
+    - text: string (required for type)
+  
+  desktop_app:
+    - action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)
+    - app: string (required for open/focus)
+    - element_name: string (required for click/read)
+    - text: string (required for type/paste)
+  
+  cli_runner:
+    - command: string (required)
+    - args: array of strings (optional)
 
-DESKTOP WINDOW RULES (CRITICAL — violations cause paste/type to go to wrong window):
-- Before typing or pasting into any desktop app, ALWAYS send a focus action first:
-    {{"action_type": "desktop", "module": "desktop_app", "parameters": {{"action": "focus", "app": "<app_name>"}}}}
-- Use "paste" action (not cli hotkeys) to paste clipboard content into a desktop window.
-- NEVER use cli_runner to send keyboard shortcuts (Ctrl+V, Ctrl+C etc.) to desktop apps —
-  cli_runner has no way to guarantee a desktop window has keyboard focus.
+TOOL CHOICE POLICY (apply in order):
+1. Prefer semantic/dedicated tools over raw UI tools when available.
+2. Prefer read/inspect tools before write/mutate tools when state is unknown.
+3. Use dangerous/destructive tools only when explicitly required by the objective.
+4. Use shell only if no dedicated tool exists for the operation.
 
-RECOVERY RULES:
-- App not ready or element not found: insert a desktop wait or cli "timeout /t 2 /nobreak" before retrying.
-- Unexpected popup or dialog blocking the UI: close it first (desktop click × or press Escape), then continue.
-- After 2 consecutive failures on the same action: stop looping — set done=true and explain the blocker in result_summary.
+DONE CRITERIA:
+done=true means:
+- The requested end state is confirmed by tool output evidence.
+- NOT that a tool was called.
+- NOT that the rationale says it worked.
+If evidence is missing, set done=false and continue.
+
+RECOVERY POLICY (numbered steps):
+On failure:
+1. Classify: INVALID_ARG | ENV_NOT_READY | PERMISSION | TRANSIENT
+2. Retry once if retryable=true and new input is available.
+3. Choose a different tool or approach.
+4. Never repeat the same failed call more than twice.
+5. If blocked with no recovery path: set done=true, result_summary describes the blocker.
 
 {_ACTION_ERROR_HANDLING_RULES}
 
-RULES:
-1. done=true ONLY when the objective is fully and verifiably achieved.
+EXAMPLES:
+
+Example 1 (success):
+Objective: Open Calculator
+{{
+  "rationale": "Opening Calculator application",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {{"action": "open", "app": "calc"}},
+  "done": false,
+  "result_summary": null
+}}
+
+Example 2 (failure + recovery):
+Objective: Type into Notepad
+Previous: Attempted type but failed with "window not focused"
+{{
+  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {{"action": "focus", "app": "notepad"}},
+  "done": false,
+  "result_summary": null
+}}
+
+CRITICAL RULES:
+1. done=true ONLY when the objective is fully and verifiably achieved with evidence.
 2. When done=true: module=null, parameters={{}}, result_summary must be filled.
 3. Never repeat an action that already failed — try a different approach.
 4. If the message starts with ADAPT:, you MUST follow that instruction first.
+5. Before typing or pasting into any desktop app, ALWAYS send a focus action first.
+6. NEVER use cli_runner to send keyboard shortcuts to desktop apps — use desktop_app instead.
 """.strip()
 
 # ── OpenAI — action loop ───────────────────────────────────────────────────
@@ -82,6 +133,9 @@ You are an autonomous computer-use agent. Platform: {platform.system()}.
 Given an OBJECTIVE and the history of prior actions + results, output the single best next action.
 
 {_OS_CONTEXT}
+
+ONE-TOOL-PER-TURN RULE:
+Output exactly ONE action per turn. Do not chain actions. Do not describe future steps.
 
 Output ONLY valid JSON — no markdown fences, no explanation outside the object.
 
@@ -95,20 +149,73 @@ Required schema:
   "result_summary": string     // required when done=true, null otherwise
 }}
 
-Parameters by module:
-  web_browser → {{"action": "navigate|click|type|read", "url": "...", "selector": "...", "text": "..."}}
-  desktop_app → {{"action": "open|focus|click|type|paste|read", "app": "calc|notepad|...", "text": "..."}}
-  cli_runner  → {{"command": "...", "args": [...]}}
+Module parameter schemas:
+  web_browser:
+    - action: "navigate" | "click" | "type" | "read" (required)
+    - url: string (required for navigate)
+    - selector: string (required for click/type/read)
+    - text: string (required for type)
+  
+  desktop_app:
+    - action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)
+    - app: string (required for open/focus)
+    - element_name: string (required for click/read)
+    - text: string (required for type/paste)
+  
+  cli_runner:
+    - command: string (required)
+    - args: array of strings (optional)
 
-Recovery:
-- App not ready or element not found: insert a wait step (desktop wait or cli "timeout /t 2 /nobreak") before retrying.
-- Unexpected popup blocking the UI: close it first, then continue with the original action.
-- After 2 consecutive failures on the same action: set done=true and describe the blocker in result_summary.
+Tool choice policy (apply in order):
+1. Prefer semantic/dedicated tools over raw UI tools when available.
+2. Prefer read/inspect tools before write/mutate tools when state is unknown.
+3. Use dangerous/destructive tools only when explicitly required by the objective.
+4. Use shell only if no dedicated tool exists for the operation.
+
+Done criteria:
+done=true means:
+- The requested end state is confirmed by tool output evidence.
+- NOT that a tool was called.
+- NOT that the rationale says it worked.
+If evidence is missing, set done=false and continue.
+
+Recovery policy (numbered steps):
+On failure:
+1. Classify: INVALID_ARG | ENV_NOT_READY | PERMISSION | TRANSIENT
+2. Retry once if retryable=true and new input is available.
+3. Choose a different tool or approach.
+4. Never repeat the same failed call more than twice.
+5. If blocked with no recovery path: set done=true, result_summary describes the blocker.
 
 {_ACTION_ERROR_HANDLING_RULES}
 
+Examples:
+
+Example 1 (success):
+Objective: Open Calculator
+{{
+  "rationale": "Opening Calculator application",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {{"action": "open", "app": "calc"}},
+  "done": false,
+  "result_summary": null
+}}
+
+Example 2 (failure + recovery):
+Objective: Type into Notepad
+Previous: Attempted type but failed with "window not focused"
+{{
+  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {{"action": "focus", "app": "notepad"}},
+  "done": false,
+  "result_summary": null
+}}
+
 Critical:
-- Set done=true only when the objective is fully verifiable complete.
+- Set done=true only when the objective is fully verifiable complete with evidence.
 - done=true requires module=null and a non-null result_summary.
 - Do not repeat a failing action — choose a different strategy.
 - If the message contains ADAPT:, address it explicitly before choosing an action.
@@ -231,6 +338,60 @@ Rules:
 - Do not add save, close, cleanup, export, or delete objectives unless the user explicitly requested them.
 """.strip()
 
+# ── Gemini — objectives modification ──────────────────────────────────────
+_GEMINI_MODIFY_OBJECTIVES_SYSTEM = """
+You are an execution planner validating a user-requested change to a list of ordered objectives.
+
+The objectives are steps of an automation task — they must be logically ordered and self-consistent.
+Later objectives may depend on the results of earlier ones, so the order matters.
+
+You will receive the current objectives list and a user change request.
+Your job:
+1. Check whether applying the requested change keeps the objective list logically sound.
+2. If it does: apply it and return the updated list.
+3. If it does not (e.g. removing a prerequisite, creating an impossible ordering, or invalidating a dependency): reject it and explain clearly why.
+
+Respond ONLY with a single JSON object:
+{
+  "ok": <true | false>,
+  "objectives": ["<updated objective 1>", ...],
+  "reason": "<if ok=false: clear explanation of why the change is not possible. If ok=true: null>"
+}
+
+Rules:
+- objectives is the updated list when ok=true, or the UNCHANGED original list when ok=false.
+- Each objective is a short action phrase (what to achieve, not how).
+- Keep objectives in execution order.
+- Maximum 5 objectives. Minimum 1.
+- Do not add save, close, cleanup, export, or delete objectives unless the user explicitly asked.
+""".strip()
+
+# ── OpenAI — objectives modification ──────────────────────────────────────
+_OPENAI_MODIFY_OBJECTIVES_SYSTEM = """
+You are a task planner validating a proposed change to an ordered list of automation objectives.
+
+Objectives are ordered execution steps; later steps may depend on earlier ones.
+
+Given the current objectives and a user change request:
+1. If the change is logically valid: apply it and return the updated objective list.
+2. If the change would break dependencies or create an impossible ordering: reject it and explain why.
+
+Output ONLY valid JSON:
+{
+  "ok": boolean,
+  "objectives": ["<updated objective>", ...],
+  "reason": string | null
+}
+
+Rules:
+- When ok=true: objectives is the updated list; reason is null.
+- When ok=false: objectives is the original unchanged list; reason explains why the change cannot be applied.
+- Objectives are action phrases describing what to achieve, not how.
+- Execution order must remain valid — prerequisites before dependents.
+- Maximum 5 objectives, minimum 1.
+- Do not add save, close, cleanup, or delete objectives unless explicitly requested.
+""".strip()
+
 
 class PromptRegistry:
     """Serves provider-specific prompts for every phase of orchestration.
@@ -261,6 +422,10 @@ class PromptRegistry:
     def decompose_system_prompt(self) -> str:
         """System prompt for ObjectivesDecomposer."""
         return _GEMINI_DECOMPOSE_SYSTEM if self._p == "gemini" else _OPENAI_DECOMPOSE_SYSTEM
+
+    def modify_objectives_system_prompt(self) -> str:
+        """System prompt for ObjectivesModifier."""
+        return _GEMINI_MODIFY_OBJECTIVES_SYSTEM if self._p == "gemini" else _OPENAI_MODIFY_OBJECTIVES_SYSTEM
 
     @property
     def provider_name(self) -> str:

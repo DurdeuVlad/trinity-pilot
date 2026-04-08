@@ -28,7 +28,12 @@ class EventBus(QObject):
     chat_message = pyqtSignal(str, str)   # (role: "user"|"assistant", text)
     clarification_ready = pyqtSignal(str) # confirmed task summary
     objectives_preview_ready = pyqtSignal(str, list)  # confirmed task summary, proposed objectives
+    objectives_modify_done = pyqtSignal(bool)  # True = success (preview_ready also fires), False = rejected
     task_result_ready = pyqtSignal(str)   # final answer to show back in chat
+
+    # ── Human-in-the-loop pause signals ─────────────────────────────────
+    blocker_detected = pyqtSignal(str)   # message: what the user needs to do
+    blocker_resolved = pyqtSignal()      # user confirmed they're done
 
     def emit_status(self, message: str, level: str = "info") -> None:
         """Emit status line with level metadata."""

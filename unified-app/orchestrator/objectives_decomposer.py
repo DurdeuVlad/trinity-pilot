@@ -299,3 +299,79 @@ def _split_python_version_then_app_open(task_description: str) -> list[str] | No
         "python --version",
         f"Open an application called '{app_name}'",
     ]
+
+
+class ObjectivesModifier:
+    """Applies a natural-language change request to an existing objectives list via the LLM.
+
+    The LLM checks logical dependencies between objectives before applying any change.
+    Returns (new_objectives, None) on success or (original_objectives, rejection_reason) on failure.
+    """
+
+    def __init__(
+        self,
+        provider: "LLMProvider",
+        registry: Optional["PromptRegistry"] = None,
+    ) -> None:
+        self._provider = provider
+        self._registry = registry
+
+    async def modify(
+        self,
+        current_objectives: list[str],
+        change_request: str,
+        task_description: str = "",
+    ) -> tuple[list[str], str | None]:
+        """Return (updated_objectives, None) or (original_objectives, rejection_reason)."""
+        if not change_request.strip():
+            return current_objectives, "No change request provided."
+
+        system_prompt = (
+            self._registry.modify_objectives_system_prompt()
+            if self._registry is not None
+            else _FALLBACK_MODIFY_PROMPT
+        )
+
+        numbered = "\n".join(f"{i + 1}. {obj}" for i, obj in enumerate(current_objectives))
+        user_content = f"Task: {task_description}\n\nCurrent objectives:\n{numbered}\n\nChange request: {change_request}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_content},
+        ]
+
+        try:
+            raw = await self._provider.call(messages, json_mode=True)
+            result = self._parse(raw, current_objectives)
+            return result
+        except Exception as exc:
+            logger.warning("Objectives modification failed (%s)", exc)
+            return current_objectives, "I could not process that request due to an internal error. Please try again."
+
+    def _parse(self, raw: str, original: list[str]) -> tuple[list[str], str | None]:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not match:
+                raise ValueError("No JSON object found in response")
+            data = json.loads(match.group(0))
+
+        ok = bool(data.get("ok", False))
+        objectives_raw = data.get("objectives", [])
+        reason = data.get("reason") or None
+
+        if ok and isinstance(objectives_raw, list) and objectives_raw:
+            updated = [str(o).strip() for o in objectives_raw if str(o).strip()][:5]
+            return (updated or original), None
+        else:
+            rejection = str(reason).strip() if reason else "That change cannot be applied."
+            return original, rejection
+
+
+_FALLBACK_MODIFY_PROMPT = """
+You are a task planner. Apply a user's change request to an ordered list of automation objectives.
+Check that the result is logically consistent (no broken dependencies, valid order).
+If valid: apply the change. If not: reject with a reason.
+Respond ONLY with JSON: {"ok": true|false, "objectives": [...], "reason": null|"<why>"}
+""".strip()

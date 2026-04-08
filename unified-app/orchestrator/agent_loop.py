@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from collections import deque
@@ -81,6 +82,7 @@ class AgentLoop:
         context: Optional[ExecutionContext] = None,
         output_validator: Optional[OutputValidator] = None,
         cancel_event: Any = None,
+        resume_event: Optional[threading.Event] = None,
     ) -> None:
         self._provider = provider
         self._bridge = bridge
@@ -90,6 +92,7 @@ class AgentLoop:
         self._context = context
         self._validator = output_validator or OutputValidator()
         self._cancel_event = cancel_event
+        self._resume_event = resume_event
         self.last_step_payload: dict[str, Any] | None = None
 
     @staticmethod
@@ -202,6 +205,30 @@ class AgentLoop:
             result = await self._execute(action, obj_index, state.iteration)
             action_type = action.get("action_type", "")
             params = action.get("parameters", {})
+
+            if action_type == "cli" and result.strip():
+                self._emit(result.strip(), "output")
+
+            if result.startswith("WAITING_FOR_HUMAN:"):
+                human_msg = result[len("WAITING_FOR_HUMAN:"):].strip()
+                self._emit(f"Waiting for you: {human_msg}", "warning")
+                try:
+                    from .event_bus import get_event_bus
+                    get_event_bus().blocker_detected.emit(human_msg)
+                except Exception:
+                    pass
+                if self._resume_event is not None:
+                    self._resume_event.clear()
+                    while not self._resume_event.is_set():
+                        await asyncio.sleep(0.2)
+                        if self._cancel():
+                            return "[cancelled]"
+                    self._emit("Resuming…", "info")
+                    deadline = asyncio.get_running_loop().time() + MAX_WALL_SECONDS
+                    state.history.append(_Turn(action=action, result="Human resolved the blocker — reassessing page."))
+                    continue
+                else:
+                    return f"[blocked: {human_msg}]"
 
             if (
                 exec_ctx is not None
@@ -486,6 +513,8 @@ def _extract_result(result: Any) -> str:
         return "OK (no output)"
     if hasattr(result, "status") and result.status != "success":
         error = getattr(result, "error", "") or getattr(result, "message", "") or "unknown error"
+        if str(error).startswith("WAITING_FOR_HUMAN:"):
+            return str(error)
         return f"ERROR: {error}"
     metadata = getattr(result, "metadata", None)
     if isinstance(metadata, dict):

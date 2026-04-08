@@ -80,12 +80,17 @@ class OrchestratorWorker(QObject):
         self.screenshot_watcher: ScreenshotWatcher | None = None
         self._cancelled = False
         self._cancel_event = threading.Event()
+        self._resume_event = threading.Event()
         self.run_id = f"run_{uuid.uuid4().hex[:12]}"
 
     def cancel(self) -> None:
         """Request cancellation for next safe checkpoint."""
         self._cancelled = True
         self._cancel_event.set()
+
+    def resume(self) -> None:
+        """Unblock the agent loop after a human-in-the-loop pause."""
+        self._resume_event.set()
 
     def run(self) -> None:
         """Thread entry point."""
@@ -130,6 +135,7 @@ class OrchestratorWorker(QObject):
             screenshot_watcher=self._ensure_screenshot_watcher(),
             cancel_requested=lambda: self._cancelled,
             cancel_event=self._cancel_event,
+            resume_event=self._resume_event,
             approved_plan=self.approved_plan,
             provider_name=self.provider_name,
             timeout_seconds=self.timeout_seconds,
@@ -287,6 +293,58 @@ class OrchestratorCore(QObject):
                         "You can keep editing the current list or run it as-is."
                     ),
                 )
+                self.event_bus.objectives_modify_done.emit(False)
+            finally:
+                _shutdown_event_loop(loop)
+
+        self._clarification_thread = threading.Thread(target=_run, daemon=True)
+        self._clarification_thread.start()
+
+    def modify_objectives_preview(
+        self, task_summary: str, current_objectives: list[str], change_request: str
+    ) -> None:
+        """Apply a user-requested natural-language change to the objectives list via the LLM."""
+        if self._startup_guard_message is not None:
+            self.event_bus.chat_message.emit("assistant", self._startup_guard_message)
+            return
+
+        def _run() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                from .objectives_decomposer import ObjectivesModifier
+                from .prompt_registry import PromptRegistry
+
+                provider_name = str(self.runtime_settings.get("ai_provider", "gemini")).lower()
+                api_key = self._resolve_api_key(provider_name)
+                provider = make_provider(provider_name, api_key)
+                try:
+                    modifier = ObjectivesModifier(provider, registry=PromptRegistry(provider_name))
+                    updated, rejection = loop.run_until_complete(
+                        modifier.modify(current_objectives, change_request, task_summary)
+                    )
+                finally:
+                    provider_close = getattr(provider, "close", None)
+                    if callable(provider_close):
+                        loop.run_until_complete(provider_close())
+
+                if rejection is None:
+                    self.event_bus.chat_message.emit(
+                        "assistant",
+                        "Done. I updated the objectives — review the revised plan and approve when it looks right.",
+                    )
+                    self.event_bus.objectives_preview_ready.emit(task_summary, updated)
+                    self.event_bus.objectives_modify_done.emit(True)
+                else:
+                    self.event_bus.chat_message.emit("assistant", rejection)
+                    self.event_bus.objectives_modify_done.emit(False)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Objectives modification failed: %s", exc)
+                self.event_bus.chat_message.emit(
+                    "assistant",
+                    "I could not process that change right now. You can keep editing or run the current plan.",
+                )
+                self.event_bus.objectives_modify_done.emit(False)
             finally:
                 _shutdown_event_loop(loop)
 
@@ -334,6 +392,12 @@ class OrchestratorCore(QObject):
         """Forward cancel request to active worker."""
         if self.current_worker is not None:
             self.current_worker.cancel()
+
+    def resume_agent(self) -> None:
+        """Resume a paused agent after the user resolves a blocker."""
+        if self.current_worker is not None:
+            self.current_worker.resume()
+            get_event_bus().blocker_resolved.emit()
 
     def _on_worker_finished(self) -> None:
         if self._pending_worker_error is not None:

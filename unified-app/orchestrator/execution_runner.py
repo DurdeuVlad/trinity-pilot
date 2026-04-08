@@ -70,6 +70,7 @@ class TaskExecutionRunner:
         screenshot_watcher: Any,
         cancel_requested: Callable[[], bool],
         cancel_event: Any,
+        resume_event: Any = None,
         approved_plan: list[str] | None = None,
         provider_name: str = "gemini",
         timeout_seconds: int = 600,
@@ -87,6 +88,7 @@ class TaskExecutionRunner:
         self.screenshot_watcher = screenshot_watcher
         self.cancel_requested = cancel_requested
         self.cancel_event = cancel_event
+        self.resume_event = resume_event
         self.approved_plan = [step.strip() for step in (approved_plan or []) if step.strip()]
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
@@ -198,6 +200,7 @@ class TaskExecutionRunner:
             context=context,
             output_validator=self.output_validator,
             cancel_event=self.cancel_event,
+            resume_event=self.resume_event,
         )
         return context, start_index, agent_loop
 
