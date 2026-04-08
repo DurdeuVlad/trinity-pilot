@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class GeminiProvider(LLMProvider):
     """Gemini backend via google-genai async client."""
 
-    MODEL = "models/gemini-2.0-flash"
+    MODEL = "models/gemini-3.1-flash-lite-preview"  # 2026: Ultra-cheap agentic model, 1M context, $0.125/$0.75 per 1M tokens
     PROBE_PROMPT = "Reply with the single word OK."
 
     def __init__(self, api_key: str, *, cache: "SmartCache | None" = None) -> None:

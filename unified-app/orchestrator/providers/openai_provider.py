@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class OpenAIProvider(LLMProvider):
     """OpenAI (ChatGPT) backend via AsyncOpenAI client."""
 
-    MODEL = "gpt-4o"
+    MODEL = "gpt-5.4-mini"  # 2026: Strong coding/subagent model, 400k context, $0.75/$4.50 per 1M tokens
     PROBE_PROMPT = "Reply with the single word OK."
 
     def __init__(self, api_key: str) -> None:
