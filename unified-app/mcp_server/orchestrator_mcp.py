@@ -107,71 +107,74 @@ class OrchestratorMCPServer:
                         "properties": {
                             "description": {
                                 "type": "string",
-                                "description": "Task description"
+                                "description": "Natural language task description"
                             },
                             "domain": {
                                 "type": "string",
-                                "description": "Task domain (cli, browser, desktop, or mixed)",
+                                "description": "Task execution domain",
+                                "enum": ["cli", "browser", "web", "desktop", "mixed"],
                                 "default": "mixed"
                             }
                         },
-                        "required": ["description"]
+                        "required": ["description"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_task_status",
-                    description="Get the current status of a task",
+                    description="Get the current status of a task by ID or 'latest'",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "Task ID to query"
+                                "description": "Task ID to query, or 'latest' for most recent task"
                             }
                         },
-                        "required": ["task_id"]
+                        "required": ["task_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="list_tasks",
-                    description="List all tasks in history",
+                    description="List tasks from history with optional status filter",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "limit": {
                                 "type": "integer",
-                                "description": "Maximum number of tasks to return",
-                                "default": 10
+                                "description": "Maximum number of tasks to return (default 10)",
+                                "default": 10,
+                                "minimum": 1,
+                                "maximum": 100
                             },
                             "status": {
                                 "type": "string",
-                                "description": "Filter by status (completed, failed, running, cancelled)",
-                                "default": None
+                                "description": "Filter by task status",
+                                "enum": ["completed", "failed", "running", "cancelled", "pending"]
                             }
-                        }
+                        },
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_task_details",
-                    description="Get detailed information about a task including all steps",
+                    description="Get detailed information about a task including all execution steps",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "Task ID to query"
+                                "description": "Task ID to query, or 'latest' for most recent task"
                             }
                         },
-                        "required": ["task_id"]
+                        "required": ["task_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_execution_log",
-                    description=(
-                        "Read the full execution log for a task — every status message, "
-                        "objective, turn, action, reflection, and replan event. "
-                        "Pass task_id='latest' to get the most recent task's log."
-                    ),
+                    description="Read the full execution log for a task including all status messages and events",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -180,16 +183,13 @@ class OrchestratorMCPServer:
                                 "description": "Task ID, or 'latest' for the most recent task"
                             }
                         },
-                        "required": ["task_id"]
+                        "required": ["task_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_execution_plan",
-                    description=(
-                        "Read the execution plan (objectives/steps) for a task, including "
-                        "the status of each step, estimated duration, and AI confidence. "
-                        "Pass task_id='latest' to get the most recent task's plan."
-                    ),
+                    description="Read the execution plan for a task including objectives, steps, and AI confidence",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -198,101 +198,103 @@ class OrchestratorMCPServer:
                                 "description": "Task ID, or 'latest' for the most recent task"
                             }
                         },
-                        "required": ["task_id"]
+                        "required": ["task_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="list_flight_records",
-                    description=(
-                        "List all flight records (YAML execution reports) saved on disk "
-                        "in the _runtime/flight_reports/ directory. Returns file names, "
-                        "sizes, and modification times."
-                    ),
+                    description="List flight records (execution reports) from disk with metadata",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "limit": {
                                 "type": "integer",
-                                "description": "Maximum number of records to list (newest first)",
-                                "default": 20
+                                "description": "Maximum number of records to list (newest first, default 20)",
+                                "default": 20,
+                                "minimum": 1,
+                                "maximum": 100
                             }
-                        }
+                        },
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="read_flight_record",
-                    description=(
-                        "Read the full content of a specific flight record file from disk. "
-                        "Flight records contain detailed step-by-step execution data including "
-                        "commands run, outputs, and AI reasoning traces."
-                    ),
+                    description="Read the full content of a specific flight record file from disk",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "filename": {
                                 "type": "string",
-                                "description": "Flight record filename (from list_flight_records)"
+                                "description": "Flight record filename (from list_flight_records output)"
                             }
                         },
-                        "required": ["filename"]
+                        "required": ["filename"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_latest_flight_record",
-                    description="Read the most recently modified flight record from disk.",
+                    description="Read the most recently modified flight record from disk",
                     inputSchema={
                         "type": "object",
-                        "properties": {}
+                        "properties": {},
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="list_checkpoints",
-                    description="List all checkpoints for a task",
+                    description="List all checkpoints for a task by ID or 'latest'",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "Task ID to query checkpoints for"
+                                "description": "Task ID to query checkpoints for, or 'latest' for most recent task"
                             }
                         },
-                        "required": ["task_id"]
+                        "required": ["task_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_checkpoint_details",
-                    description="Get details of a specific checkpoint",
+                    description="Get details of a specific checkpoint including context and state",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "checkpoint_id": {
                                 "type": "string",
-                                "description": "Checkpoint ID to query"
+                                "description": "Checkpoint ID to query (from list_checkpoints output)"
                             }
                         },
-                        "required": ["checkpoint_id"]
+                        "required": ["checkpoint_id"],
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="get_settings",
-                    description="Get current orchestrator settings",
+                    description="Get current orchestrator settings (API keys are redacted)",
                     inputSchema={
                         "type": "object",
-                        "properties": {}
+                        "properties": {},
+                        "additionalProperties": false
                     }
                 ),
                 Tool(
                     name="update_settings",
-                    description="Update orchestrator settings",
+                    description="Update orchestrator settings with new key-value pairs",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "settings": {
                                 "type": "object",
-                                "description": "Settings to update (key-value pairs)"
+                                "description": "Settings to update as key-value pairs"
                             }
                         },
-                        "required": ["settings"]
+                        "required": ["settings"],
+                        "additionalProperties": false
                     }
                 )
             ]
@@ -386,14 +388,18 @@ class OrchestratorMCPServer:
         """Submit a new task to the orchestrator via event bus."""
         if not args:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing arguments",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Arguments cannot be None or empty"
             }, indent=2))]
 
         description = args.get("description")
         if not description:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing required field: description",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Task description is required"
             }, indent=2))]
 
@@ -418,19 +424,21 @@ class OrchestratorMCPServer:
             if pipe_result is not None:
                 if pipe_result.get("ok"):
                     result = {
-                        "task_id": pipe_result.get("task_id"),
-                        "description": pipe_result.get("description", description),
-                        "domain": pipe_result.get("domain", mapped_domain),
-                        "status": pipe_result.get("status", "submitted"),
+                        "success": True,
+                        "data": {
+                            "task_id": pipe_result.get("task_id"),
+                            "description": pipe_result.get("description", description),
+                            "domain": pipe_result.get("domain", mapped_domain),
+                            "status": pipe_result.get("status", "submitted"),
+                        },
+                        "error_code": None,
                         "message": "Task submitted to orchestrator. Use get_task_status to monitor progress.",
                     }
                 else:
                     result = {
-                        "task_id": None,
-                        "description": description,
-                        "domain": mapped_domain,
-                        "status": "error",
-                        "error_code": pipe_result.get("error_code", "task_not_observed"),
+                        "success": False,
+                        "data": None,
+                        "error_code": pipe_result.get("error_code", "TASK_NOT_OBSERVED"),
                         "message": pipe_result.get("message", "Task submission failed."),
                     }
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
@@ -440,19 +448,21 @@ class OrchestratorMCPServer:
 
             if task:
                 result = {
-                    "task_id": task["task_id"],
-                    "description": task["description"],
-                    "domain": task["domain"],
-                    "status": task["status"],
+                    "success": True,
+                    "data": {
+                        "task_id": task["task_id"],
+                        "description": task["description"],
+                        "domain": task["domain"],
+                        "status": task["status"],
+                    },
+                    "error_code": None,
                     "message": "Task submitted to orchestrator. Use get_task_status to monitor progress."
                 }
             else:
                 result = {
-                    "task_id": None,
-                    "description": description,
-                    "domain": mapped_domain,
-                    "status": "error",
-                    "error_code": "task_not_observed",
+                    "success": False,
+                    "data": None,
+                    "error_code": "TASK_NOT_OBSERVED",
                     "message": (
                         "Task emit did not produce a persisted task record. "
                         "Ensure MCP is running in/connected to the active GUI app process."
@@ -465,7 +475,12 @@ class OrchestratorMCPServer:
             logger.error(f"Error submitting task: {e}")
             return [TextContent(
                 type="text",
-                text=json.dumps({"error": str(e), "message": "Failed to submit task"}, indent=2)
+                text=json.dumps({
+                    "success": False,
+                    "data": None,
+                    "error_code": "EXCEPTION",
+                    "message": f"Failed to submit task: {str(e)}"
+                }, indent=2)
             )]
 
     def _submit_task_via_pipe(
@@ -495,14 +510,18 @@ class OrchestratorMCPServer:
         """Get task status."""
         if not args:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing arguments",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Arguments cannot be None or empty"
             }, indent=2))]
 
         requested_task_id = args.get("task_id")
         if not requested_task_id:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing required field: task_id",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Task ID is required"
             }, indent=2))]
 
@@ -510,29 +529,38 @@ class OrchestratorMCPServer:
 
         if not task_id:
             return [TextContent(type="text", text=json.dumps({
-                "task_id": requested_task_id,
-                "found": False,
-                "status": "not_found",
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
                 "message": "No tasks found in history."
             }, indent=2))]
 
         if task_id in self.active_tasks:
-            return [TextContent(type="text", text=json.dumps(self.active_tasks[task_id], indent=2))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": self.active_tasks[task_id],
+                "error_code": None,
+                "message": "Task status retrieved from active tasks"
+            }, indent=2))]
 
         try:
             task = self.history_manager.get_task(task_id)
             if task:
-                result = _serialize_task_record(task)
-                result["task_id"] = result.get("task_id") or task_id
-                result["found"] = True
-                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+                task_data = _serialize_task_record(task)
+                task_data["task_id"] = task_data.get("task_id") or task_id
+                return [TextContent(type="text", text=json.dumps({
+                    "success": True,
+                    "data": task_data,
+                    "error_code": None,
+                    "message": "Task status retrieved successfully"
+                }, indent=2))]
         except Exception as e:
             logger.error(f"Error getting task status: {e}")
 
         return [TextContent(type="text", text=json.dumps({
-            "task_id": task_id,
-            "found": False,
-            "status": "not_found",
+            "success": False,
+            "data": None,
+            "error_code": "NOT_FOUND",
             "message": f"Task not found: {task_id}"
         }, indent=2))]
 
@@ -545,24 +573,37 @@ class OrchestratorMCPServer:
             tasks = self.history_manager.list_tasks(limit=limit)
             if status_filter:
                 tasks = [t for t in tasks if t.get("status") == status_filter]
-            result = {"count": len(tasks), "tasks": tasks}
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": {"count": len(tasks), "tasks": tasks},
+                "error_code": None,
+                "message": f"Retrieved {len(tasks)} task(s)"
+            }, indent=2))]
         except Exception as e:
             logger.error(f"Error listing tasks: {e}")
-            return [TextContent(type="text", text=f"Error listing tasks: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error listing tasks: {str(e)}"
+            }, indent=2))]
 
     async def _get_task_details(self, args: dict) -> list[TextContent]:
         """Get detailed task information."""
         if not args:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing arguments",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Arguments cannot be None or empty"
             }, indent=2))]
 
         requested_task_id = args.get("task_id")
         if not requested_task_id:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing required field: task_id",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Task ID is required"
             }, indent=2))]
 
@@ -570,8 +611,9 @@ class OrchestratorMCPServer:
 
         if not task_id:
             return [TextContent(type="text", text=json.dumps({
-                "task_id": requested_task_id,
-                "found": False,
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
                 "message": "No tasks found in history."
             }, indent=2))]
 
@@ -579,23 +621,38 @@ class OrchestratorMCPServer:
             task = self.history_manager.get_task(task_id)
             if not task:
                 return [TextContent(type="text", text=json.dumps({
-                    "task_id": task_id,
-                    "found": False,
+                    "success": False,
+                    "data": None,
+                    "error_code": "NOT_FOUND",
                     "message": f"Task not found: {task_id}"
                 }, indent=2))]
 
             steps = self.history_manager.get_task_steps(task_id)
-            result = {"task": _serialize_task_record(task), "steps": steps, "step_count": len(steps)}
-            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": {"task": _serialize_task_record(task), "steps": steps, "step_count": len(steps)},
+                "error_code": None,
+                "message": f"Retrieved task details with {len(steps)} step(s)"
+            }, indent=2, default=str))]
         except Exception as e:
             logger.error(f"Error getting task details: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error: {str(e)}"
+            }, indent=2))]
 
     async def _get_execution_log(self, args: dict) -> list[TextContent]:
         """Read the full execution log (status messages) for a task from the DB."""
         task_id = self._resolve_task_id(args["task_id"])
         if not task_id:
-            return [TextContent(type="text", text="No tasks found in history.")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": "No tasks found in history."
+            }, indent=2))]
 
         # Pull task summary
         rows = self._db_rows(
@@ -604,7 +661,12 @@ class OrchestratorMCPServer:
             (task_id,)
         )
         if not rows:
-            return [TextContent(type="text", text=f"Task not found: {task_id}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": f"Task not found: {task_id}"
+            }, indent=2))]
 
         task_row = rows[0]
 
@@ -624,7 +686,7 @@ class OrchestratorMCPServer:
                 except Exception:
                     pass
 
-        result = {
+        log_data = {
             "task_id": task_id,
             "description": task_row["description"],
             "status": task_row["status"],
@@ -634,13 +696,23 @@ class OrchestratorMCPServer:
             "execution_steps": steps,
             "step_count": len(steps),
         }
-        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+        return [TextContent(type="text", text=json.dumps({
+            "success": True,
+            "data": log_data,
+            "error_code": None,
+            "message": f"Retrieved execution log with {len(steps)} step(s)"
+        }, indent=2, default=str))]
 
     async def _get_execution_plan(self, args: dict) -> list[TextContent]:
         """Read the execution plan (objectives + step statuses) for a task."""
         task_id = self._resolve_task_id(args["task_id"])
         if not task_id:
-            return [TextContent(type="text", text="No tasks found in history.")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": "No tasks found in history."
+            }, indent=2))]
 
         rows = self._db_rows(
             "SELECT task_id, description, domain, status, plan_steps, "
@@ -648,7 +720,12 @@ class OrchestratorMCPServer:
             (task_id,)
         )
         if not rows:
-            return [TextContent(type="text", text=f"Task not found: {task_id}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": f"Task not found: {task_id}"
+            }, indent=2))]
 
         row = rows[0]
         plan_steps_raw = row.get("plan_steps") or "[]"
@@ -664,7 +741,7 @@ class OrchestratorMCPServer:
             (task_id,)
         )
 
-        result = {
+        plan_data = {
             "task_id": task_id,
             "description": row["description"],
             "domain": row["domain"],
@@ -677,7 +754,12 @@ class OrchestratorMCPServer:
             },
             "step_statuses": steps,
         }
-        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+        return [TextContent(type="text", text=json.dumps({
+            "success": True,
+            "data": plan_data,
+            "error_code": None,
+            "message": "Retrieved execution plan successfully"
+        }, indent=2, default=str))]
 
     async def _list_flight_records(self, args: dict) -> list[TextContent]:
         """List flight record files on disk."""
@@ -685,9 +767,15 @@ class OrchestratorMCPServer:
 
         if not _FLIGHT_REPORTS_DIR.exists():
             return [TextContent(type="text", text=json.dumps({
-                "flight_reports_dir": str(_FLIGHT_REPORTS_DIR),
-                "exists": False,
-                "records": []
+                "success": True,
+                "data": {
+                    "flight_reports_dir": str(_FLIGHT_REPORTS_DIR),
+                    "exists": False,
+                    "count": 0,
+                    "records": []
+                },
+                "error_code": None,
+                "message": "Flight reports directory does not exist"
             }, indent=2))]
 
         records = []
@@ -704,9 +792,14 @@ class OrchestratorMCPServer:
                 break
 
         return [TextContent(type="text", text=json.dumps({
-            "flight_reports_dir": str(_FLIGHT_REPORTS_DIR),
-            "count": len(records),
-            "records": records
+            "success": True,
+            "data": {
+                "flight_reports_dir": str(_FLIGHT_REPORTS_DIR),
+                "count": len(records),
+                "records": records
+            },
+            "error_code": None,
+            "message": f"Retrieved {len(records)} flight record(s)"
         }, indent=2))]
 
     async def _read_flight_record(self, args: dict) -> list[TextContent]:
@@ -715,25 +808,50 @@ class OrchestratorMCPServer:
         # Prevent path traversal
         path = (_FLIGHT_REPORTS_DIR / Path(filename).name).resolve()
         if not str(path).startswith(str(_FLIGHT_REPORTS_DIR.resolve())):
-            return [TextContent(type="text", text="Error: invalid filename")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
+                "message": "Invalid filename (path traversal detected)"
+            }, indent=2))]
 
         if not path.exists():
-            return [TextContent(type="text", text=f"File not found: {filename}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": f"File not found: {filename}"
+            }, indent=2))]
 
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
             return [TextContent(type="text", text=json.dumps({
-                "filename": path.name,
-                "size_bytes": path.stat().st_size,
-                "content": content
+                "success": True,
+                "data": {
+                    "filename": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "content": content
+                },
+                "error_code": None,
+                "message": "Flight record retrieved successfully"
             }, indent=2))]
         except Exception as e:
-            return [TextContent(type="text", text=f"Error reading file: {e}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error reading file: {e}"
+            }, indent=2))]
 
     async def _get_latest_flight_record(self, args: dict) -> list[TextContent]:
         """Read the most recently modified flight record."""
         if not _FLIGHT_REPORTS_DIR.exists():
-            return [TextContent(type="text", text="Flight reports directory does not exist.")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": "Flight reports directory does not exist."
+            }, indent=2))]
 
         files = sorted(
             (p for p in _FLIGHT_REPORTS_DIR.iterdir() if p.is_file()),
@@ -741,31 +859,50 @@ class OrchestratorMCPServer:
             reverse=True
         )
         if not files:
-            return [TextContent(type="text", text="No flight records found.")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
+                "message": "No flight records found."
+            }, indent=2))]
 
         path = files[0]
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
             return [TextContent(type="text", text=json.dumps({
-                "filename": path.name,
-                "size_bytes": path.stat().st_size,
-                "content": content
+                "success": True,
+                "data": {
+                    "filename": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "content": content
+                },
+                "error_code": None,
+                "message": "Latest flight record retrieved successfully"
             }, indent=2))]
         except Exception as e:
-            return [TextContent(type="text", text=f"Error reading file: {e}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error reading file: {e}"
+            }, indent=2))]
 
     async def _list_checkpoints(self, args: dict) -> list[TextContent]:
         """List checkpoints for a task."""
         if not args:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing arguments",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Arguments cannot be None or empty"
             }, indent=2))]
 
         requested_task_id = args.get("task_id")
         if not requested_task_id:
             return [TextContent(type="text", text=json.dumps({
-                "error": "Missing required field: task_id",
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
                 "message": "Task ID is required"
             }, indent=2))]
 
@@ -773,9 +910,9 @@ class OrchestratorMCPServer:
 
         if not task_id:
             return [TextContent(type="text", text=json.dumps({
-                "task_id": requested_task_id,
-                "checkpoint_count": 0,
-                "checkpoints": [],
+                "success": False,
+                "data": None,
+                "error_code": "NOT_FOUND",
                 "message": "No tasks found in history."
             }, indent=2))]
 
@@ -791,15 +928,24 @@ class OrchestratorMCPServer:
                     "created_at": cp_path.stat().st_mtime
                 })
 
-            result = {
-                "task_id": task_id,
-                "checkpoint_count": len(checkpoint_list),
-                "checkpoints": checkpoint_list
-            }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": {
+                    "task_id": task_id,
+                    "checkpoint_count": len(checkpoint_list),
+                    "checkpoints": checkpoint_list
+                },
+                "error_code": None,
+                "message": f"Retrieved {len(checkpoint_list)} checkpoint(s)"
+            }, indent=2))]
         except Exception as e:
             logger.error(f"Error listing checkpoints: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error: {str(e)}"
+            }, indent=2))]
 
     async def _get_checkpoint_details(self, args: dict) -> list[TextContent]:
         """Get checkpoint details."""
@@ -807,7 +953,7 @@ class OrchestratorMCPServer:
 
         try:
             context, objective_index = self.checkpoint_manager.load_checkpoint(checkpoint_id)
-            result = {
+            checkpoint_data = {
                 "checkpoint_id": checkpoint_id,
                 "objective_index": objective_index,
                 "context": {
@@ -819,10 +965,20 @@ class OrchestratorMCPServer:
                     "fallback_level": context.fallback_level
                 }
             }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": checkpoint_data,
+                "error_code": None,
+                "message": "Checkpoint details retrieved successfully"
+            }, indent=2))]
         except Exception as e:
             logger.error(f"Error getting checkpoint details: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error: {str(e)}"
+            }, indent=2))]
 
     async def _get_settings(self, args: dict) -> list[TextContent]:
         """Get current settings."""
@@ -849,10 +1005,20 @@ class OrchestratorMCPServer:
                     "See GeminiProvider.cache_stats for live counters."
                 ),
             }
-            return [TextContent(type="text", text=json.dumps(safe, indent=2))]
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": safe,
+                "error_code": None,
+                "message": "Settings retrieved successfully (API keys redacted)"
+            }, indent=2))]
         except Exception as e:
             logger.error(f"Error getting settings: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error: {str(e)}"
+            }, indent=2))]
 
     async def _update_settings(self, args: dict) -> list[TextContent]:
         """Update settings."""
@@ -862,12 +1028,19 @@ class OrchestratorMCPServer:
             current_settings.update(new_settings)
             self.settings_manager.save(current_settings)
             return [TextContent(type="text", text=json.dumps({
-                "status": "success",
-                "updated_settings": new_settings
+                "success": True,
+                "data": {"updated_settings": new_settings},
+                "error_code": None,
+                "message": "Settings updated successfully"
             }, indent=2))]
         except Exception as e:
             logger.error(f"Error updating settings: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error: {str(e)}"
+            }, indent=2))]
 
     async def run(self):
         """Run the MCP server."""

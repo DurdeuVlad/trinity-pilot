@@ -253,10 +253,15 @@ class _StepRow(QWidget):
             )
 
 
+_AMBER = "#d29922"
+_AMBER_BG = "rgba(210, 153, 34, 30)"
+
+
 class ExecutionOverlay(QWidget):
     """Interactive HUD panel shown while the AI controls the desktop."""
 
     stop_requested = pyqtSignal()
+    continue_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__(
@@ -388,6 +393,16 @@ class ExecutionOverlay(QWidget):
         inner.addWidget(self._narration_label)
         inner.addWidget(self._divider())
 
+        self._blocker_banner = QLabel("")
+        self._blocker_banner.setWordWrap(True)
+        self._blocker_banner.setMinimumHeight(44)
+        self._blocker_banner.setStyleSheet(
+            f"color: {TEXT_STRONG}; font-size: 12px; background: {_AMBER_BG}; "
+            f"border: 1px solid {_AMBER}; border-radius: 6px; padding: 8px 10px;"
+        )
+        self._blocker_banner.setVisible(False)
+        inner.addWidget(self._blocker_banner)
+
         stop_row = QHBoxLayout()
         stop_row.setSpacing(12)
 
@@ -400,6 +415,17 @@ class ExecutionOverlay(QWidget):
         )
         self._stop_btn.clicked.connect(self.stop_requested.emit)
         stop_row.addWidget(self._stop_btn, stretch=1)
+
+        self._continue_btn = QPushButton("Done — Resume AI")
+        self._continue_btn.setFixedHeight(36)
+        self._continue_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {_AMBER}; color: #000000; border: none; border-radius: 8px; font-size: 12px; font-weight: 700; }}"
+            "QPushButton:hover { background-color: #e3b341; }"
+            "QPushButton:pressed { background-color: #bb8009; }"
+        )
+        self._continue_btn.clicked.connect(self._on_continue_clicked)
+        self._continue_btn.setVisible(False)
+        stop_row.addWidget(self._continue_btn, stretch=1)
 
         hint = QLabel("Ctrl+Alt+End")
         hint.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -418,6 +444,7 @@ class ExecutionOverlay(QWidget):
 
     def show_for_domain(self, domain: str) -> None:
         """Animate both the glass pane and this panel into view."""
+        self.clear_blocker()  # reset any leftover blocker state from a prior run
         self._domain_chip.setText(_DOMAIN_LABEL.get(domain, domain.capitalize() + " agent"))
         self._task_label.setText(self._task_text)
         self._narration_label.setText("")
@@ -499,6 +526,51 @@ class ExecutionOverlay(QWidget):
         if level in ("thinking", "info", "step", "warning", "error", "success"):
             trimmed = text[:120] + ("..." if len(text) > 120 else "")
             self._narration_label.setText(trimmed)
+
+    def show_blocker(self, message: str) -> None:
+        """Pause AI control, lift the glass pane, and prompt the user to act."""
+        # Remove the input-blocking overlay so the user can click the browser window.
+        self._clear_glass_panes()
+        self._pulse_timer.stop()
+
+        self._header_label.setText("YOUR TURN")
+        self._header_label.setStyleSheet(
+            f"color: {_AMBER}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
+        )
+        self._pulse_dot.setStyleSheet(f"color: {_AMBER}; font-size: 10px; background: transparent;")
+
+        banner_text = message.strip()
+        self._blocker_banner.setTextFormat(Qt.TextFormat.RichText)
+        self._blocker_banner.setText(
+            f"<b>Action needed</b><br>{banner_text}<br>"
+            f"<span style='color:{TEXT_WEAK}; font-size:11px;'>Click \"Done — Resume AI\" when finished.</span>"
+        )
+        self._blocker_banner.setVisible(True)
+        self._stop_btn.setVisible(False)
+        self._continue_btn.setVisible(True)
+        self.raise_()
+        self._continue_btn.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+
+    def clear_blocker(self) -> None:
+        """Restore normal AI-in-control state after the user resolves the blocker."""
+        self._blocker_banner.setVisible(False)
+        self._continue_btn.setVisible(False)
+        self._stop_btn.setVisible(True)
+
+        self._header_label.setText("AI IN CONTROL")
+        self._header_label.setStyleSheet(
+            f"color: {TEXT_STRONG}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
+        )
+        self._pulse_dot.setStyleSheet(f"color: {PRIMARY}; font-size: 10px; background: transparent;")
+
+        # Restore the glass pane that blocks accidental desktop interaction.
+        if self.isVisible():
+            self._show_glass_panes()
+            self._pulse_timer.start()
+
+    def _on_continue_clicked(self) -> None:
+        self.clear_blocker()
+        self.continue_requested.emit()
 
     def _clear_steps(self) -> None:
         for row in self._step_rows:

@@ -399,6 +399,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.run_requested.connect(self._on_run_requested)
         self.chat_panel.cancel_requested.connect(self.event_bus.task_cancel_requested.emit)
         self.chat_panel.objective_regenerate_requested.connect(self._on_objective_regenerate_requested)
+        self.chat_panel.objective_change_requested.connect(self._on_objective_change_requested)
 
         # ── Clarification replies back to chat ────────────────────────────
         self.event_bus.chat_message.connect(
@@ -409,6 +410,9 @@ class MainWindow(QMainWindow):
         )
         self.event_bus.clarification_ready.connect(self.chat_panel.set_run_ready)
         self.event_bus.objectives_preview_ready.connect(self.chat_panel.show_objective_editor)
+        self.event_bus.objectives_modify_done.connect(
+            lambda ok: None if ok else self.chat_panel.unblock_objective_editor()
+        )
 
         # ── Task result back to chat ───────────────────────────────────────
         self.event_bus.task_result_ready.connect(
@@ -442,6 +446,8 @@ class MainWindow(QMainWindow):
         )
         self.event_bus.status_update.connect(self._overlay.set_narration)
         self.event_bus.preflight_done.connect(self.apply_startup_readiness)
+        self.event_bus.blocker_detected.connect(self._overlay.show_blocker)
+        self._overlay.continue_requested.connect(self.orchestrator.resume_agent)
 
     def _on_chat_message_sent(self, text: str) -> None:
         """Route a user chat message to the clarification engine."""
@@ -457,6 +463,10 @@ class MainWindow(QMainWindow):
     def _on_objective_regenerate_requested(self, confirmed_task: str) -> None:
         """Refresh the proposed objective list without executing the task."""
         self.orchestrator.regenerate_objective_preview(confirmed_task)
+
+    def _on_objective_change_requested(self, confirmed_task: str, current_objectives: list, change_request: str) -> None:
+        """Apply a natural-language change request to the current objectives via the LLM."""
+        self.orchestrator.modify_objectives_preview(confirmed_task, current_objectives, change_request)
 
     def _submit_task(self, task_description: str, domain: str) -> None:
         """Submit a task through the shared run entrypoint."""
@@ -572,13 +582,13 @@ class MainWindow(QMainWindow):
         self._run_layout_initialized = True
 
     def _on_app_busy(self, busy: bool) -> None:
-        """Expand monitoring during execution and collapse it again when idle."""
-        self._set_execution_panels_collapsed(not busy)
+        """Expand monitoring during execution; leave panels visible when done."""
+        if busy:
+            self._set_execution_panels_collapsed(False)
 
     def _on_execution_complete(self, _payload: dict) -> None:
-        """Refresh history and return the Run tab to a chat-first layout."""
+        """Refresh history; leave panels visible so the user can review output."""
         self.history_view.load_history()
-        self._set_execution_panels_collapsed(True)
 
     def _set_execution_panels_collapsed(self, collapsed: bool) -> None:
         """Bias the vertical splitter toward chat while keeping monitoring visible."""

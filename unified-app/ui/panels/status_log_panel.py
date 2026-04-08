@@ -113,6 +113,17 @@ def _html_startup(msg: str, ts: str) -> str:
     )
 
 
+def _html_output(msg: str, ts: str) -> str:
+    """Monospace command output block."""
+    lines = _esc(msg).replace("\n", "<br>")
+    return (
+        f'<div style="margin:4px 6px; padding:6px 10px; background:#0d1117; border-radius:4px; '
+        f'font-family:Consolas,monospace; font-size:11px; color:{TEXT}; '
+        f'white-space:pre-wrap; word-break:break-all;">'
+        f"{lines}</div>"
+    )
+
+
 def _esc(text: str) -> str:
     """Minimal HTML escape."""
     return (
@@ -134,6 +145,7 @@ _RENDERERS = {
     "fail": _html_fail,
     "cancelled": _html_cancelled,
     "startup": _html_startup,
+    "output": _html_output,
 }
 
 

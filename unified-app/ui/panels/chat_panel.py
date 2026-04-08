@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QStackedWidget,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 _MAX_TASK_DESCRIPTION_LENGTH = 1000
 _MIN_COMPOSER_HEIGHT = 120
 _MAX_COMPOSER_HEIGHT = 300
-_OBJECTIVE_EDITOR_MIN_HEIGHT = 320
 
 
 class ChatState(Enum):
@@ -145,6 +144,7 @@ class ChatPanel(QWidget):
     run_requested = pyqtSignal(str, list)
     cancel_requested = pyqtSignal()
     objective_regenerate_requested = pyqtSignal(str)
+    objective_change_requested = pyqtSignal(str, list, str)  # (task, current_objectives, change_request)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -206,6 +206,17 @@ class ChatPanel(QWidget):
         header_layout.addWidget(self.status_label)
         root.addWidget(header)
 
+        # Horizontal split: chat column always left, objective sidebar right (hidden until review).
+        self._content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._content_splitter.setHandleWidth(4)
+        self._content_splitter.setChildrenCollapsible(False)
+
+        left_col = QWidget()
+        left_col.setStyleSheet(f"background-color: {APP_BG};")
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -225,11 +236,7 @@ class ChatPanel(QWidget):
         self.messages_layout.addStretch(1)
 
         self.scroll.setWidget(self.messages_widget)
-        root.addWidget(self.scroll, stretch=1)
-
-        self.bottom_stack = QStackedWidget()
-        self.bottom_stack.setStyleSheet(f"background-color: {APP_BG};")
-        self.bottom_stack.setMinimumHeight(_MIN_COMPOSER_HEIGHT + 56)
+        left_layout.addWidget(self.scroll, stretch=1)
 
         self.composer_frame = QFrame()
         self.composer_frame.setObjectName("ComposerFrame")
@@ -339,15 +346,17 @@ class ChatPanel(QWidget):
         footer.addWidget(self.send_btn)
 
         composer_layout.addLayout(footer)
-        self.bottom_stack.addWidget(self.composer_frame)
+        left_layout.addWidget(self.composer_frame)
+        self._content_splitter.addWidget(left_col)
 
         self.objective_editor = ObjectiveEditorWidget()
         self.objective_editor.objectives_approved.connect(self._on_objectives_approved)
         self.objective_editor.objectives_cancelled.connect(self._on_objectives_cancelled)
         self.objective_editor.objectives_regenerate_requested.connect(self._on_objective_regenerate_requested)
-        self.bottom_stack.addWidget(self.objective_editor)
+        self.objective_editor.hide()
+        self._content_splitter.addWidget(self.objective_editor)
 
-        root.addWidget(self.bottom_stack)
+        root.addWidget(self._content_splitter, stretch=1)
 
     def add_message(self, role: str, text: str) -> None:
         """Append a transcript item to the inbox."""
@@ -377,8 +386,11 @@ class ChatPanel(QWidget):
         self._approved_objectives = []
         self._objective_editor_busy = False
         self._status_override = None
-        self._set_composer_text(task_summary)
         self.objective_editor.set_objectives(task_summary, objectives)
+        self.input_field.blockSignals(True)
+        self.input_field.clear()
+        self.input_field.blockSignals(False)
+        self._update_composer_metrics()
         if self._state != ChatState.STARTUP_BLOCKED:
             self._transition_to(ChatState.REVIEWING_OBJECTIVES)
         else:
@@ -467,7 +479,20 @@ class ChatPanel(QWidget):
 
     def _on_send(self) -> None:
         text = self.input_field.toPlainText().strip()
-        if not text or self._state != ChatState.IDLE:
+        if not text:
+            return
+
+        if self._state == ChatState.REVIEWING_OBJECTIVES:
+            if self._objective_editor_busy:
+                return
+            current = self.objective_editor.all_objectives()
+            self.input_field.clear()
+            self._update_composer_metrics()
+            self.add_message("user", text)
+            self._on_objective_change_requested(current, text)
+            return
+
+        if self._state not in {ChatState.IDLE, ChatState.READY_TO_RUN}:
             return
         if len(text) > _MAX_TASK_DESCRIPTION_LENGTH:
             self._confirmed_task = ""
@@ -491,13 +516,19 @@ class ChatPanel(QWidget):
             self._objective_editor_busy = True
             self.run_requested.emit(self._confirmed_task, list(self._approved_objectives))
 
+    def unblock_objective_editor(self) -> None:
+        """Un-busy the objective editor after a rejected change request."""
+        self._objective_editor_busy = False
+        self._status_override = None
+        self.objective_editor.set_busy(False)
+        self._reconcile_ui()
+
     def _on_objectives_approved(self, objectives: list[str]) -> None:
         if self._state != ChatState.REVIEWING_OBJECTIVES or not self._confirmed_task:
             return
         self._approved_objectives = list(objectives)
-        self._objective_editor_busy = False
-        self._status_override = ("Objectives confirmed. Click Run Workflow when you are ready.", "muted")
-        self._transition_to(ChatState.READY_TO_RUN)
+        self._objective_editor_busy = True
+        self.run_requested.emit(self._confirmed_task, list(objectives))
 
     def _on_objectives_cancelled(self) -> None:
         if not self._confirmed_task:
@@ -516,6 +547,15 @@ class ChatPanel(QWidget):
         self.objective_editor.set_busy(True)
         self._reconcile_ui()
         self.objective_regenerate_requested.emit(self._confirmed_task)
+
+    def _on_objective_change_requested(self, current_objectives: list, change_request: str) -> None:
+        if self._state != ChatState.REVIEWING_OBJECTIVES or not self._confirmed_task:
+            return
+        self._objective_editor_busy = True
+        self._status_override = ("Asking AI to update the plan...", "muted")
+        self.objective_editor.set_busy(True)
+        self._reconcile_ui()
+        self.objective_change_requested.emit(self._confirmed_task, current_objectives, change_request)
 
     def _finish_thinking_if_pending(self) -> None:
         if self._pending_idle_reenable and self._state == ChatState.THINKING:
@@ -546,9 +586,15 @@ class ChatPanel(QWidget):
         ready = self._state == ChatState.READY_TO_RUN
         reviewing = self._state == ChatState.REVIEWING_OBJECTIVES
         running = self._state == ChatState.EXECUTING
+        interactive = idle_like or reviewing
 
-        self.input_field.setEnabled(idle_like and not self._startup_blocked and not running)
-        self.send_btn.setEnabled(idle_like and not self._startup_blocked and not running)
+        self.input_field.setEnabled(interactive and not self._startup_blocked and not running)
+        self.send_btn.setEnabled(
+            interactive
+            and not self._startup_blocked
+            and not running
+            and not (reviewing and self._objective_editor_busy)
+        )
         for chip in self._suggestions:
             chip.setEnabled(idle_like and not self._startup_blocked and not running)
 
@@ -557,14 +603,19 @@ class ChatPanel(QWidget):
         self.run_btn.setEnabled(ready and bool(self._confirmed_task) and not self._startup_blocked)
         self.cancel_btn.setVisible(running)
         self.cancel_btn.setEnabled(running)
-        self.send_btn.setVisible(self._state == ChatState.IDLE)
+        self.send_btn.setVisible(self._state in {ChatState.IDLE, ChatState.REVIEWING_OBJECTIVES})
+        self.send_btn.setText("Request Change" if reviewing else "Send")
 
         self.objective_editor.set_busy(reviewing and self._objective_editor_busy)
         self.objective_editor.setEnabled(reviewing and not running and not self._startup_blocked)
-        self.bottom_stack.setCurrentWidget(self.objective_editor if reviewing else self.composer_frame)
-        self.bottom_stack.setMinimumHeight(
-            _OBJECTIVE_EDITOR_MIN_HEIGHT if reviewing else max(_MIN_COMPOSER_HEIGHT + 56, self.input_field.height() + 44)
-        )
+
+        # Show the objective sidebar when reviewing; hide it otherwise.
+        if reviewing and not self.objective_editor.isVisible():
+            self.objective_editor.show()
+            w = max(400, self._content_splitter.width())
+            self._content_splitter.setSizes([int(w * 0.55), int(w * 0.45)])
+        elif not reviewing:
+            self.objective_editor.hide()
 
         if self._status_override is not None and self._state != ChatState.EXECUTING:
             text, level = self._status_override
@@ -575,7 +626,7 @@ class ChatPanel(QWidget):
         elif reviewing and self._objective_editor_busy:
             text, level = ("Refreshing objectives...", "muted")
         elif reviewing:
-            text, level = ("Review the plan, edit anything you need, then approve to run.", "muted")
+            text, level = ("Review objectives on the right. Type a change request here and hit \"Request Change\".", "muted")
         elif ready:
             text, level = ("Ready to run. Edit the draft to refine it, or click Run Workflow.", "muted")
         elif running:
