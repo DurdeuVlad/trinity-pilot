@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -28,6 +29,7 @@ try:
         TEXT,
         TEXT_STRONG,
         TEXT_WEAK,
+        WARNING,
     )
 except ImportError:
     BORDER = "#30363d"
@@ -38,6 +40,7 @@ except ImportError:
     TEXT = "#cdd9e5"
     TEXT_STRONG = "#f0f6fc"
     TEXT_WEAK = "#8b949e"
+    WARNING = "#d29922"
 
 _PANEL_W = 420
 _PANEL_MAX_STEPS_VISIBLE = 7
@@ -52,11 +55,25 @@ _DOMAIN_LABEL: dict[str, str] = {
     "mixed": "Multi-domain agent",
 }
 
+_DOMAIN_ACCENT: dict[str, str] = {
+    "browser": PRIMARY,
+    "desktop": "#bc8cff",
+    "cli": SUCCESS,
+    "mixed": "#d29922",
+}
+
+_DOMAIN_TINT: dict[str, tuple[int, int, int]] = {
+    "browser": (20, 50, 90),
+    "desktop": (45, 25, 70),
+    "cli": (15, 55, 25),
+    "mixed": (65, 45, 8),
+}
+
 _STATUS_ICON: dict[str, str] = {
-    "pending": ".",
-    "running": ">",
-    "completed": "OK",
-    "failed": "X",
+    "pending": "·",
+    "running": "▶",
+    "completed": "✓",
+    "failed": "✗",
 }
 _STATUS_COLOR: dict[str, str] = {
     "pending": TEXT_WEAK,
@@ -64,13 +81,21 @@ _STATUS_COLOR: dict[str, str] = {
     "completed": SUCCESS,
     "failed": ERROR,
 }
-_PULSE_CHARS = (">", ":")
+_PULSE_CHARS = ("▶", "▷")
+
+_NARRATION_STYLE: dict[str, tuple[str, str]] = {
+    "thinking": ("⏸ ", TEXT_WEAK),
+    "success":  ("✓ ", SUCCESS),
+    "warning":  ("⚠ ", WARNING),
+    "error":    ("✗ ", ERROR),
+}
 
 
 class _GlassPaneOverlay(QWidget):
     """Full-screen semi-transparent lock layer that blocks desktop interaction."""
 
     stop_requested = pyqtSignal()
+    pause_requested = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__(
@@ -83,14 +108,26 @@ class _GlassPaneOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setWindowOpacity(0.0)
         self._anim: Optional[QPropertyAnimation] = None
+        self._tint: tuple[int, int, int] = (0, 0, 0)
+        self._dock: Optional[QFrame] = None
         self._build_ui()
         self.hide()
+
+    def set_domain(self, domain: str) -> None:
+        self._tint = _DOMAIN_TINT.get(domain, (0, 0, 0))
+        self.update()
+
+    def set_accent(self, color: str) -> None:
+        if self._dock is not None:
+            self._dock.setStyleSheet(
+                f"QFrame#StopDock {{ background-color: rgba(13, 17, 23, 228); "
+                f"border: 1px solid {BORDER}; border-left: 3px solid {color}; border-radius: 12px; }}"
+            )
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(_MARGIN, _MARGIN, _MARGIN, _MARGIN)
         layout.setSpacing(0)
-        layout.addStretch(1)
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
@@ -102,6 +139,7 @@ class _GlassPaneOverlay(QWidget):
         dock.setStyleSheet(
             f"QFrame#StopDock {{ background-color: rgba(13, 17, 23, 228); border: 1px solid {BORDER}; border-radius: 12px; }}"
         )
+        self._dock = dock
         dock_layout = QHBoxLayout(dock)
         dock_layout.setContentsMargins(10, 8, 10, 8)
         dock_layout.setSpacing(8)
@@ -113,6 +151,16 @@ class _GlassPaneOverlay(QWidget):
         hint = QLabel("Ctrl+Alt+End")
         hint.setStyleSheet(f"color: {TEXT_WEAK}; font-size: 10px; background: transparent;")
         dock_layout.addWidget(hint)
+
+        pause_btn = QPushButton("Pause")
+        pause_btn.setFixedHeight(30)
+        pause_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_WEAK}; border: 1px solid {BORDER}; "
+            f"border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 10px; }}"
+            f"QPushButton:hover {{ color: {TEXT}; border-color: #d29922; }}"
+        )
+        pause_btn.clicked.connect(self.pause_requested.emit)
+        dock_layout.addWidget(pause_btn)
 
         stop_btn = QPushButton("STOP AI")
         stop_btn.setFixedHeight(30)
@@ -126,6 +174,7 @@ class _GlassPaneOverlay(QWidget):
 
         action_row.addWidget(dock)
         layout.addLayout(action_row)
+        layout.addStretch(1)
 
     def show_glass(self, geometry, *, focus: bool = False) -> None:
         if not _supports_overlay_windows():
@@ -166,8 +215,9 @@ class _GlassPaneOverlay(QWidget):
         self._anim.start()
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        r, g, b = self._tint
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, _GLASS_ALPHA))
+        painter.fillRect(self.rect(), QColor(r, g, b, _GLASS_ALPHA))
         painter.end()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -217,16 +267,19 @@ class _StepRow(QWidget):
 
     def set_running(self) -> None:
         self._status = "running"
+        self.setStyleSheet("background-color: rgba(88,166,255,12); border-radius: 4px;")
         self._apply_style()
 
     def set_completed(self) -> None:
         self._status = "completed"
         self._icon.setText(_STATUS_ICON["completed"])
+        self.setStyleSheet("background-color: transparent;")
         self._apply_style()
 
     def set_failed(self) -> None:
         self._status = "failed"
         self._icon.setText(_STATUS_ICON["failed"])
+        self.setStyleSheet("background-color: transparent;")
         self._apply_style()
 
     def pulse(self, frame: int) -> None:
@@ -257,11 +310,16 @@ _AMBER = "#d29922"
 _AMBER_BG = "rgba(210, 153, 34, 30)"
 
 
+_PAUSE_AMBER = "#d29922"
+
+
 class ExecutionOverlay(QWidget):
     """Interactive HUD panel shown while the AI controls the desktop."""
 
     stop_requested = pyqtSignal()
     continue_requested = pyqtSignal()
+    pause_requested = pyqtSignal()
+    steer_requested = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__(
@@ -281,6 +339,11 @@ class ExecutionOverlay(QWidget):
         self._anim: Optional[QPropertyAnimation] = None
         self._task_text = "Preparing..."
         self._steps_scroll: Optional[QScrollArea] = None
+        self._current_domain = "browser"
+        self._hud_card: Optional[QFrame] = None
+        self._steer_enabled = False
+        self._steer_input: Optional[QLineEdit] = None
+        self._steer_btn: Optional[QPushButton] = None
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(550)
@@ -292,6 +355,7 @@ class ExecutionOverlay(QWidget):
             app.screenRemoved.connect(self._refresh_glass_panes)
 
         self._build_ui()
+        self.set_steer_enabled(False)
         self.hide()
 
     def _build_ui(self) -> None:
@@ -304,6 +368,7 @@ class ExecutionOverlay(QWidget):
         card.setStyleSheet(
             f"QFrame#HUDCard {{ background-color: rgba(13, 17, 23, 235); border: 1px solid {BORDER}; border-radius: 12px; }}"
         )
+        self._hud_card = card
         root.addWidget(card)
 
         inner = QVBoxLayout(card)
@@ -312,7 +377,7 @@ class ExecutionOverlay(QWidget):
 
         header_row = QHBoxLayout()
         header_row.setSpacing(8)
-        self._pulse_dot = QLabel("o")
+        self._pulse_dot = QLabel("●")
         self._pulse_dot.setStyleSheet(f"color: {PRIMARY}; font-size: 10px; background: transparent;")
         header_row.addWidget(self._pulse_dot)
 
@@ -388,9 +453,35 @@ class ExecutionOverlay(QWidget):
         self._narration_label.setWordWrap(True)
         self._narration_label.setFixedHeight(36)
         self._narration_label.setStyleSheet(
-            f"color: {TEXT_WEAK}; font-size: 11px; font-style: italic; background: transparent;"
+            f"color: {TEXT}; font-size: 11px; background: transparent;"
         )
         inner.addWidget(self._narration_label)
+        inner.addWidget(self._divider())
+
+        steer_row = QHBoxLayout()
+        steer_row.setSpacing(8)
+        self._steer_input = QLineEdit()
+        self._steer_input.setPlaceholderText("Steer the current objective...")
+        self._steer_input.setClearButtonEnabled(True)
+        self._steer_input.returnPressed.connect(self._emit_steer)
+        self._steer_input.setStyleSheet(
+            f"QLineEdit {{ background-color: rgba(13, 17, 23, 228); color: {TEXT}; border: 1px solid {BORDER}; "
+            "border-radius: 8px; padding: 8px 10px; font-size: 11px; }}"
+            f"QLineEdit:disabled {{ color: {TEXT_WEAK}; border-color: {BORDER}; }}"
+        )
+        steer_row.addWidget(self._steer_input, stretch=1)
+
+        self._steer_btn = QPushButton("Steer")
+        self._steer_btn.setFixedHeight(34)
+        self._steer_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT}; border: 1px solid {BORDER}; "
+            "border-radius: 8px; font-size: 11px; font-weight: 600; padding: 0 12px; }}"
+            f"QPushButton:hover {{ border-color: {PRIMARY}; }}"
+            f"QPushButton:disabled {{ color: {TEXT_WEAK}; border-color: {BORDER}; }}"
+        )
+        self._steer_btn.clicked.connect(self._emit_steer)
+        steer_row.addWidget(self._steer_btn)
+        inner.addLayout(steer_row)
         inner.addWidget(self._divider())
 
         self._blocker_banner = QLabel("")
@@ -415,6 +506,16 @@ class ExecutionOverlay(QWidget):
         )
         self._stop_btn.clicked.connect(self.stop_requested.emit)
         stop_row.addWidget(self._stop_btn, stretch=1)
+
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.setFixedHeight(36)
+        self._pause_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_WEAK}; border: 1px solid {BORDER}; border-radius: 8px; font-size: 12px; font-weight: 600; }}"
+            f"QPushButton:hover {{ color: {TEXT}; border-color: {_AMBER}; }}"
+            "QPushButton:pressed { background-color: rgba(210,153,34,30); }"
+        )
+        self._pause_btn.clicked.connect(self._on_pause_clicked)
+        stop_row.addWidget(self._pause_btn, stretch=1)
 
         self._continue_btn = QPushButton("Done — Resume AI")
         self._continue_btn.setFixedHeight(36)
@@ -445,10 +546,14 @@ class ExecutionOverlay(QWidget):
     def show_for_domain(self, domain: str) -> None:
         """Animate both the glass pane and this panel into view."""
         self.clear_blocker()  # reset any leftover blocker state from a prior run
+        self._current_domain = domain
         self._domain_chip.setText(_DOMAIN_LABEL.get(domain, domain.capitalize() + " agent"))
         self._task_label.setText(self._task_text)
         self._narration_label.setText("")
+        self._narration_label.setStyleSheet(f"color: {TEXT}; font-size: 11px; background: transparent;")
         self._clear_steps()
+        self._set_hud_accent(_DOMAIN_ACCENT.get(domain, PRIMARY))
+        self.set_steer_enabled(True)
         if not _supports_overlay_windows():
             return
         self._show_glass_panes()
@@ -466,8 +571,10 @@ class ExecutionOverlay(QWidget):
         if not _supports_overlay_windows():
             self.hide()
             self._clear_glass_panes()
+            self.set_steer_enabled(False)
             return
         self._hide_glass_panes()
+        self.set_steer_enabled(False)
         self._fade(self.windowOpacity(), 0.0, 220, on_done=self.hide)
 
     def update_step(self, idx: int, description: str) -> None:
@@ -492,7 +599,7 @@ class ExecutionOverlay(QWidget):
         self._empty_label.setVisible(False)
         self._progress_bar.setRange(0, len(steps))
         self._progress_bar.setValue(0)
-        self._progress_label.setText(f"Step 0 of {len(steps)}")
+        self._progress_label.setText(f"Objective 0 of {len(steps)}")
         for description in steps:
             row = _StepRow(description)
             self._step_rows.append(row)
@@ -505,7 +612,7 @@ class ExecutionOverlay(QWidget):
         if row is not None:
             row.set_running()
             QTimer.singleShot(50, lambda: self._scroll_to_row(idx))
-        self._progress_label.setText(f"Step {idx} of {len(self._step_rows)}")
+        self._progress_label.setText(f"Objective {idx} of {len(self._step_rows)}")
 
     def set_step_completed(self, idx: int) -> None:
         """Mark step ``idx`` (1-based) as completed and advance progress."""
@@ -522,10 +629,15 @@ class ExecutionOverlay(QWidget):
             row.set_failed()
 
     def set_narration(self, text: str, level: str = "info") -> None:
-        """Show the latest AI status message beneath the step list."""
-        if level in ("thinking", "info", "step", "warning", "error", "success"):
-            trimmed = text[:120] + ("..." if len(text) > 120 else "")
-            self._narration_label.setText(trimmed)
+        """Show the latest AI status message with level-aware icon and colour."""
+        if level not in ("thinking", "info", "step", "warning", "error", "success"):
+            return
+        prefix, color = _NARRATION_STYLE.get(level, ("▶ ", PRIMARY))
+        trimmed = prefix + text[:116] + ("..." if len(text) > 116 else "")
+        self._narration_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent;"
+        )
+        self._narration_label.setText(trimmed)
 
     def show_blocker(self, message: str) -> None:
         """Pause AI control, lift the glass pane, and prompt the user to act."""
@@ -537,6 +649,7 @@ class ExecutionOverlay(QWidget):
         self._header_label.setStyleSheet(
             f"color: {_AMBER}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
         )
+        self._pulse_dot.setText("⏸")
         self._pulse_dot.setStyleSheet(f"color: {_AMBER}; font-size: 10px; background: transparent;")
 
         banner_text = message.strip()
@@ -548,7 +661,11 @@ class ExecutionOverlay(QWidget):
         self._blocker_banner.setVisible(True)
         self._stop_btn.setVisible(False)
         self._continue_btn.setVisible(True)
+        self.set_steer_enabled(False)
+        # Reposition so the taller panel (with banner) doesn't push the button off-screen.
+        self._reposition()
         self.raise_()
+        self.activateWindow()
         self._continue_btn.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
 
     def clear_blocker(self) -> None:
@@ -556,11 +673,15 @@ class ExecutionOverlay(QWidget):
         self._blocker_banner.setVisible(False)
         self._continue_btn.setVisible(False)
         self._stop_btn.setVisible(True)
+        self._pause_btn.setVisible(True)
+        self._pause_btn.setText("Pause")
+        self.set_steer_enabled(True)
 
         self._header_label.setText("AI IN CONTROL")
         self._header_label.setStyleSheet(
             f"color: {TEXT_STRONG}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
         )
+        self._pulse_dot.setText("●")
         self._pulse_dot.setStyleSheet(f"color: {PRIMARY}; font-size: 10px; background: transparent;")
 
         # Restore the glass pane that blocks accidental desktop interaction.
@@ -568,9 +689,68 @@ class ExecutionOverlay(QWidget):
             self._show_glass_panes()
             self._pulse_timer.start()
 
+    def show_paused(self) -> None:
+        """Show pause state: lift glass panes and allow user to interact."""
+        self._clear_glass_panes()
+        self._pulse_timer.stop()
+
+        self._header_label.setText("AI PAUSED")
+        self._header_label.setStyleSheet(
+            f"color: {_AMBER}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
+        )
+        self._pulse_dot.setText("⏸")
+        self._pulse_dot.setStyleSheet(f"color: {_AMBER}; font-size: 10px; background: transparent;")
+        self._pause_btn.setText("Resume AI")
+        self.set_steer_enabled(False)
+        self._reposition()
+        self.raise_()
+        self.activateWindow()
+
+    def clear_paused(self) -> None:
+        """Return to AI-in-control state after user resumes from pause."""
+        self._pause_btn.setText("Pause")
+        self._header_label.setText("AI IN CONTROL")
+        self._header_label.setStyleSheet(
+            f"color: {TEXT_STRONG}; font-size: 12px; font-weight: 700; letter-spacing: 1px; background: transparent;"
+        )
+        self._pulse_dot.setText("●")
+        self._pulse_dot.setStyleSheet(f"color: {PRIMARY}; font-size: 10px; background: transparent;")
+        self.set_steer_enabled(True)
+        if self.isVisible():
+            self._show_glass_panes()
+            self._pulse_timer.start()
+
     def _on_continue_clicked(self) -> None:
         self.clear_blocker()
         self.continue_requested.emit()
+
+    def _on_pause_clicked(self) -> None:
+        if self._pause_btn.text() == "Pause":
+            self.pause_requested.emit()
+        else:
+            # "Resume AI" after user-pause
+            self.clear_paused()
+            self.continue_requested.emit()
+
+    def set_steer_enabled(self, enabled: bool) -> None:
+        self._steer_enabled = enabled
+        if self._steer_input is not None:
+            self._steer_input.setVisible(enabled)
+            self._steer_input.setEnabled(enabled)
+            if not enabled:
+                self._steer_input.clear()
+        if self._steer_btn is not None:
+            self._steer_btn.setVisible(enabled)
+            self._steer_btn.setEnabled(enabled)
+
+    def _emit_steer(self) -> None:
+        if not self._steer_enabled or self._steer_input is None:
+            return
+        cleaned = " ".join(self._steer_input.text().split()).strip()
+        if not cleaned:
+            return
+        self._steer_input.clear()
+        self.steer_requested.emit(cleaned[:280])
 
     def _clear_steps(self) -> None:
         for row in self._step_rows:
@@ -620,22 +800,37 @@ class ExecutionOverlay(QWidget):
             if row is not None:
                 row.pulse(self._pulse_frame)
         if self._pulse_frame % 2 == 0:
+            self._pulse_dot.setText("●")
             self._pulse_dot.setStyleSheet(
                 f"color: {PRIMARY}; font-size: 10px; background: transparent;"
             )
         else:
+            self._pulse_dot.setText("○")
             self._pulse_dot.setStyleSheet(
                 f"color: {BORDER}; font-size: 10px; background: transparent;"
+            )
+
+    def _set_hud_accent(self, color: str) -> None:
+        if self._hud_card is not None:
+            self._hud_card.setStyleSheet(
+                f"QFrame#HUDCard {{ background-color: rgba(13,17,23,235); "
+                f"border: 1px solid {BORDER}; border-left: 3px solid {color}; border-radius: 12px; }}"
             )
 
     def _show_glass_panes(self) -> None:
         """Cover every attached screen with an input-blocking pane."""
         self._clear_glass_panes()
+        accent = _DOMAIN_ACCENT.get(self._current_domain, PRIMARY)
         for screen in QApplication.screens():
             pane = _GlassPaneOverlay()
             pane.stop_requested.connect(self.stop_requested.emit)
+            pane.pause_requested.connect(self.pause_requested.emit)
+            pane.set_domain(self._current_domain)
+            pane.set_accent(accent)
             pane.show_glass(screen.geometry(), focus=False)
             self._glass_panes.append(pane)
+        # Ensure the HUD panel is always above the glass panes.
+        self.raise_()
 
     def _hide_glass_panes(self) -> None:
         """Fade out and destroy every screen-specific blocker pane."""

@@ -8,9 +8,11 @@ from enum import Enum
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QResizeEvent
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,7 +27,9 @@ from ui.theme import (
     ASSISTANT_ACCENT,
     ASSISTANT_SURFACE,
     BORDER,
+    DANGER,
     MUTED,
+    SUCCESS,
     SURFACE,
     TEXT,
     USER_ACCENT,
@@ -43,6 +47,34 @@ logger = logging.getLogger(__name__)
 _MAX_TASK_DESCRIPTION_LENGTH = 1000
 _MIN_COMPOSER_HEIGHT = 120
 _MAX_COMPOSER_HEIGHT = 300
+
+
+def _normalize_text(text: str) -> str:
+    normalized = str(text or "")
+    replacements = {
+        "â†’": "->",
+        "→": "->",
+        "â€¦": "...",
+        "…": "...",
+        "â€”": " - ",
+        "—": " - ",
+        "–": " - ",
+        "âœ“": "OK",
+        "✓": "OK",
+        "âœ—": "X",
+        "✗": "X",
+        "â–¶": ">",
+        "▶": ">",
+        "â–¼": "v",
+        "▼": "v",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+    }
+    for old, new in replacements.items():
+        normalized = normalized.replace(old, new)
+    return normalized
 
 
 class ChatState(Enum):
@@ -125,7 +157,7 @@ class _MessageCard(QFrame):
         )
         layout.addWidget(header)
 
-        content = QLabel(text)
+        content = QLabel(_normalize_text(text))
         content.setWordWrap(True)
         content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         content.setStyleSheet(
@@ -137,6 +169,145 @@ class _MessageCard(QFrame):
         layout.addWidget(content)
 
 
+class _ResultCard(QFrame):
+    """Structured result card shown after execution completes."""
+
+    def __init__(self, text: str, summary: dict | None, timestamp: str, parent=None) -> None:
+        super().__init__(parent)
+        self._result_text = _normalize_text(text)
+        self.setObjectName("ResultCard")
+        self.setStyleSheet(card_qss("ResultCard", ASSISTANT_ACCENT, ASSISTANT_SURFACE))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+
+        # Header
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+
+        header_lbl = QLabel(f"Orchestrator  |  {timestamp}")
+        header_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700; background: transparent;")
+        header_row.addWidget(header_lbl)
+        header_row.addStretch(1)
+
+        copy_btn = QPushButton("Copy")
+        copy_btn.setFixedHeight(22)
+        copy_btn.setStyleSheet(
+            f"QPushButton {{ color: {MUTED}; background: transparent; border: 1px solid {BORDER};"
+            "border-radius: 4px; padding: 0 8px; font-size: 11px; }"
+            f"QPushButton:hover {{ color: {TEXT}; border-color: {USER_ACCENT}; }}"
+        )
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._result_text))
+        header_row.addWidget(copy_btn)
+        root.addLayout(header_row)
+
+        # Answer text
+        answer = QPlainTextEdit()
+        answer.setReadOnly(True)
+        answer.setPlainText(self._result_text)
+        answer.setMaximumHeight(180)
+        answer.setFrameStyle(QFrame.Shape.NoFrame)
+        answer.setStyleSheet(
+            f"QPlainTextEdit {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER}; "
+            "border-radius: 8px; padding: 10px 12px; font-size: 13px; }}"
+        )
+        root.addWidget(answer)
+
+        # Collapsible execution breakdown (only when summary provided)
+        if summary and (summary.get("objectives") or summary.get("completed") or summary.get("failed")):
+            self._breakdown_visible = False
+            self._breakdown_widget = self._build_breakdown(summary)
+            self._breakdown_widget.hide()
+
+            toggle_row = QHBoxLayout()
+            toggle_row.setContentsMargins(0, 0, 0, 0)
+            self._toggle_btn = QPushButton(">  Execution details")
+            self._toggle_btn.setStyleSheet(
+                f"QPushButton {{ color: {MUTED}; background: transparent; border: none;"
+                "font-size: 11px; text-align: left; padding: 0; }"
+                f"QPushButton:hover {{ color: {TEXT}; }}"
+            )
+            self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._toggle_btn.clicked.connect(self._on_toggle)
+            toggle_row.addWidget(self._toggle_btn)
+            toggle_row.addStretch(1)
+            root.addLayout(toggle_row)
+            root.addWidget(self._breakdown_widget)
+
+    def _on_toggle(self) -> None:
+        self._breakdown_visible = not self._breakdown_visible
+        self._breakdown_widget.setVisible(self._breakdown_visible)
+        self._toggle_btn.setText("v  Execution details" if self._breakdown_visible else ">  Execution details")
+
+    def _build_breakdown(self, summary: dict) -> QWidget:
+        container = QWidget()
+        container.setStyleSheet(f"background: transparent;")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(3)
+
+        total = summary.get("total_objectives", 0)
+        duration = summary.get("duration_s")
+        meta_parts = []
+        if total:
+            meta_parts.append(f"{total} objective{'s' if total != 1 else ''}")
+        if duration is not None:
+            meta_parts.append(f"{duration:.1f}s total")
+        if meta_parts:
+            meta_lbl = QLabel("  ".join(meta_parts))
+            meta_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
+            layout.addWidget(meta_lbl)
+
+        objective_rows = summary.get("objectives") or []
+        if objective_rows:
+            for item in objective_rows:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status", "pending")).lower()
+                status_text = "OK" if status == "completed" else "FAILED"
+                color = SUCCESS if status == "completed" else DANGER
+                parts = [f"Obj {item.get('index')}: {_normalize_text(str(item.get('description', '')))[:72]}"]
+
+                duration_s = item.get("duration_s")
+                if duration_s is not None:
+                    parts.append(f"{float(duration_s):.1f}s")
+
+                attempts = int(item.get("attempt_count", 0) or 0)
+                if attempts > 1:
+                    noun = "attempt" if attempts == 1 else "attempts"
+                    parts.append(f"{attempts} {noun}")
+
+                row = QLabel(f"[{status_text}] " + "  |  ".join(parts))
+                row.setWordWrap(True)
+                row.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+                layout.addWidget(row)
+
+                reason = _normalize_text(str(item.get("reason", "") or "").strip())
+                if reason:
+                    reason_lbl = QLabel(reason[:140])
+                    reason_lbl.setWordWrap(True)
+                    reason_lbl.setStyleSheet(
+                        f"color: {MUTED}; font-size: 11px; background: transparent; padding-left: 14px;"
+                    )
+                    layout.addWidget(reason_lbl)
+        else:
+            for idx, desc in summary.get("completed", []):
+                row = QLabel(f"[OK] Obj {idx}: {_normalize_text(desc)[:80]}")
+                row.setStyleSheet(f"color: {SUCCESS}; font-size: 11px; background: transparent;")
+                layout.addWidget(row)
+
+            for idx, desc, reason in summary.get("failed", []):
+                row = QLabel(f"[FAILED] Obj {idx}: {_normalize_text(desc)[:60]} - {_normalize_text(str(reason))[:60]}")
+                row.setWordWrap(True)
+                row.setStyleSheet(f"color: {DANGER}; font-size: 11px; background: transparent;")
+                layout.addWidget(row)
+
+        return container
+
+
 class ChatPanel(QWidget):
     """Spacious work inbox for clarifying a task and approving objectives."""
 
@@ -145,6 +316,7 @@ class ChatPanel(QWidget):
     cancel_requested = pyqtSignal()
     objective_regenerate_requested = pyqtSignal(str)
     objective_change_requested = pyqtSignal(str, list, str)  # (task, current_objectives, change_request)
+    new_task_requested = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -156,6 +328,10 @@ class ChatPanel(QWidget):
         self._status_override: tuple[str, str] | None = None
         self._pending_idle_reenable = False
         self._objective_editor_busy = False
+        self._think_dots = 0
+        self._think_timer = QTimer(self)
+        self._think_timer.setInterval(500)
+        self._think_timer.timeout.connect(self._on_think_tick)
         self._setup_ui()
         self._update_composer_metrics()
         self._reconcile_ui()
@@ -178,7 +354,7 @@ class ChatPanel(QWidget):
         title_block.setContentsMargins(0, 0, 0, 0)
         title_block.setSpacing(2)
 
-        title = QLabel("Task inbox")
+        title = QLabel("Task")
         title.setStyleSheet(
             f"color: {TEXT};"
             "font-size: 15px;"
@@ -204,6 +380,19 @@ class ChatPanel(QWidget):
             "background: transparent;"
         )
         header_layout.addWidget(self.status_label)
+
+        self.new_task_btn = QPushButton("New Task")
+        self.new_task_btn.setFixedHeight(28)
+        self.new_task_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_task_btn.setStyleSheet(
+            f"QPushButton {{ color: {MUTED}; background: transparent; border: 1px solid {BORDER};"
+            "border-radius: 6px; padding: 0 10px; font-size: 11px; }"
+            f"QPushButton:hover {{ color: {TEXT}; border-color: {USER_ACCENT}; }}"
+        )
+        self.new_task_btn.setToolTip("Clear the current conversation and start a fresh task")
+        self.new_task_btn.clicked.connect(self.new_task_requested.emit)
+        self.new_task_btn.setVisible(False)
+        header_layout.addWidget(self.new_task_btn)
         root.addWidget(header)
 
         # Horizontal split: chat column always left, objective sidebar right (hidden until review).
@@ -330,7 +519,7 @@ class ChatPanel(QWidget):
         self.cancel_btn.setStyleSheet(secondary_button_qss())
         self.cancel_btn.clicked.connect(self.cancel_requested.emit)
 
-        self.run_btn = QPushButton("Run workflow")
+        self.run_btn = QPushButton("Execute")
         self.run_btn.setObjectName("RunWorkflowButton")
         self.run_btn.setStyleSheet(primary_button_qss())
         self.run_btn.clicked.connect(self._on_run_clicked)
@@ -362,6 +551,14 @@ class ChatPanel(QWidget):
         """Append a transcript item to the inbox."""
         timestamp = datetime.now().strftime("%H:%M")
         card = _MessageCard(role, text, timestamp)
+        insert_at = max(0, self.messages_layout.count() - 1)
+        self.messages_layout.insertWidget(insert_at, card)
+        self._scroll_to_bottom()
+
+    def add_result_card(self, text: str, summary: dict | None = None) -> None:
+        """Append a structured result card after execution completes."""
+        timestamp = datetime.now().strftime("%H:%M")
+        card = _ResultCard(text, summary, timestamp)
         insert_at = max(0, self.messages_layout.count() - 1)
         self.messages_layout.insertWidget(insert_at, card)
         self._scroll_to_bottom()
@@ -575,10 +772,19 @@ class ChatPanel(QWidget):
             self._reconcile_ui()
             return False
         self._state = new_state
+        if new_state != ChatState.THINKING:
+            self._think_timer.stop()
         if new_state != ChatState.STARTUP_BLOCKED and new_state != ChatState.REVIEWING_OBJECTIVES:
             self._status_override = None
         self._reconcile_ui()
+        if new_state == ChatState.THINKING:
+            self._think_dots = 0
+            self._think_timer.start()
         return True
+
+    def _on_think_tick(self) -> None:
+        self._think_dots = (self._think_dots % 3) + 1
+        self.status_label.setText("Thinking" + "." * self._think_dots)
 
     def _reconcile_ui(self) -> None:
         """Single source of truth for all interactive element states."""
@@ -609,6 +815,14 @@ class ChatPanel(QWidget):
         self.objective_editor.set_busy(reviewing and self._objective_editor_busy)
         self.objective_editor.setEnabled(reviewing and not running and not self._startup_blocked)
 
+        # Show "New Task" button whenever there are prior messages and AI is idle.
+        has_history = self.messages_layout.count() > 1
+        self.new_task_btn.setVisible(
+            has_history
+            and idle_like
+            and not self._startup_blocked
+        )
+
         # Show the objective sidebar when reviewing; hide it otherwise.
         if reviewing and not self.objective_editor.isVisible():
             self.objective_editor.show()
@@ -622,17 +836,19 @@ class ChatPanel(QWidget):
         elif self._state == ChatState.STARTUP_BLOCKED:
             text, level = (self._startup_message or "Startup blocked.", "warning")
         elif self._state == ChatState.THINKING:
-            text, level = ("Analyzing the request and drafting objectives...", "muted")
+            if self._think_timer.isActive():
+                return
+            text, level = ("Thinking.", "muted")
         elif reviewing and self._objective_editor_busy:
             text, level = ("Refreshing objectives...", "muted")
         elif reviewing:
             text, level = ("Review objectives on the right. Type a change request here and hit \"Request Change\".", "muted")
         elif ready:
-            text, level = ("Ready to run. Edit the draft to refine it, or click Run Workflow.", "muted")
+            text, level = ("Plan approved. Edit the draft or click Execute.", "muted")
         elif running:
-            text, level = ("Running workflow...", "muted")
+            text, level = ("Execution in progress.", "muted")
         else:
-            text, level = ("Tell me what you'd like to automate.", "muted")
+            text, level = ("Enter a task description.", "muted")
 
         color = WARNING if level == "warning" else MUTED
         self.status_label.setText(text)

@@ -8,16 +8,19 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-# Ensure repo root is on the path so trinity_core is importable when running
-# the app directly from the unified-app/ directory.
-_REPO_ROOT = str(Path(__file__).parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-# Add backend module directories so trinity_core adapters can import their deps.
-for _backend_name in ("api-accessibility-poc", "browser-gui-automation", "cli-automation-poc"):
-    _backend_path = str(Path(_REPO_ROOT) / _backend_name)
-    if _backend_path not in sys.path:
-        sys.path.insert(0, _backend_path)
+# Ensure repo-local modules are importable when running the app directly from
+# the unified-app/ directory.
+_REPO_ROOT = Path(__file__).parent.parent.resolve()
+for _relative_path in (
+    ".",
+    "api-accessibility-poc",
+    "browser-gui-automation",
+    "cli-automation-poc",
+    "audit-debugger/src",
+):
+    _import_path = str((_REPO_ROOT / _relative_path).resolve())
+    if _import_path not in sys.path:
+        sys.path.insert(0, _import_path)
 
 from dotenv import load_dotenv
 
@@ -32,6 +35,7 @@ def _load_env() -> None:
 _load_env()
 
 from PyQt6.QtCore import QAbstractNativeEventFilter, QTimer
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QApplication, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from orchestrator import get_event_bus
@@ -42,7 +46,7 @@ from mcp_server.task_submission_pipe import TaskSubmissionPipeServer
 from ui.overlay import ExecutionOverlay
 from ui.panels import ExecutionPlanPanel, StatusLogPanel
 from ui.panels.chat_panel import ChatPanel
-from ui.theme import app_stylesheet
+from ui.theme import MUTED, PRIMARY, app_stylesheet
 from ui.views.history_view import HistoryView
 from ui.views.settings_view import SettingsView
 
@@ -53,7 +57,27 @@ from ui.views.settings_view import SettingsView
 def _detect_domain(description: str) -> str:
     """Select execution domain from task text heuristics."""
     lowered = description.lower()
-    web_tokens = ("browser", "website", "google", "navigate", "search", "wikipedia", "web page", "url", "site")
+    web_tokens = (
+        "browser",
+        "browser tab",
+        "website",
+        "web page",
+        "webpage",
+        "web",
+        "google",
+        "github",
+        "navigate",
+        "search",
+        "wikipedia",
+        "url",
+        "site",
+        "link",
+        "chrome",
+        "firefox",
+        "edge",
+        "http://",
+        "https://",
+    )
     desktop_tokens = ("notepad", "calculator", "window", "desktop", "application", "tab")
     cli_tokens = ("directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory")
     hits = {
@@ -253,7 +277,7 @@ async def run_preflight(config: StartupConfig) -> StartupReadiness:
     return StartupReadiness(
         provider_name=config.provider_name,
         ready=True,
-        user_message=f"Ready — {config.provider_name.capitalize()} is connected and standing by.",
+        user_message=f"{config.provider_name.capitalize()} ready.",
         block_task_submission=False,
     )
 
@@ -309,6 +333,7 @@ class MainWindow(QMainWindow):
         self._force_mock_startup = _is_mock_startup(resolve_startup_config())
         self._run_layout_initialized = False
         self._was_maximized = False  # remember window state before AI takeover
+        self._plan_total = 0
         self._setup_ui()
         self._overlay = ExecutionOverlay()   # must exist before signals are wired
         self._connect_signals()
@@ -400,6 +425,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.cancel_requested.connect(self.event_bus.task_cancel_requested.emit)
         self.chat_panel.objective_regenerate_requested.connect(self._on_objective_regenerate_requested)
         self.chat_panel.objective_change_requested.connect(self._on_objective_change_requested)
+        self.chat_panel.new_task_requested.connect(self._on_new_task_requested)
 
         # ── Clarification replies back to chat ────────────────────────────
         self.event_bus.chat_message.connect(
@@ -416,7 +442,7 @@ class MainWindow(QMainWindow):
 
         # ── Task result back to chat ───────────────────────────────────────
         self.event_bus.task_result_ready.connect(
-            lambda text: self.chat_panel.add_message("assistant", text)
+            lambda text, summary: self.chat_panel.add_result_card(text, summary)
         )
 
         # ── Execution panels (plan + log) ──────────────────────────────────
@@ -426,18 +452,24 @@ class MainWindow(QMainWindow):
 
         self.event_bus.plan_generated.connect(self.execution_plan_panel.display_plan)
         self.event_bus.step_started.connect(lambda idx, _desc: self.execution_plan_panel.update_step_status(idx, "running"))
-        self.event_bus.step_completed.connect(lambda idx, _payload: self.execution_plan_panel.update_step_status(idx, "completed"))
-        self.event_bus.step_failed.connect(lambda idx, _message: self.execution_plan_panel.update_step_status(idx, "failed"))
+        self.event_bus.step_completed.connect(self.execution_plan_panel.on_step_completed)
+        self.event_bus.step_failed.connect(self.execution_plan_panel.on_step_failed)
+        self.event_bus.step_detail.connect(self.execution_plan_panel.add_step_detail)
+        self.event_bus.plan_state_updated.connect(self.execution_plan_panel.on_plan_state_updated)
         self.event_bus.status_update.connect(self.status_log_panel.append_log)
         self.event_bus.app_busy.connect(self.chat_panel.set_executing)
         self.event_bus.app_busy.connect(self._on_app_busy)
         self.event_bus.execution_complete.connect(self._on_execution_complete)
+        self.event_bus.execution_complete.connect(lambda _: self.setWindowTitle("TrinityPilot"))
+        self.event_bus.execution_ended.connect(lambda: self.setWindowTitle("TrinityPilot"))
         self.settings_view.settings_saved.connect(self._apply_runtime_settings)
         self.event_bus.desktop_takeover_started.connect(self._on_takeover_started)
         self.event_bus.desktop_takeover_ended.connect(self._on_takeover_ended)
         # ── HUD overlay — full step lifecycle ─────────────────────────────
         self.event_bus.plan_generated.connect(self._overlay.set_plan)
+        self.event_bus.plan_generated.connect(self._on_plan_title)
         self.event_bus.step_started.connect(self._overlay.set_step_started)
+        self.event_bus.step_started.connect(self._on_step_title)
         self.event_bus.step_completed.connect(
             lambda idx, _payload: self._overlay.set_step_completed(idx)
         )
@@ -447,7 +479,10 @@ class MainWindow(QMainWindow):
         self.event_bus.status_update.connect(self._overlay.set_narration)
         self.event_bus.preflight_done.connect(self.apply_startup_readiness)
         self.event_bus.blocker_detected.connect(self._overlay.show_blocker)
+        self.event_bus.blocker_detected.connect(self._on_blocker_detected)
         self._overlay.continue_requested.connect(self.orchestrator.resume_agent)
+        self._overlay.pause_requested.connect(self._on_pause_requested)
+        self._overlay.steer_requested.connect(self.event_bus.steer_input.emit)
 
     def _on_chat_message_sent(self, text: str) -> None:
         """Route a user chat message to the clarification engine."""
@@ -538,6 +573,34 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _on_blocker_detected(self, _message: str) -> None:
+        """Restore the app window when a CAPTCHA or human action is needed."""
+        if _supports_window_raise():
+            if self._was_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_pause_requested(self) -> None:
+        """Pause the running agent and surface the main window."""
+        self.orchestrator.pause_agent()
+        self._overlay.show_paused()
+        if _supports_window_raise():
+            if self._was_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_new_task_requested(self) -> None:
+        """Clear chat history and orchestrator session for a fresh start."""
+        self.orchestrator.reset_chat_session()
+        self.chat_panel.reset_for_new_session()
+        self.event_bus.emit_status("Ready for new task.", "info")
+
     def _on_takeover_started(self, domain: str) -> None:
         """Minimise app and show full-screen HUD when a desktop backend starts."""
         self._was_maximized = self.isMaximized()
@@ -585,10 +648,23 @@ class MainWindow(QMainWindow):
         """Expand monitoring during execution; leave panels visible when done."""
         if busy:
             self._set_execution_panels_collapsed(False)
+            self.tabs.setTabText(0, "● Run")
+            self.tabs.tabBar().setTabTextColor(0, QColor(PRIMARY))
+        else:
+            self.tabs.setTabText(0, "Run")
+            self.tabs.tabBar().setTabTextColor(0, QColor(MUTED))
 
     def _on_execution_complete(self, _payload: dict) -> None:
         """Refresh history; leave panels visible so the user can review output."""
         self.history_view.load_history()
+
+    def _on_plan_title(self, objectives: list) -> None:
+        self._plan_total = len(objectives)
+        self.setWindowTitle("TrinityPilot — Running\u2026")
+
+    def _on_step_title(self, idx: int, desc: str) -> None:
+        short = desc[:45] + ("\u2026" if len(desc) > 45 else "")
+        self.setWindowTitle(f"TrinityPilot \u2014 {idx}/{self._plan_total}: {short}")
 
     def _set_execution_panels_collapsed(self, collapsed: bool) -> None:
         """Bias the vertical splitter toward chat while keeping monitoring visible."""
