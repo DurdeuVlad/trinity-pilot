@@ -1,38 +1,50 @@
-# Orchestrator Desktop App
+# Unified App
 
-**Status:** Sprint 0-4 complete  
-**Framework Decision:** PyQt6  
-**Current Focus:** Release hardening and packaging execution
+This module is the desktop front end for Trinity Pilot. It owns the PyQt6 window, task input flow, orchestration loop, execution history, settings, and the live panels that show what each backend is doing.
 
-## Quick Start
+## Run It
+
+From `trinity-pilot/unified-app/`:
 
 ```powershell
 pip install -r requirements.txt
-pytest tests/ -v
 python main.py
 ```
 
-## Completed
+If you are starting from a clean clone, install the backend requirements from the repository root as well, because `main.py` imports the desktop, browser, CLI, and audit modules directly.
 
-- Sprint 0: framework decision and vertical slice
-- Sprint 1: core UI, event bus, planner fallback, orchestrator workflow
-- Sprint 2: glass box watcher/panel + frame metadata
-- Sprint 3: history/settings/error handling + tabbed UI
-- Sprint 4: release docs, packaging configs, expanded test suite
+## Required Config
 
-## Development
+Create `unified-app/.env` and add:
 
-```powershell
-pytest tests/ -v
+```env
+GEMINI_API_KEY=your_key_here
 ```
 
-## Documentation
+From the repository root, you can verify the overall setup with:
 
-- Sprint plan: `../docs/plans/sprints/2026_02_14_orchestrator_app/`
-- Architecture: `../docs/plans/orchestrator_desktop_app/README.md`
-- Technical decisions: `../docs/plans/orchestrator_desktop_app/technical_decisions.md`
-- Sprint 0 report: `docs/SPRINT_0_COMPLETION_REPORT.md`
-- Sprint 1 report: `docs/SPRINT_1_COMPLETION_REPORT.md`
-- Sprint 2 report: `docs/SPRINT_2_COMPLETION_REPORT.md`
-- Sprint 3 report: `docs/SPRINT_3_COMPLETION_REPORT.md`
-- Sprint 4 report: `docs/SPRINT_4_COMPLETION_REPORT.md`
+```powershell
+python verify_installation.py
+```
+
+## What This Module Does
+
+- boots the Qt application and loads local `.env` settings
+- builds the provider, orchestrator core, and event bus
+- routes objectives into the Trinity backends
+- shows live status, plans, screenshots, and past runs
+
+## Main Areas
+
+- `main.py` - application bootstrap and window wiring
+- `orchestrator/` - execution loop, persistence, providers, and runtime coordination
+- `ui/` - tabs, panels, overlays, and styling
+- `tests/` - unit, integration, and live-marked tests
+
+## Useful Commands
+
+```powershell
+pytest tests -v
+python main.py
+.\build.ps1 -Version 0.0.0-dev
+```
