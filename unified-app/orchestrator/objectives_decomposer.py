@@ -31,6 +31,7 @@ _EXPLICIT_PERSISTENCE_TOKENS = (
     "remove",
     "close",
     "print",
+    "clean",
 )
 _PRODUCTIVITY_GUIDANCE_OBJECTIVE = (
     "Provide brief general productivity guidance for the user's computer and ask "

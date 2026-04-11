@@ -30,6 +30,8 @@ class EventBus(QObject):
     execution_ended = pyqtSignal()
     run_started = pyqtSignal(str)
     run_ended = pyqtSignal(str)
+    command_reset_requested = pyqtSignal()
+    command_shutdown_requested = pyqtSignal()
     desktop_takeover_started = pyqtSignal(str)  # payload: "browser" | "desktop" | "mixed"
     desktop_takeover_ended = pyqtSignal()
     preflight_done = pyqtSignal(object)  # payload: StartupReadiness
@@ -73,6 +75,16 @@ class EventBus(QObject):
     def submit_task_request_from_pipe(self, description: str, domain: str, request_id: str) -> None:
         """Bridge request-aware pipe submissions onto the app thread."""
         self.pipe_task_submitted.emit(description, domain, request_id)
+
+    @pyqtSlot()
+    def request_command_reset_from_pipe(self) -> None:
+        """Bridge a command-surface reset request onto the app thread."""
+        self.command_reset_requested.emit()
+
+    @pyqtSlot()
+    def request_command_shutdown_from_pipe(self) -> None:
+        """Bridge a command-surface shutdown request onto the app thread."""
+        self.command_shutdown_requested.emit()
 
 
 _event_bus_instance: EventBus | None = None

@@ -33,7 +33,11 @@ from orchestrator.database import HistoryManager, TaskStatus
 from orchestrator.checkpoint_manager import CheckpointManager
 from orchestrator.settings_manager import SettingsManager
 from orchestrator.event_bus import get_event_bus
-from mcp_server.app_command_pipe import CommandSurfaceUnavailable, send_command_via_pipe
+from mcp_server.app_command_pipe import (
+    CommandSurfaceUnavailable,
+    ensure_desktop_app_started,
+    send_command_via_pipe,
+)
 from mcp_server.live_test_cases import LiveTestCaseLibrary
 from mcp_server.task_submission_pipe import PipeSubmissionUnavailable, submit_task_via_pipe
 
@@ -206,6 +210,15 @@ class OrchestratorMCPServer:
                     }
                 ),
                 Tool(
+                    name="start_ui",
+                    description="Launch the TrinityPilot desktop app if needed and wait for the command surface",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
                     name="list_cases",
                     description="List canonical live test cases from trinity-pilot/docs/live-test-cases/",
                     inputSchema={
@@ -269,6 +282,24 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="reset_session",
+                    description="Reset the live desktop app session so the next test run starts cleanly",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="shutdown_ui",
+                    description="Close the live TrinityPilot desktop app after repeated test runs are finished",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
                         "additionalProperties": False
                     }
                 ),
@@ -385,6 +416,8 @@ class OrchestratorMCPServer:
                     return await self._get_execution_log(arguments)
                 elif name == "get_execution_plan":
                     return await self._get_execution_plan(arguments)
+                elif name == "start_ui":
+                    return await self._start_ui(arguments)
                 elif name == "list_cases":
                     return await self._list_cases_catalog(arguments)
                 elif name == "submit_case":
@@ -393,6 +426,10 @@ class OrchestratorMCPServer:
                     return await self._get_live_events(arguments)
                 elif name == "get_artifact_bundle":
                     return await self._get_artifact_bundle(arguments)
+                elif name == "reset_session":
+                    return await self._reset_session(arguments)
+                elif name == "shutdown_ui":
+                    return await self._shutdown_ui(arguments)
                 elif name == "list_flight_records":
                     return await self._list_flight_records(arguments)
                 elif name == "read_flight_record":
@@ -604,6 +641,25 @@ class OrchestratorMCPServer:
                 "message": str(e)
             }, indent=2))]
 
+    async def _start_ui(self, args: dict) -> list[TextContent]:
+        """Launch the desktop app if needed and wait for it to become controllable."""
+        _ = args
+        try:
+            response = ensure_desktop_app_started()
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": response,
+                "error_code": None,
+                "message": response.get("message") or "Desktop app ready"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
+
     async def _get_live_events(self, args: dict) -> list[TextContent]:
         """Fetch incremental live events through the app command surface."""
         task_id = (args or {}).get("task_id")
@@ -654,6 +710,44 @@ class OrchestratorMCPServer:
                 "data": response.get("payload"),
                 "error_code": response.get("error_code"),
                 "message": response.get("message") or "Artifact bundle retrieved successfully"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
+
+    async def _reset_session(self, args: dict) -> list[TextContent]:
+        """Reset the live desktop app session through the command surface."""
+        _ = args
+        try:
+            response = send_command_via_pipe("reset-session")
+            return [TextContent(type="text", text=json.dumps({
+                "success": bool(response.get("ok")),
+                "data": response.get("payload"),
+                "error_code": response.get("error_code"),
+                "message": response.get("message") or "Desktop app session reset"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
+
+    async def _shutdown_ui(self, args: dict) -> list[TextContent]:
+        """Schedule desktop app shutdown through the command surface."""
+        _ = args
+        try:
+            response = send_command_via_pipe("shutdown-ui")
+            return [TextContent(type="text", text=json.dumps({
+                "success": bool(response.get("ok")),
+                "data": response.get("payload"),
+                "error_code": response.get("error_code"),
+                "message": response.get("message") or "Desktop app shutdown scheduled"
             }, indent=2))]
         except CommandSurfaceUnavailable as e:
             return [TextContent(type="text", text=json.dumps({

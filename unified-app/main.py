@@ -359,8 +359,11 @@ class MainWindow(QMainWindow):
             history_manager=self.history_view.history_manager,
             run_monitor=self._run_monitor,
             can_submit=self.orchestrator.get_submission_block_reason,
+            can_reset=self.orchestrator.get_reset_block_reason,
             resume_run=self.orchestrator.resume_agent,
             cancel_run=self.orchestrator.request_policy_stop,
+            reset_session=self.event_bus.command_reset_requested.emit,
+            shutdown_app=self.event_bus.command_shutdown_requested.emit,
         )
         self._command_pipe_server.start()
         if self.startup_readiness is not None:
@@ -479,6 +482,8 @@ class MainWindow(QMainWindow):
         self.event_bus.execution_complete.connect(self._on_execution_complete)
         self.event_bus.execution_complete.connect(lambda _: self.setWindowTitle("TrinityPilot"))
         self.event_bus.execution_ended.connect(lambda: self.setWindowTitle("TrinityPilot"))
+        self.event_bus.command_reset_requested.connect(self._on_new_task_requested)
+        self.event_bus.command_shutdown_requested.connect(self.close)
         self.settings_view.settings_saved.connect(self._apply_runtime_settings)
         self.event_bus.desktop_takeover_started.connect(self._on_takeover_started)
         self.event_bus.desktop_takeover_ended.connect(self._on_takeover_ended)

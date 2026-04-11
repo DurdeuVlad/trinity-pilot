@@ -51,6 +51,28 @@ from mcp_server.orchestrator_mcp import OrchestratorMCPServer
 
 
 @pytest.mark.asyncio
+async def test_start_ui_uses_startup_helper(monkeypatch) -> None:
+    server = OrchestratorMCPServer()
+
+    monkeypatch.setattr(
+        "mcp_server.orchestrator_mcp.ensure_desktop_app_started",
+        lambda: {
+            "launched": True,
+            "status": "started",
+            "pid": 4242,
+            "message": "desktop app started",
+        },
+    )
+
+    result = await server._start_ui({})
+    payload = json.loads(result[0].text)
+
+    assert payload["success"] is True
+    assert payload["data"]["launched"] is True
+    assert payload["data"]["pid"] == 4242
+
+
+@pytest.mark.asyncio
 async def test_submit_case_uses_command_surface(monkeypatch) -> None:
     server = OrchestratorMCPServer()
 
@@ -94,3 +116,45 @@ async def test_get_artifact_bundle_uses_command_surface(monkeypatch) -> None:
 
     assert payload["success"] is True
     assert payload["data"]["terminal_session_references"][0]["session_id"] == "session_1"
+
+
+@pytest.mark.asyncio
+async def test_reset_session_uses_command_surface(monkeypatch) -> None:
+    server = OrchestratorMCPServer()
+
+    monkeypatch.setattr(
+        "mcp_server.orchestrator_mcp.send_command_via_pipe",
+        lambda command, args=None: {
+            "ok": True,
+            "payload": {"message": "desktop app session reset for the next run"},
+            "error_code": None,
+            "message": "desktop app session reset for the next run",
+        },
+    )
+
+    result = await server._reset_session({})
+    payload = json.loads(result[0].text)
+
+    assert payload["success"] is True
+    assert payload["data"]["message"] == "desktop app session reset for the next run"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_ui_uses_command_surface(monkeypatch) -> None:
+    server = OrchestratorMCPServer()
+
+    monkeypatch.setattr(
+        "mcp_server.orchestrator_mcp.send_command_via_pipe",
+        lambda command, args=None: {
+            "ok": True,
+            "payload": {"message": "desktop app shutdown scheduled"},
+            "error_code": None,
+            "message": "desktop app shutdown scheduled",
+        },
+    )
+
+    result = await server._shutdown_ui({})
+    payload = json.loads(result[0].text)
+
+    assert payload["success"] is True
+    assert payload["data"]["message"] == "desktop app shutdown scheduled"

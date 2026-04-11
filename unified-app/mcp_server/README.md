@@ -20,6 +20,11 @@ Related local surfaces:
 - `python -m mcp_server.app_control_cli ...` exposes a terminal-friendly command interface to the running app
 - `python -m mcp_server.terminal_session_mcp` exposes a separate durable terminal/session MCP server
 
+Repeat-run lifecycle:
+- Start the desktop app through the MCP/CLI lifecycle surface before the first live iteration instead of assuming the GUI is already running.
+- Before starting the next iteration of a live test batch, reset or clean up the previous run state through the app command surface so the new submission does not inherit stale sessions or task context.
+- After the final repetition, shut down the desktop app instead of leaving it resident. That gives the orchestrator a deterministic chance to close spawned backend sessions and any apps launched during the run.
+
 ## Installation
 
 ```bash
@@ -38,10 +43,13 @@ python -m mcp_server.orchestrator_mcp
 ### Terminal-Friendly App Control
 
 ```bash
+python -m mcp_server.app_control_cli start-ui
 python -m mcp_server.app_control_cli list-cases
 python -m mcp_server.app_control_cli submit-case TC-BROWSER-01
 python -m mcp_server.app_control_cli stream-events latest
 python -m mcp_server.app_control_cli get-artifact-bundle latest
+python -m mcp_server.app_control_cli reset-session
+python -m mcp_server.app_control_cli shutdown-ui
 ```
 
 ### Dedicated Terminal Session MCP
@@ -56,6 +64,9 @@ python -m mcp_server.terminal_session_mcp
 - `submit_case`
 - `get_live_events`
 - `get_artifact_bundle`
+- `start_ui`: launch the desktop app if needed and wait for the command surface to become ready
+- `reset_session`: clear desktop-app run state between repeated live-test iterations
+- `shutdown_ui`: close the desktop app after the final repetition so owned sessions are not left running
 
 ---
 

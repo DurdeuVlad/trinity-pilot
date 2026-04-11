@@ -130,8 +130,11 @@ def test_command_pipe_terminate_waits_for_terminal_state() -> None:
         history_manager=_FakeHistory(),
         run_monitor=run_monitor,
         can_submit=lambda: None,
+        can_reset=lambda: None,
         resume_run=lambda: None,
         cancel_run=lambda reason: None,
+        reset_session=lambda: None,
+        shutdown_app=lambda: None,
         observe_timeout_seconds=0.3,
     )
 

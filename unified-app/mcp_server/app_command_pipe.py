@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -20,6 +22,9 @@ from orchestrator.database import canonical_task_status
 COMMAND_PIPE_AUTHKEY = b"orchestrator-command"
 COMMAND_PIPE_NAME = "orchestrator-command-surface"
 COMMAND_RESPONSE_TIMEOUT_SECONDS = 20.0
+APP_START_TIMEOUT_SECONDS = 30.0
+APP_WARMUP_GRACE_SECONDS = 3.0
+_DESKTOP_APP_START_LOCK = threading.Lock()
 
 
 class CommandSurfaceUnavailable(Exception):
@@ -71,6 +76,102 @@ def send_command_via_pipe(
         return response
 
 
+def ensure_desktop_app_started(
+    *,
+    startup_timeout_seconds: float = APP_START_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Launch the desktop app if needed and wait for the command surface."""
+    with _DESKTOP_APP_START_LOCK:
+        ready_response = _wait_for_command_surface(timeout_seconds=1.0)
+        if ready_response is not None:
+            return {
+                "launched": False,
+                "status": ready_response.get("status") or "already_running",
+                "message": ready_response.get("message") or "desktop app command surface ready",
+                "payload": ready_response.get("payload", {}),
+            }
+
+        ready_response = _wait_for_command_surface(timeout_seconds=APP_WARMUP_GRACE_SECONDS)
+        if ready_response is not None:
+            return {
+                "launched": False,
+                "status": ready_response.get("status") or "already_running",
+                "message": ready_response.get("message") or "desktop app command surface ready",
+                "payload": ready_response.get("payload", {}),
+            }
+
+        app_root = Path(__file__).resolve().parent.parent
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(app_root),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen([sys.executable, "main.py"], **popen_kwargs)
+
+        deadline = time.monotonic() + startup_timeout_seconds
+        last_error: Exception | None = None
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise CommandSurfaceUnavailable(
+                        f"desktop app exited before command surface was ready (exit code {process.returncode})"
+                    )
+                try:
+                    response = send_command_via_pipe("start-ui", timeout_seconds=1.0)
+                    return {
+                        "launched": True,
+                        "status": "started",
+                        "message": response.get("message") or "desktop app started",
+                        "pid": process.pid,
+                        "payload": response.get("payload", {}),
+                    }
+                except CommandSurfaceUnavailable as exc:
+                    last_error = exc
+                    time.sleep(0.2)
+        except Exception:
+            _terminate_started_process(process)
+            raise
+
+        _terminate_started_process(process)
+        raise CommandSurfaceUnavailable(
+            str(last_error) if last_error else "desktop app did not expose command surface in time"
+        )
+
+
+def _wait_for_command_surface(timeout_seconds: float) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            return send_command_via_pipe("start-ui", timeout_seconds=0.5)
+        except CommandSurfaceUnavailable:
+            time.sleep(0.1)
+    return None
+
+
+def _terminate_started_process(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            process.terminate()
+            process.wait(timeout=5.0)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            return
+
+
 class AppCommandPipeServer:
     """GUI-side command surface exposed over a local pipe."""
 
@@ -81,8 +182,11 @@ class AppCommandPipeServer:
         history_manager: Any,
         run_monitor: Any,
         can_submit: Any,
+        can_reset: Any,
         resume_run: Any,
         cancel_run: Any,
+        reset_session: Any,
+        shutdown_app: Any,
         case_library: LiveTestCaseLibrary | None = None,
         observe_timeout_seconds: float = 20.0,
     ) -> None:
@@ -90,8 +194,11 @@ class AppCommandPipeServer:
         self._history_manager = history_manager
         self._run_monitor = run_monitor
         self._can_submit = can_submit
+        self._can_reset = can_reset
         self._resume_run = resume_run
         self._cancel_run = cancel_run
+        self._reset_session = reset_session
+        self._shutdown_app = shutdown_app
         self._case_library = case_library or LiveTestCaseLibrary()
         self._observe_timeout_seconds = observe_timeout_seconds
         self._stop_event = threading.Event()
@@ -168,6 +275,10 @@ class AppCommandPipeServer:
             return self._approve_intervention(command, args)
         if command == "terminate-run":
             return self._terminate_run(command, args)
+        if command == "reset-session":
+            return self._reset_session_state(command)
+        if command == "shutdown-ui":
+            return self._shutdown_ui(command)
         if command == "tail-latest-run":
             return self._tail_latest_run(command, args)
         return self._error("unknown_command", f"Unknown command: {command}", command=command)
@@ -314,6 +425,20 @@ class AppCommandPipeServer:
         after_sequence = int(args.get("after_sequence", 0))
         events = self._run_monitor.get_events(task_id, after_sequence=after_sequence)
         return self._ok(command, {"task_id": task_id, "events": events}, task_id=task_id)
+
+    def _reset_session_state(self, command: str) -> dict[str, Any]:
+        block_reason = self._can_reset()
+        if block_reason is not None:
+            return self._error("reset_blocked", block_reason, command=command)
+        self._reset_session()
+        return self._ok(command, {"message": "desktop app session reset for the next run"})
+
+    def _shutdown_ui(self, command: str) -> dict[str, Any]:
+        block_reason = self._can_reset()
+        if block_reason is not None:
+            return self._error("shutdown_blocked", block_reason, command=command)
+        self._shutdown_app()
+        return self._ok(command, {"message": "desktop app shutdown scheduled"})
 
     def _resolve_task_id(self, task_id: str) -> str | None:
         if task_id != "latest":

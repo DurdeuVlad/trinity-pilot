@@ -342,6 +342,12 @@ class OrchestratorCore(QObject):
             return self._startup_guard_message
         return None
 
+    def get_reset_block_reason(self) -> str | None:
+        """Return user-facing block reason when run-state reset is unsafe."""
+        if self._task_running:
+            return "Task is already running."
+        return None
+
     def update_runtime_settings(self, settings: dict[str, object]) -> None:
         """Refresh the execution defaults used for future worker runs."""
         merged = dict(self.runtime_settings)

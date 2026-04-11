@@ -416,7 +416,7 @@ Respond ONLY with valid JSON:
 Rules:
 1. Each objective is a short action phrase (what to achieve, not how).
 2. Objectives must be in execution order - later ones may depend on earlier ones.
-3. Use as FEW objectives as possible. Prefer 1 or 2 for most tasks; only go up to 5 for genuinely complex multi-step tasks.
+3. Use exactly as many objectives as the user's request implies. Do not collapse distinct steps (e.g. scan + write report + clean up = 3 objectives). Cap at 5.
 4. Do NOT add save, close, cleanup, export, or delete objectives unless the user explicitly asked for them.
 5. Do NOT add a login or authentication objective unless the user explicitly mentioned needing to log in. Most public websites (GitHub, Wikipedia, news sites, etc.) are fully accessible without an account.
 6. Do NOT break a single navigable action (e.g. "go to a URL and read something") into multiple fetch or navigate sub-steps - one objective is enough.
