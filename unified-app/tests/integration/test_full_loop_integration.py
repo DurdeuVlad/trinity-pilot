@@ -42,9 +42,7 @@ class FakeWatcher:
     """Minimal ScreenshotWatcher stub: no Qt or screen access."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialise stub signals."""
-        self.frame_captured = _Signal()
-        self.frame_rate_updated = _Signal()
+        pass
 
     def start_watching(self) -> None:
         """No-op."""

@@ -30,7 +30,6 @@ async def test_browser_adapter_capabilities():
     assert caps["domain"] == "web"
     assert caps["constraints"]["async"] is True
     assert caps["constraints"]["thread_safe"] is True
-    assert caps["glass_box"] is True
 
 @pytest.mark.asyncio
 async def test_desktop_adapter_capabilities():

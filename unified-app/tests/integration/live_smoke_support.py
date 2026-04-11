@@ -13,8 +13,7 @@ class _Signal:
 
 class FakeWatcher:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.frame_captured = _Signal()
-        self.frame_rate_updated = _Signal()
+        pass
 
     def start_watching(self) -> None:
         return None

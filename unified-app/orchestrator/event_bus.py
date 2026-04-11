@@ -26,8 +26,6 @@ class EventBus(QObject):
     cli_step_progress = pyqtSignal(int, dict)  # (obj_index, step_payload)
     execution_complete = pyqtSignal(dict)
     app_busy = pyqtSignal(bool)
-    frame_captured = pyqtSignal(bytes)
-    frame_rate_updated = pyqtSignal(float)
     execution_started = pyqtSignal()
     execution_ended = pyqtSignal()
     run_started = pyqtSignal(str)

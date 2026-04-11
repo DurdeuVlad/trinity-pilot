@@ -14,7 +14,6 @@ class RuntimeSettings(TypedDict):
     ai_provider: str
     default_timeout_seconds: int
     max_retries: int
-    enable_glass_box: bool
     default_domain: str
     frame_rate_limit: int
     max_frame_count: int
@@ -36,7 +35,6 @@ class SettingsManager:
         "ai_provider": "gemini",
         "default_timeout_seconds": 60,
         "max_retries": 3,
-        "enable_glass_box": True,
         "default_domain": "Auto-detect",
         "frame_rate_limit": 5,
         "max_frame_count": 100,

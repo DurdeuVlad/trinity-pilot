@@ -207,9 +207,7 @@ class TaskExecutionRunner:
             )
         self._status("Preparing automation runtime...", "info")
         await self.bridge.initialize()
-        # Wire the live-view frame callback after the bridge is initialized so the
-        # BrowserAdapter's screencast frames flow directly into the UI event bus.
-        self.bridge.set_frame_callback(self.event_bus.frame_captured.emit)
+        # Live frames are not routed to the UI — live view uses the on-screen overlay; frontend stays minimized.
         self.screenshot_watcher.start_watching()
         self.history_manager.create_task(
             task_id=self.run_id,
@@ -1261,15 +1259,6 @@ class TaskExecutionRunner:
                     evt.get("action_type", "desktop"),
                     evt.get("result", ""),
                 )
-            elif t == "frame":
-                path = evt.get("path")
-                if path:
-                    try:
-                        import pathlib
-                        data = pathlib.Path(path).read_bytes()
-                        self._signal("frame_captured", data)
-                    except Exception:
-                        pass
             elif t == "blocker":
                 msg = evt.get("message")
                 if msg:

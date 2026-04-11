@@ -36,18 +36,6 @@ class TrinityBridge:
             self.executor = TrinityExecutor()
         await self.executor.initialize()
 
-    def set_frame_callback(self, callback) -> None:
-        """Forward a live-frame callback to the BrowserAdapter if available.
-
-        Must be called after initialize() so that executor.adapters is populated.
-        The callback receives raw JPEG bytes from the CDP screencast.
-        """
-        if self.executor is None:
-            return
-        browser_adapter = getattr(self.executor, "adapters", {}).get("web")
-        if browser_adapter is not None and hasattr(browser_adapter, "set_frame_callback"):
-            browser_adapter.set_frame_callback(callback)
-
     async def get_capabilities(self) -> dict:
         """Return the capability map of all initialized adapters."""
         if self.executor is None:

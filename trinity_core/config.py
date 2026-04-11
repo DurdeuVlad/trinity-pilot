@@ -8,7 +8,6 @@ class ModuleConfig(BaseModel):
     enabled: bool = Field(True, description="Enable this module")
     timeout: int = Field(300, ge=30, le=3600, description="Timeout in seconds")
     max_retries: int = Field(3, ge=0, le=10, description="Max retry attempts")
-    glass_box_mode: bool = Field(True, description="Enable visual feedback")
 
 class BrowserConfig(ModuleConfig):
     """Browser-specific configuration."""

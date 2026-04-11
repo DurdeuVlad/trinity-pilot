@@ -1,6 +1,7 @@
 """Terminal-friendly command surface for the running unified desktop app."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -133,7 +134,7 @@ class AppCommandPipeServer:
                     except Exception as exc:
                         response = self._error("internal_error", str(exc), command="unknown")
                     try:
-                        conn.send(response)
+                        conn.send(json.loads(json.dumps(response, default=str)))
                     except (BrokenPipeError, OSError):
                         continue
         finally:

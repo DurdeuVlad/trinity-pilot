@@ -230,7 +230,6 @@ class CLIAdapter(TaskAdapter):
                 "async": False,
                 "platforms": ["Windows"],
             },
-            "glass_box": True,
             "flight_reports": True,
             "policy_bounded": True,
         }

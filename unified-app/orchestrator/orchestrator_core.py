@@ -174,8 +174,6 @@ class OrchestratorWorker(QObject):
                 max_frames=self.max_frame_count,
                 parent=self,
             )
-            watcher.frame_captured.connect(self.event_bus.frame_captured.emit)
-            watcher.frame_rate_updated.connect(self.event_bus.frame_rate_updated.emit)
             self.screenshot_watcher = watcher
         return self.screenshot_watcher
 

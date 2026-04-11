@@ -511,6 +511,15 @@ class AgentLoop:
             messages.append({"role": "assistant", "content": json.dumps(turn.action)})
             messages.append({"role": "user",      "content": f"RESULT: {turn.result}"})
 
+        if history and not history[-1].result.lower().startswith("error"):
+            messages.append({
+                "role": "user",
+                "content": (
+                    "If the objective is now fully satisfied based on the result above, "
+                    "output done=true. Only choose another action if a concrete step genuinely remains."
+                ),
+            })
+
         final = "Choose your next action. Respond with JSON only."
         if state.adapt_hint:
             final = f"ADAPT: {state.adapt_hint}\n\n{final}"

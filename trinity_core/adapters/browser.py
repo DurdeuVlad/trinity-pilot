@@ -5,10 +5,11 @@ Uses generalistic Playwright-based browser automation for all tasks.
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from browser_agent.core.io_models import BrowserAgentOutput
 from browser_agent.main import run_browser_task
@@ -63,15 +64,6 @@ class BrowserAdapter(TaskAdapter):
         self.page = None
         self._last_url: str = ""
         self._last_text_snapshot: str = ""
-        self._frame_callback: Optional[Callable[[bytes], None]] = None
-
-    def set_frame_callback(self, callback: Optional[Callable[[bytes], None]]) -> None:
-        """Register a callable that receives raw JPEG frame bytes from the CDP screencast.
-
-        Called by the orchestrator after construction to wire live-view frames into the
-        UI event bus without creating a circular import between the adapter and the app.
-        """
-        self._frame_callback = callback
 
     def _effective_timeout(self, task: TaskInput) -> float:
         return float(task.timeout) if task.timeout is not None else DEFAULT_CONTRACT_TIMEOUT_SECONDS
@@ -173,7 +165,7 @@ class BrowserAdapter(TaskAdapter):
                 max_retries=task.max_retries,
                 prior_results=prior_results,
                 reuse_session=reuse_session,
-                on_frame=self._frame_callback,
+                ws_url=os.environ.get("BROWSER_CDP_URL") or None,
             )
         )
         loop = asyncio.get_running_loop()
@@ -358,7 +350,6 @@ class BrowserAdapter(TaskAdapter):
                 "async": True,
                 "platforms": ["Windows", "macOS", "Linux"],
             },
-            "glass_box": True,
             "flight_reports": True,
         }
 

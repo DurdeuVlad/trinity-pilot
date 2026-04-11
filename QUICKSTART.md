@@ -110,7 +110,7 @@ playwright --version
 
 - Check the **History** tab to see past executions
 - Configure settings in the **Settings** tab
-- View execution screenshots in the glass box panel
+- Watch live execution on-screen via the HUD overlay (live view is never shown in a panel — the frontend stays minimized during execution)
 - Try cross-domain tasks like: `search google for python and paste the first result into notepad`
 
 ## Running Tests

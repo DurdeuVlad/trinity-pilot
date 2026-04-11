@@ -48,7 +48,6 @@ from mcp_server.task_submission_pipe import TaskSubmissionPipeServer
 from ui.overlay import ExecutionOverlay
 from ui.panels import ExecutionPlanPanel, StatusLogPanel
 from ui.panels.chat_panel import ChatPanel
-from ui.panels.glass_box_panel import GlassBoxPanel
 from ui.theme import MUTED, PRIMARY, app_stylesheet
 from ui.views.history_view import HistoryView
 from ui.views.settings_view import SettingsView
@@ -408,13 +407,9 @@ class MainWindow(QMainWindow):
         self.status_log_panel = StatusLogPanel()
         self.main_splitter.addWidget(self.status_log_panel)
 
-        self.glass_box_panel = GlassBoxPanel()
-        self.glass_box_panel.setMinimumWidth(280)
-        self.main_splitter.addWidget(self.glass_box_panel)
-
+        # Live view is shown via the on-screen HUD overlay; never in a panel — the frontend is minimized during execution.
         self.main_splitter.setStretchFactor(0, 2)
-        self.main_splitter.setStretchFactor(1, 2)
-        self.main_splitter.setStretchFactor(2, 3)
+        self.main_splitter.setStretchFactor(1, 3)
         bottom_layout.addWidget(self.main_splitter)
         self.run_splitter.addWidget(self.bottom_widget)
 
@@ -422,7 +417,7 @@ class MainWindow(QMainWindow):
         self.run_splitter.setStretchFactor(0, 4)
         self.run_splitter.setStretchFactor(1, 2)
         self.run_splitter.setSizes([420, 210])
-        self.main_splitter.setSizes([380, 320, 480])
+        self.main_splitter.setSizes([380, 320])
 
         run_layout.addWidget(self.run_splitter, stretch=1)
 
@@ -479,9 +474,6 @@ class MainWindow(QMainWindow):
         self.event_bus.step_detail.connect(self.execution_plan_panel.add_step_detail)
         self.event_bus.plan_state_updated.connect(self.execution_plan_panel.on_plan_state_updated)
         self.event_bus.status_update.connect(self.status_log_panel.append_log)
-        self.event_bus.frame_captured.connect(self.glass_box_panel.display_frame)
-        self.event_bus.frame_rate_updated.connect(self.glass_box_panel.update_fps)
-        self.event_bus.execution_started.connect(self.glass_box_panel.reset)
         self.event_bus.app_busy.connect(self.chat_panel.set_executing)
         self.event_bus.app_busy.connect(self._on_app_busy)
         self.event_bus.execution_complete.connect(self._on_execution_complete)

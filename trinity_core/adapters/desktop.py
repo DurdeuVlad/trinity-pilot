@@ -291,7 +291,6 @@ def run_desktop_automation(
     target_app: str,
     expected_outcome: str | None = None,
     max_retries: int = 3,
-    glass_box_mode: bool = True,
     app_exe_path: str | None = None,
     runtime_timeout_seconds: float | None = None,
     clipboard_content: str | None = None,
@@ -313,7 +312,6 @@ def run_desktop_automation(
         "target_app": target_app,
         "expected_outcome": expected_outcome,
         "max_retries": max_retries,
-        "glass_box_mode": glass_box_mode,
         "app_exe_path": app_exe_path,
         "runtime_timeout_seconds": runtime_timeout_seconds,
         "prior_results": prior_results,   # Layer 2: cross-objective context
@@ -380,7 +378,6 @@ async def run_desktop_automation_async(
     target_app: str,
     expected_outcome: str | None = None,
     max_retries: int = 3,
-    glass_box_mode: bool = True,
     app_exe_path: str | None = None,
     runtime_timeout_seconds: float | None = None,
     clipboard_content: str | None = None,
@@ -405,7 +402,6 @@ async def run_desktop_automation_async(
         "target_app": target_app,
         "expected_outcome": expected_outcome,
         "max_retries": max_retries,
-        "glass_box_mode": glass_box_mode,
         "app_exe_path": app_exe_path,
         "runtime_timeout_seconds": runtime_timeout_seconds,
         "prior_results": prior_results,   # Layer 2: cross-objective context
@@ -555,7 +551,6 @@ class DesktopAdapter(TaskAdapter):
 
         try:
             app_name = task.context.get("app_name", "generic")
-            glass_box = task.context.get("glass_box", False)
             app_exe_path = task.context.get("app_exe_path")
             clipboard_content = task.context.get("clipboard_content")   # Layer 1
             prior_results = task.context.get("_prior_results")          # Layer 2
@@ -580,7 +575,6 @@ class DesktopAdapter(TaskAdapter):
                     "target_app": app_name,
                     "expected_outcome": task.expected_outcome,
                     "max_retries": task.max_retries,
-                    "glass_box_mode": glass_box,
                     "app_exe_path": app_exe_path,
                     "runtime_timeout_seconds": effective_timeout,
                     "clipboard_content": clipboard_content,
@@ -597,7 +591,6 @@ class DesktopAdapter(TaskAdapter):
                     target_app=app_name,
                     expected_outcome=task.expected_outcome,
                     max_retries=task.max_retries,
-                    glass_box_mode=glass_box,
                     app_exe_path=app_exe_path,
                     runtime_timeout_seconds=effective_timeout,
                 clipboard_content=clipboard_content,
@@ -765,6 +758,5 @@ class DesktopAdapter(TaskAdapter):
                 "async": False,
                 "platforms": ["Windows"],
             },
-            "glass_box": True,
             "flight_reports": True,
         }
