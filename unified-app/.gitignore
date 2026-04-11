@@ -9,3 +9,9 @@ venv/
 dist/
 build/
 *.db
+*.log
+screenshot_*
+_runtime/
+.cache/
+.logs/
+sessions/

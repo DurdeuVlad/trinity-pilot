@@ -19,6 +19,7 @@ lib64/
 
 # Virtual environments
 .venv/
+.venv-uv/
 venv/
 env/
 ENV/
@@ -38,8 +39,17 @@ sessions/
 *.tmp
 *.cache
 .cache/
+.logs/
+.metrics/
+.scratch/
 screenshot_*_end.jpg
-unified-app/screenshot_*_end.jpg
+screenshot_*
+
+# Generated artifacts
+coverage.json
+coverage.xml
+htmlcov/
+.coverage
 
 # Local AI handoff scratch notes
 api-accessibility-poc/HANDOFF_*.md
@@ -49,9 +59,6 @@ archive/
 
 # Testing
 .pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
 *.cover
 
 # IDEs

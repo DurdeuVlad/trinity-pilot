@@ -3,11 +3,12 @@
 
 Write-Host "Starting Trinity-Pilot Module Services..." -ForegroundColor Cyan
 
-# Get the script directory
+# Get the repo root (this script lives in scripts/ subdirectory)
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot = Split-Path -Parent $scriptDir
 
 # Check if .env file exists
-$envFile = Join-Path $scriptDir "unified-app\.env"
+$envFile = Join-Path $repoRoot "unified-app\.env"
 if (-not (Test-Path $envFile)) {
     Write-Host "ERROR: .env file not found at $envFile" -ForegroundColor Red
     Write-Host "Please create unified-app/.env with GEMINI_API_KEY" -ForegroundColor Yellow
@@ -18,21 +19,21 @@ Write-Host "✅ Found .env file" -ForegroundColor Green
 
 # Start Browser Service (Port 8103)
 Write-Host "`nStarting Browser Module Service (Port 8103)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$scriptDir\browser-gui-automation'; python browser_module_service.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$repoRoot\browser-gui-automation'; python browser_module_service.py"
 
 # Wait a bit
 Start-Sleep -Seconds 2
 
 # Start Desktop Service (Port 8101)
 Write-Host "Starting Desktop Module Service (Port 8101)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$scriptDir\api-accessibility-poc'; python desktop_module_service.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$repoRoot\api-accessibility-poc'; python desktop_module_service.py"
 
 # Wait a bit
 Start-Sleep -Seconds 2
 
 # Start CLI Service (Port 8102)
 Write-Host "Starting CLI Module Service (Port 8102)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$scriptDir\cli-automation-poc'; python cli_module_service.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$repoRoot\cli-automation-poc'; python cli_module_service.py"
 
 Write-Host "`n✅ All services started!" -ForegroundColor Green
 Write-Host "`nService URLs:" -ForegroundColor Cyan

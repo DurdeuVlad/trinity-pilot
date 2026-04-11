@@ -133,7 +133,6 @@ Improves user experience and monitoring capabilities."
 # Commit 8: Documentation and dependencies
 Write-Host "[8/8] Committing documentation..." -ForegroundColor Yellow
 git add AGENTS.md
-git add CLAUDE.md
 git add browser-gui-automation/requirements.txt
 git add browser-gui-automation/pyproject.toml
 git add api-accessibility-poc/requirements.txt
@@ -153,7 +152,7 @@ Improves onboarding and development workflow."
 
 # Add remaining new files (logs, metrics, etc.)
 Write-Host "`nAdding remaining artifacts..." -ForegroundColor Yellow
-git add .logs/ .metrics/ coverage.json demo_observability.py
+git add .logs/ .metrics/ audit-debugger/demos/demo_observability.py
 git add audit-debugger/.audit/ audit-debugger/.metrics/ audit-debugger/src/
 git add unified-app/.logs/ unified-app/tests/eval/
 git commit -m "chore: add development artifacts and tooling
