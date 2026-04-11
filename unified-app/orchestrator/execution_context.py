@@ -111,7 +111,11 @@ class WorldState:
     # ------------------------------------------------------------------
 
     def update_from_action(
-        self, action_type: str, params: dict[str, Any], result: str
+        self,
+        action_type: str,
+        params: dict[str, Any],
+        result: str,
+        result_payload: dict[str, Any] | None = None,
     ) -> None:
         """Update state based on a completed action and its result.
 
@@ -155,6 +159,10 @@ class WorldState:
             url = str(params.get("url", "")).strip()
             if browse_action == "navigate" and url:
                 self.last_opened_url = url
+            elif browse_action in ("click", "type", "search"):
+                current_url = _extract_current_url(result_payload)
+                if current_url:
+                    self.last_opened_url = current_url
             elif browse_action in ("read", "copy"):
                 stripped = result.strip()
                 if (
@@ -211,6 +219,7 @@ class ExecutionContext:
     module_results: dict[str, ModuleResult] = field(default_factory=dict)
     learned_constraints: list[str] = field(default_factory=list)
     accumulated_state: dict[str, Any] = field(default_factory=dict)
+    backend_plan_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     error_history: list[ErrorRecord] = field(default_factory=list)
     retry_count: int = 0
     fallback_level: int = 0
@@ -317,7 +326,37 @@ class ExecutionContext:
             i += 1
         return last_text
 
-    def update_world_state_from_action(self, action: dict, result: str) -> None:
+    def get_plan_state(self, objective_id: str | int, backend: str) -> dict[str, Any] | None:
+        """Return persisted low-level plan state for one objective/backend pair."""
+        objective_key = str(objective_id)
+        backend_state = self.backend_plan_state.get(objective_key, {})
+        plan_state = backend_state.get(backend)
+        return dict(plan_state) if isinstance(plan_state, dict) else None
+
+    def update_plan_state(self, objective_id: str | int, backend: str, plan_state: dict[str, Any]) -> None:
+        """Persist low-level plan state for one objective/backend pair."""
+        objective_key = str(objective_id)
+        backend_bucket = self.backend_plan_state.setdefault(objective_key, {})
+        backend_bucket[backend] = dict(plan_state)
+
+    def get_plan_state_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return a copy of all persisted low-level plan states."""
+        return {
+            objective_id: {
+                backend: dict(plan_state)
+                for backend, plan_state in backend_state.items()
+                if isinstance(plan_state, dict)
+            }
+            for objective_id, backend_state in self.backend_plan_state.items()
+            if isinstance(backend_state, dict)
+        }
+
+    def update_world_state_from_action(
+        self,
+        action: dict,
+        result: str,
+        result_payload: dict[str, Any] | None = None,
+    ) -> None:
         """Update the WorldState based on a completed action and its result.
 
         Delegates to ``world_state.update_from_action`` — exists as a
@@ -327,6 +366,7 @@ class ExecutionContext:
             action_type=action.get("action_type", ""),
             params=action.get("parameters", {}),
             result=result,
+            result_payload=result_payload,
         )
 
     def has_errors(self) -> bool:
@@ -362,4 +402,30 @@ class ExecutionContext:
             "constraints_learned": len(self.learned_constraints),
             "state_keys": list(self.accumulated_state.keys()),
             "world_state": self.world_state.to_context_dict(),
+            "plan_state_objectives": list(self.backend_plan_state.keys()),
         }
+
+
+def _extract_current_url(result_payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(result_payload, dict):
+        return None
+
+    metadata = result_payload.get("metadata", {})
+    if isinstance(metadata, dict):
+        for candidate in (
+            metadata.get("current_url"),
+            metadata.get("url"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        raw_result = metadata.get("raw_result", {})
+        if isinstance(raw_result, dict):
+            for candidate in (
+                raw_result.get("current_url"),
+                raw_result.get("url"),
+            ):
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+
+    return None

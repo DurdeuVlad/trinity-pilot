@@ -42,10 +42,13 @@ from orchestrator import get_event_bus
 from orchestrator.orchestrator_core import OrchestratorCore
 from orchestrator.providers.factory import make_provider
 from orchestrator.settings_manager import SettingsManager
+from mcp_server.app_command_pipe import AppCommandPipeServer
+from mcp_server.run_monitor import RunEventRecorder
 from mcp_server.task_submission_pipe import TaskSubmissionPipeServer
 from ui.overlay import ExecutionOverlay
 from ui.panels import ExecutionPlanPanel, StatusLogPanel
 from ui.panels.chat_panel import ChatPanel
+from ui.panels.glass_box_panel import GlassBoxPanel
 from ui.theme import MUTED, PRIMARY, app_stylesheet
 from ui.views.history_view import HistoryView
 from ui.views.settings_view import SettingsView
@@ -341,12 +344,26 @@ class MainWindow(QMainWindow):
         self._hotkey_filter = _install_stop_hotkey(
             lambda: self.event_bus.task_cancel_requested.emit()
         )
+        self._run_monitor = RunEventRecorder(
+            history_manager=self.history_view.history_manager,
+            runtime_dir=Path(__file__).parent / "_runtime",
+        )
+        self._run_monitor.attach(self.event_bus)
         self._task_pipe_server = TaskSubmissionPipeServer(
             event_bus=self.event_bus,
             history_manager=self.history_view.history_manager,
             can_submit=self.orchestrator.get_submission_block_reason,
         )
         self._task_pipe_server.start()
+        self._command_pipe_server = AppCommandPipeServer(
+            event_bus=self.event_bus,
+            history_manager=self.history_view.history_manager,
+            run_monitor=self._run_monitor,
+            can_submit=self.orchestrator.get_submission_block_reason,
+            resume_run=self.orchestrator.resume_agent,
+            cancel_run=self.orchestrator.request_policy_stop,
+        )
+        self._command_pipe_server.start()
         if self.startup_readiness is not None:
             self.apply_startup_readiness(self.startup_readiness)
 
@@ -391,8 +408,13 @@ class MainWindow(QMainWindow):
         self.status_log_panel = StatusLogPanel()
         self.main_splitter.addWidget(self.status_log_panel)
 
+        self.glass_box_panel = GlassBoxPanel()
+        self.glass_box_panel.setMinimumWidth(280)
+        self.main_splitter.addWidget(self.glass_box_panel)
+
         self.main_splitter.setStretchFactor(0, 2)
         self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setStretchFactor(2, 3)
         bottom_layout.addWidget(self.main_splitter)
         self.run_splitter.addWidget(self.bottom_widget)
 
@@ -400,7 +422,7 @@ class MainWindow(QMainWindow):
         self.run_splitter.setStretchFactor(0, 4)
         self.run_splitter.setStretchFactor(1, 2)
         self.run_splitter.setSizes([420, 210])
-        self.main_splitter.setSizes([620, 360])
+        self.main_splitter.setSizes([380, 320, 480])
 
         run_layout.addWidget(self.run_splitter, stretch=1)
 
@@ -457,6 +479,9 @@ class MainWindow(QMainWindow):
         self.event_bus.step_detail.connect(self.execution_plan_panel.add_step_detail)
         self.event_bus.plan_state_updated.connect(self.execution_plan_panel.on_plan_state_updated)
         self.event_bus.status_update.connect(self.status_log_panel.append_log)
+        self.event_bus.frame_captured.connect(self.glass_box_panel.display_frame)
+        self.event_bus.frame_rate_updated.connect(self.glass_box_panel.update_fps)
+        self.event_bus.execution_started.connect(self.glass_box_panel.reset)
         self.event_bus.app_busy.connect(self.chat_panel.set_executing)
         self.event_bus.app_busy.connect(self._on_app_busy)
         self.event_bus.execution_complete.connect(self._on_execution_complete)
@@ -478,6 +503,7 @@ class MainWindow(QMainWindow):
         )
         self.event_bus.status_update.connect(self._overlay.set_narration)
         self.event_bus.preflight_done.connect(self.apply_startup_readiness)
+        self.event_bus.cli_step_progress.connect(self._on_cli_step)
         self.event_bus.blocker_detected.connect(self._overlay.show_blocker)
         self.event_bus.blocker_detected.connect(self._on_blocker_detected)
         self._overlay.continue_requested.connect(self.orchestrator.resume_agent)
@@ -608,6 +634,25 @@ class MainWindow(QMainWindow):
         if _supports_window_raise():
             self.showMinimized()
 
+    def _on_cli_step(self, obj_index: int, step: dict) -> None:
+        """Route CLI step progress events to the overlay and activity log."""
+        event = step.get("event", "")
+        if event == "plan_ready":
+            self._overlay.set_plan(step.get("steps", []))
+        elif event == "step_started":
+            idx = step.get("step_index", 0) + 1
+            self._overlay.set_step_started(idx, step.get("action", ""))
+        elif event == "step_done":
+            idx = step.get("step_index", 0) + 1
+            if step.get("status") == "success":
+                self._overlay.set_step_completed(idx)
+                next_action = step.get("next_action")
+                if next_action:
+                    self._overlay.set_narration(f"-> Next: {next_action}", "info")
+            else:
+                self._overlay.set_step_failed(idx)
+            self.status_log_panel.append_cli_step(obj_index, step)
+
     def _on_takeover_ended(self) -> None:
         """Restore app to its previous state and dismiss the HUD."""
         self._overlay.hide_overlay()
@@ -691,13 +736,25 @@ class MainWindow(QMainWindow):
             return
         self._hotkey_filter.close()
         self._task_pipe_server.stop()
+        self._command_pipe_server.stop()
         self._overlay.hide_overlay()
         self.history_view.history_manager.close()
         super().closeEvent(event)
 
 
+def _install_crash_hook() -> None:
+    from orchestrator.crash_reporter import write_crash_dump as _write_crash_dump
+
+    def _hook(exc_type, exc_value, exc_tb):
+        _write_crash_dump(exc_value, run_id="main", phase="unhandled_exception")
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _hook
+
+
 def main() -> int:
     """App entry point."""
+    _install_crash_hook()
     startup_config = resolve_startup_config()
     startup_readiness = evaluate_startup_readiness(startup_config)
 

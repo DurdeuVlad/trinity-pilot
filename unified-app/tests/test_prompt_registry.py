@@ -101,3 +101,20 @@ def test_both_providers_reflection_prompt_has_achieved_field() -> None:
     for name in ("gemini", "openai"):
         prompt = PromptRegistry(name).reflection_system_prompt()
         assert '"achieved"' in prompt, f"{name} reflection prompt missing 'achieved'"
+
+
+def test_web_domain_action_prompt_excludes_cli_and_desktop_modules() -> None:
+    prompt = PromptRegistry("gemini").action_system_prompt("web")
+    assert '<browse | done>' in prompt
+    assert '<web_browser | null>' in prompt
+    assert "cli_runner" not in prompt
+    assert "desktop_app" not in prompt
+    assert "Never open the URL through CLI or a separate desktop browser window." in prompt
+
+
+def test_cli_domain_action_prompt_excludes_browser_and_desktop_modules() -> None:
+    prompt = PromptRegistry("gemini").action_system_prompt("cli")
+    assert '<cli | done>' in prompt
+    assert '<cli_runner | null>' in prompt
+    assert "web_browser" not in prompt
+    assert "desktop_app" not in prompt

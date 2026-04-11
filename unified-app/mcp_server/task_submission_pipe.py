@@ -100,6 +100,9 @@ class TaskSubmissionPipeServer:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._request_cache: dict[str, dict[str, Any]] = {}
+        self._request_to_task: dict[str, str] = {}
+        if hasattr(self._event_bus, "pipe_task_registered"):
+            self._event_bus.pipe_task_registered.connect(self._on_pipe_task_registered)
 
     def start(self) -> None:
         """Start listener thread if not already running."""
@@ -188,8 +191,7 @@ class TaskSubmissionPipeServer:
                 self._cache_response(request_id, response)
                 return response
 
-        submitted_at = time.time()
-        invoked = self._dispatch_task_submission(description, domain)
+        invoked = self._dispatch_task_submission(description, domain, request_id)
         if not invoked:
             response = {
                 "ok": False,
@@ -207,12 +209,7 @@ class TaskSubmissionPipeServer:
             observe_timeout = self._observe_timeout_seconds
         observe_timeout = max(0.2, min(observe_timeout, self._observe_timeout_seconds))
 
-        task = self._wait_for_task(
-            description=description,
-            domain=domain,
-            submitted_at=submitted_at,
-            timeout_seconds=observe_timeout,
-        )
+        task = self._wait_for_task(request_id=request_id, timeout_seconds=observe_timeout)
 
         if task is None:
             response = {
@@ -234,31 +231,29 @@ class TaskSubmissionPipeServer:
         self._cache_response(request_id, response)
         return response
 
-    def _dispatch_task_submission(self, description: str, domain: str) -> bool:
+    def _dispatch_task_submission(self, description: str, domain: str, request_id: str) -> bool:
         """Queue submission onto the app thread, with a test-friendly direct fallback."""
+        signal = getattr(self._event_bus, "pipe_task_submitted", None)
+        invoked = False
         try:
             invoked = bool(
                 QMetaObject.invokeMethod(
                     self._event_bus,
-                    "submit_task_from_pipe",
+                    "submit_task_request_from_pipe",
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, description),
                     Q_ARG(str, domain),
+                    Q_ARG(str, request_id),
                 )
             )
-            if invoked:
-                return True
         except TypeError:
-            pass
-
-        try:
-            signal = getattr(self._event_bus, "task_submitted", None)
+            invoked = False
+        if not invoked:
             if signal is None or not hasattr(signal, "emit"):
                 return False
-            signal.emit(description, domain)
+            signal.emit(description, domain, request_id)
             return True
-        except Exception:
-            return False
+        return True
 
     def _cache_response(self, request_id: str, response: dict[str, Any]) -> None:
         """Store an idempotent response while keeping memory bounded."""
@@ -288,35 +283,25 @@ class TaskSubmissionPipeServer:
                 return block_reason
         return block_reason
 
-    def _wait_for_task(
-        self,
-        *,
-        description: str,
-        domain: str,
-        submitted_at: float,
-        timeout_seconds: float,
-    ) -> dict[str, Any] | None:
+    def _wait_for_task(self, *, request_id: str, timeout_seconds: float) -> dict[str, Any] | None:
         """Wait for an observed task row that matches this request."""
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            recent_tasks = self._history_manager.list_tasks(limit=20)
-            for task in recent_tasks:
-                if task.get("description") != description:
-                    continue
-                if task.get("domain") != domain:
-                    continue
-                created_at = str(task.get("created_at") or "")
-                if created_at:
-                    try:
-                        created_dt = datetime.fromisoformat(created_at)
-                        if created_dt.tzinfo is None:
-                            # History rows are stored as UTC-naive ISO timestamps.
-                            created_dt = created_dt.replace(tzinfo=timezone.utc)
-                        created_ts = created_dt.timestamp()
-                    except ValueError:
-                        created_ts = submitted_at
-                    if created_ts + 1.0 < submitted_at:
-                        continue
-                return task
+            task_id = self._request_to_task.get(request_id)
+            if task_id:
+                task = self._load_task_summary(task_id)
+                if task:
+                    return task
             time.sleep(0.1)
         return None
+
+    def _on_pipe_task_registered(self, request_id: str, task_id: str) -> None:
+        self._request_to_task[str(request_id)] = str(task_id)
+
+    def _load_task_summary(self, task_id: str) -> dict[str, Any] | None:
+        details = self._history_manager.get_task_with_steps(task_id)
+        if details is None:
+            return None
+        if "task" in details:
+            return dict(details.get("task", {}))
+        return {key: value for key, value in details.items() if key != "steps"}

@@ -1,7 +1,7 @@
 """SQLAlchemy models for orchestrator history."""
 from __future__ import annotations
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, String, Text
@@ -33,7 +33,7 @@ class TaskHistory(Base):
     domain: Mapped[str] = mapped_column(String(20))
     status: Mapped[TaskStatus] = mapped_column(SQLEnum(TaskStatus), default=TaskStatus.PENDING)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

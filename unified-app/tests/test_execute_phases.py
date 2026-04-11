@@ -210,6 +210,27 @@ async def test_attempt_phase_returns_tuple_when_not_cancelled() -> None:
     assert failed == []
 
 
+async def test_attempt_phase_clears_pending_steer_after_objective() -> None:
+    runner = _make_runner(steps=["step1"])
+    runner.clear_steer = MagicMock()
+    runner._run_attempts = AsyncMock(return_value=(True, "done", 1))
+    runner._record_backend_execution = MagicMock(return_value={})
+    runner._signal = MagicMock()
+    runner._update_step_status = MagicMock()
+    runner._capture_objective_knowledge_artifacts = MagicMock()
+    runner.checkpoint_manager.save_checkpoint = MagicMock(return_value="cp-1")
+
+    ctx = ExecutionContext(objective="t")
+    agent_loop = MagicMock()
+    agent_loop.last_attempt_payload = {}
+    agent_loop.last_step_payload = {}
+
+    result = await runner._attempt_phase(["step1"], ctx, 0, agent_loop)
+
+    assert result is not None
+    runner.clear_steer.assert_called_once()
+
+
 # ── _finalize_phase – outcome categorisation ──────────────────────────────────
 
 async def test_finalize_phase_success_when_no_failures() -> None:

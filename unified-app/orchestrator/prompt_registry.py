@@ -1,4 +1,4 @@
-"""Provider-aware prompt registry — separate tuned prompts for Gemini and OpenAI."""
+"""Provider-aware prompt registry with domain-scoped action prompts."""
 from __future__ import annotations
 
 import platform
@@ -16,8 +16,6 @@ _OS_CONTEXT = (
     )
 )
 
-# Canonical error-handling rules injected into every action-loop prompt.
-# Edit here to keep both provider variants in sync.
 _ACTION_ERROR_HANDLING_RULES = """\
 Error-handling rules:
 - If an action fails due to a timeout or temporary API error, retry it once before reporting failure.
@@ -26,59 +24,311 @@ Error-handling rules:
   the objective as infeasible rather than retrying.
 - Never loop more than 3 times on the same action without making visible progress."""
 
-# ── Gemini — action loop ───────────────────────────────────────────────────
-# Gemini tends to over-explain and hedge. Tighter constraints, explicit rules,
-# and a clear schema repetition suppress that behaviour.
-_GEMINI_ACTION_SYSTEM = f"""
+
+def _normalize_run_domain(domain: str | None) -> str:
+    normalized = str(domain or "").strip().lower()
+    return {
+        "browser": "web",
+        "browse": "web",
+        "cross": "mixed",
+    }.get(normalized, normalized or "mixed")
+
+
+_DOMAIN_TOOL_CONFIG: dict[str, dict[str, object]] = {
+    "web": {
+        "action_types": ["browse", "done"],
+        "modules": ["web_browser", "null"],
+        "schemas": [
+            (
+                "web_browser",
+                [
+                    '- action: "navigate" | "click" | "type" | "read" (required)',
+                    "- url: string (required for navigate)",
+                    "- selector: string (required for click/type, optional for read)",
+                    "- text: string (required for type)",
+                ],
+            ),
+        ],
+        "tool_policy": [
+            "Stay inside the browser module for this run.",
+            "Prefer read or inspect browser actions before write or mutate actions when state is unknown.",
+            "Use dangerous or destructive actions only when explicitly required by the objective.",
+            "Do NOT switch to another module for browser recovery. If browser navigation looks stale, use another browser action to inspect or recover within the Playwright-controlled session.",
+        ],
+        "critical_rules": [
+            "For this run, action_type must stay within browse or done.",
+            "If browser navigation appears stale, recover with browser actions only. Never open the URL through CLI or a separate desktop browser window.",
+        ],
+    },
+    "desktop": {
+        "action_types": ["desktop", "done"],
+        "modules": ["desktop_app", "null"],
+        "schemas": [
+            (
+                "desktop_app",
+                [
+                    '- action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)',
+                    "- app: string (required for open/focus)",
+                    "- element_name: string (required for click/read)",
+                    "- text: string (required for type/paste)",
+                ],
+            ),
+        ],
+        "tool_policy": [
+            "Stay inside the desktop module for this run.",
+            "Prefer read or inspect actions before write or mutate actions when state is unknown.",
+            "Use dangerous or destructive actions only when explicitly required by the objective.",
+            "Do NOT switch to another module as fallback for desktop control. Recover within the desktop session instead.",
+        ],
+        "critical_rules": [
+            "For this run, action_type must stay within desktop or done.",
+        ],
+    },
+    "cli": {
+        "action_types": ["cli", "done"],
+        "modules": ["cli_runner", "null"],
+        "schemas": [
+            (
+                "cli_runner",
+                [
+                    "- command: string (required)",
+                    "- args: array of strings (optional)",
+                ],
+            ),
+        ],
+        "tool_policy": [
+            "Stay inside the CLI module for this run.",
+            "Prefer read or inspect commands before write or mutate commands when state is unknown.",
+            "Use dangerous or destructive commands only when explicitly required by the objective.",
+            "Do NOT switch to another module as fallback for CLI work.",
+        ],
+        "critical_rules": [
+            "For this run, action_type must stay within cli or done.",
+        ],
+    },
+    "mixed": {
+        "action_types": ["browse", "desktop", "cli", "done"],
+        "modules": ["web_browser", "desktop_app", "cli_runner", "null"],
+        "schemas": [
+            (
+                "web_browser",
+                [
+                    '- action: "navigate" | "click" | "type" | "read" (required)',
+                    "- url: string (required for navigate)",
+                    "- selector: string (required for click/type, optional for read)",
+                    "- text: string (required for type)",
+                ],
+            ),
+            (
+                "desktop_app",
+                [
+                    '- action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)',
+                    "- app: string (required for open/focus)",
+                    "- element_name: string (required for click/read)",
+                    "- text: string (required for type/paste)",
+                ],
+            ),
+            (
+                "cli_runner",
+                [
+                    "- command: string (required)",
+                    "- args: array of strings (optional)",
+                ],
+            ),
+        ],
+        "tool_policy": [
+            "Prefer semantic or dedicated tools over raw UI tools when available.",
+            "Prefer read or inspect tools before write or mutate tools when state is unknown.",
+            "Use dangerous or destructive tools only when explicitly required by the objective.",
+            "Use shell only if no dedicated tool exists for the operation.",
+        ],
+        "critical_rules": [],
+    },
+}
+
+
+def _render_action_prompt(config: dict[str, object], *, include_domain_preamble: bool) -> str:
+    action_types = " | ".join(config["action_types"])
+    modules = " | ".join(config["modules"])
+    schema_lines: list[str] = []
+    for module_name, lines in config["schemas"]:
+        schema_lines.append(f"  {module_name}:")
+        schema_lines.extend(f"    {line}" for line in lines)
+        schema_lines.append("")
+    module_schema_block = "\n".join(schema_lines).rstrip()
+
+    tool_policy_block = "\n".join(
+        f"{index}. {line}" for index, line in enumerate(config["tool_policy"], start=1)
+    )
+    critical_rules = [
+        "done=true ONLY when the objective is fully and verifiably achieved with evidence.",
+        'When done=true: action_type="done", module=null, parameters={}, result_summary must be filled.',
+        "Never repeat an action that already failed - try a different approach.",
+        "If the message starts with ADAPT:, you MUST follow that instruction first.",
+        "Do NOT attempt to log in or create an account unless the objective explicitly requires authentication. Public websites like GitHub, Wikipedia, and news sites are readable without any login.",
+    ]
+    if "desktop" in config["action_types"] or config["action_types"] == ["desktop", "done"]:
+        critical_rules.extend(
+            [
+                "Before typing or pasting into any desktop app, ALWAYS send a focus action first.",
+                "NEVER use cli_runner to send keyboard shortcuts to desktop apps - use desktop_app instead.",
+            ]
+        )
+    critical_rules.extend(config["critical_rules"])
+    critical_rules_block = "\n".join(
+        f"{index}. {line}" for index, line in enumerate(critical_rules, start=1)
+    )
+
+    domain_preamble = ""
+    if include_domain_preamble:
+        domain_preamble = (
+            "\nThis run is domain-scoped. Only choose the actions and modules listed below.\n"
+            "Treat any out-of-domain module as forbidden even if it seems like a convenient fallback.\n"
+        )
+
+    if config["action_types"] == ["browse", "done"]:
+        examples_block = """
+EXAMPLES:
+
+Example 1 (success):
+Objective: Open GitHub
+{
+  "rationale": "Navigating directly to GitHub in the controlled browser session.",
+  "action_type": "browse",
+  "module": "web_browser",
+  "parameters": {"action": "navigate", "url": "https://github.com"},
+  "done": false,
+  "result_summary": null
+}
+
+Example 2 (failure + recovery):
+Objective: Read the main article text
+Previous: Attempted to read a brittle selector and it returned nothing useful
+{
+  "rationale": "The specific selector was unreliable. Reading the main page content is a safer browser-only recovery.",
+  "action_type": "browse",
+  "module": "web_browser",
+  "parameters": {"action": "read", "selector": "main"},
+  "done": false,
+  "result_summary": null
+}
+""".strip()
+    elif config["action_types"] == ["desktop", "done"]:
+        examples_block = """
+EXAMPLES:
+
+Example 1 (success):
+Objective: Open Calculator
+{
+  "rationale": "Opening Calculator application",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {"action": "open", "app": "calc"},
+  "done": false,
+  "result_summary": null
+}
+
+Example 2 (failure + recovery):
+Objective: Type into Notepad
+Previous: Attempted type but failed with "window not focused"
+{
+  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {"action": "focus", "app": "notepad"},
+  "done": false,
+  "result_summary": null
+}
+""".strip()
+    elif config["action_types"] == ["cli", "done"]:
+        examples_block = """
+EXAMPLES:
+
+Example 1 (success):
+Objective: Show the current directory
+{
+  "rationale": "Listing the current directory with a direct CLI command.",
+  "action_type": "cli",
+  "module": "cli_runner",
+  "parameters": {"command": "dir"},
+  "done": false,
+  "result_summary": null
+}
+
+Example 2 (failure + recovery):
+Objective: Find a file named report.txt
+Previous: Attempted a command in the wrong directory
+{
+  "rationale": "The first command likely ran in the wrong location. I will use a broader CLI search instead of switching modules.",
+  "action_type": "cli",
+  "module": "cli_runner",
+  "parameters": {"command": "where", "args": ["report.txt"]},
+  "done": false,
+  "result_summary": null
+}
+""".strip()
+    else:
+        examples_block = """
+EXAMPLES:
+
+Example 1 (success):
+Objective: Open Calculator
+{
+  "rationale": "Opening Calculator application",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {"action": "open", "app": "calc"},
+  "done": false,
+  "result_summary": null
+}
+
+Example 2 (failure + recovery):
+Objective: Type into Notepad
+Previous: Attempted type but failed with "window not focused"
+{
+  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
+  "action_type": "desktop",
+  "module": "desktop_app",
+  "parameters": {"action": "focus", "app": "notepad"},
+  "done": false,
+  "result_summary": null
+}
+""".strip()
+
+    return f"""
 You are an autonomous computer-use agent running on {platform.system()}.
 You receive an OBJECTIVE and the history of actions you have already taken.
-Decide the single best next action that makes progress toward the objective.
+Decide the single best next action that makes progress toward the objective.{domain_preamble}
 
 {_OS_CONTEXT}
 
 ONE-TOOL-PER-TURN RULE:
 You must output exactly ONE action per turn. Do not chain multiple actions. Do not describe future actions.
 
-Respond ONLY with a single JSON object — no markdown, no prose, no code fences.
+Respond ONLY with a single JSON object - no markdown, no prose, no code fences.
 
 SCHEMA (all fields required):
 {{
   "rationale":      "<1-2 sentences: what you are trying and why>",
-  "action_type":    "<browse | desktop | cli | done>",
-  "module":         "<web_browser | desktop_app | cli_runner | null>",
+  "action_type":    "<{action_types}>",
+  "module":         "<{modules}>",
   "parameters":     {{"<key>": "<value>"}},
   "done":           <true | false>,
   "result_summary": "<confirmation if done=true, else null>"
 }}
 
 MODULE PARAMETER SCHEMAS:
-  web_browser:
-    - action: "navigate" | "click" | "type" | "read" (required)
-    - url: string (required for navigate)
-    - selector: string (required for click/type/read)
-    - text: string (required for type)
-  
-  desktop_app:
-    - action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)
-    - app: string (required for open/focus)
-    - element_name: string (required for click/read)
-    - text: string (required for type/paste)
-  
-  cli_runner:
-    - command: string (required)
-    - args: array of strings (optional)
+{module_schema_block}
 
 TOOL CHOICE POLICY (apply in order):
-1. Prefer semantic/dedicated tools over raw UI tools when available.
-2. Prefer read/inspect tools before write/mutate tools when state is unknown.
-3. Use dangerous/destructive tools only when explicitly required by the objective.
-4. Use shell only if no dedicated tool exists for the operation.
+{tool_policy_block}
 
 DONE CRITERIA:
 done=true means:
 - The requested end state is confirmed by tool output evidence.
 - NOT that a tool was called.
 - NOT that the rationale says it worked.
+- When done=true, set action_type="done", module=null, parameters={{}}.
 If evidence is missing, set done=false and continue.
 
 RECOVERY POLICY (numbered steps):
@@ -89,145 +339,29 @@ On failure:
 4. Never repeat the same failed call more than twice.
 5. If blocked with no recovery path: set done=true, result_summary describes the blocker.
 
+BROWSER READ GUIDANCE:
+- For page-wide reading, prefer selector="main" or selector="body" instead of inventing a brittle ID.
+- Only use a specific selector when you have strong evidence it exists from the current page state.
+- Do not invent synthetic DOM IDs or selectors that were never observed.
+
 {_ACTION_ERROR_HANDLING_RULES}
 
-EXAMPLES:
-
-Example 1 (success):
-Objective: Open Calculator
-{{
-  "rationale": "Opening Calculator application",
-  "action_type": "desktop",
-  "module": "desktop_app",
-  "parameters": {{"action": "open", "app": "calc"}},
-  "done": false,
-  "result_summary": null
-}}
-
-Example 2 (failure + recovery):
-Objective: Type into Notepad
-Previous: Attempted type but failed with "window not focused"
-{{
-  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
-  "action_type": "desktop",
-  "module": "desktop_app",
-  "parameters": {{"action": "focus", "app": "notepad"}},
-  "done": false,
-  "result_summary": null
-}}
+{examples_block}
 
 CRITICAL RULES:
-1. done=true ONLY when the objective is fully and verifiably achieved with evidence.
-2. When done=true: module=null, parameters={{}}, result_summary must be filled.
-3. Never repeat an action that already failed — try a different approach.
-4. If the message starts with ADAPT:, you MUST follow that instruction first.
-5. Before typing or pasting into any desktop app, ALWAYS send a focus action first.
-6. NEVER use cli_runner to send keyboard shortcuts to desktop apps — use desktop_app instead.
+{critical_rules_block}
 """.strip()
 
-# ── OpenAI — action loop ───────────────────────────────────────────────────
-# GPT-4o is more literal and handles dense schemas well. Less hedging constraint
-# needed; instead emphasise strict JSON and the ADAPT signal.
-_OPENAI_ACTION_SYSTEM = f"""
-You are an autonomous computer-use agent. Platform: {platform.system()}.
-Given an OBJECTIVE and the history of prior actions + results, output the single best next action.
 
-{_OS_CONTEXT}
+_GEMINI_ACTION_SYSTEM = _render_action_prompt(_DOMAIN_TOOL_CONFIG["mixed"], include_domain_preamble=False)
+_OPENAI_ACTION_SYSTEM = (
+    _GEMINI_ACTION_SYSTEM
+    + "\nPrefer concise rationales and avoid repeating the schema in your reasoning."
+)
 
-ONE-TOOL-PER-TURN RULE:
-Output exactly ONE action per turn. Do not chain actions. Do not describe future steps.
-
-Output ONLY valid JSON — no markdown fences, no explanation outside the object.
-
-Required schema:
-{{
-  "rationale":      string,    // 1-2 sentences explaining your decision
-  "action_type":    string,    // "browse" | "desktop" | "cli" | "done"
-  "module":         string,    // "web_browser" | "desktop_app" | "cli_runner" | null
-  "parameters":     object,    // action-specific parameters
-  "done":           boolean,   // true only when objective is fully achieved
-  "result_summary": string     // required when done=true, null otherwise
-}}
-
-Module parameter schemas:
-  web_browser:
-    - action: "navigate" | "click" | "type" | "read" (required)
-    - url: string (required for navigate)
-    - selector: string (required for click/type/read)
-    - text: string (required for type)
-  
-  desktop_app:
-    - action: "open" | "focus" | "click" | "type" | "paste" | "read" (required)
-    - app: string (required for open/focus)
-    - element_name: string (required for click/read)
-    - text: string (required for type/paste)
-  
-  cli_runner:
-    - command: string (required)
-    - args: array of strings (optional)
-
-Tool choice policy (apply in order):
-1. Prefer semantic/dedicated tools over raw UI tools when available.
-2. Prefer read/inspect tools before write/mutate tools when state is unknown.
-3. Use dangerous/destructive tools only when explicitly required by the objective.
-4. Use shell only if no dedicated tool exists for the operation.
-
-Done criteria:
-done=true means:
-- The requested end state is confirmed by tool output evidence.
-- NOT that a tool was called.
-- NOT that the rationale says it worked.
-If evidence is missing, set done=false and continue.
-
-Recovery policy (numbered steps):
-On failure:
-1. Classify: INVALID_ARG | ENV_NOT_READY | PERMISSION | TRANSIENT
-2. Retry once if retryable=true and new input is available.
-3. Choose a different tool or approach.
-4. Never repeat the same failed call more than twice.
-5. If blocked with no recovery path: set done=true, result_summary describes the blocker.
-
-{_ACTION_ERROR_HANDLING_RULES}
-
-Examples:
-
-Example 1 (success):
-Objective: Open Calculator
-{{
-  "rationale": "Opening Calculator application",
-  "action_type": "desktop",
-  "module": "desktop_app",
-  "parameters": {{"action": "open", "app": "calc"}},
-  "done": false,
-  "result_summary": null
-}}
-
-Example 2 (failure + recovery):
-Objective: Type into Notepad
-Previous: Attempted type but failed with "window not focused"
-{{
-  "rationale": "Previous type failed due to focus issue. Focusing Notepad window first.",
-  "action_type": "desktop",
-  "module": "desktop_app",
-  "parameters": {{"action": "focus", "app": "notepad"}},
-  "done": false,
-  "result_summary": null
-}}
-
-Critical:
-- Set done=true only when the objective is fully verifiable complete with evidence.
-- done=true requires module=null and a non-null result_summary.
-- Do not repeat a failing action — choose a different strategy.
-- If the message contains ADAPT:, address it explicitly before choosing an action.
-- Before typing or pasting into a desktop window, always send a focus action first.
-- NEVER use cli_runner to send keyboard shortcuts to desktop apps — use desktop_app paste/type instead.
-""".strip()
-
-# ── Gemini — reflection ────────────────────────────────────────────────────
-# Gemini is asked to be direct and binary — it otherwise qualifies everything.
 _GEMINI_REFLECTION_SYSTEM = """
 You are a task evaluation assistant.
-You will be given an OBJECTIVE and a RESULT produced by an agent.
+You will be given an OBJECTIVE, a RESULT produced by an agent, and possibly EXECUTION FAILURES observed during the run.
 
 Evaluate: was the objective fully achieved by this result?
 
@@ -241,31 +375,15 @@ Respond ONLY with a single JSON object:
 Rules:
 - Be strict. Partial completion is not achievement.
 - If the result contains ERROR: or [stuck or [timeout, achieved must be false.
+- If EXECUTION FAILURES are listed, critique must not be null. Explain whether they still block success or were recovered.
 - critique must be specific and actionable, not generic.
 """.strip()
 
-# ── OpenAI — reflection ────────────────────────────────────────────────────
-_OPENAI_REFLECTION_SYSTEM = """
-You are evaluating whether an AI agent successfully completed a task objective.
+_OPENAI_REFLECTION_SYSTEM = (
+    _GEMINI_REFLECTION_SYSTEM
+    + "\n- Prefer crisp pass/fail language over hedged commentary."
+)
 
-Input:
-- OBJECTIVE: what the agent was supposed to accomplish
-- RESULT: what the agent reported
-
-Output ONLY valid JSON:
-{
-  "achieved":   boolean,
-  "confidence": number,   // 0.0 to 1.0
-  "critique":   string    // null if achieved=true; if false: specific actionable suggestion for a different approach
-}
-
-Rules:
-- Partial success counts as not achieved (achieved=false).
-- Results starting with ERROR:, [stuck, or [timeout are always achieved=false.
-- critique must specify what to try differently, not just restate what failed.
-""".strip()
-
-# ── Gemini — replan ────────────────────────────────────────────────────────
 _GEMINI_REPLAN_SYSTEM = """
 You are a task planning assistant.
 Some objectives in a multi-step task have failed. Generate a revised list of remaining objectives.
@@ -284,30 +402,11 @@ Rules:
 - If nothing can be salvaged, return an empty list with a rationale explaining why.
 """.strip()
 
-# ── OpenAI — replan ────────────────────────────────────────────────────────
-_OPENAI_REPLAN_SYSTEM = """
-You are replanning a task after some objectives failed mid-execution.
-Given the original goal, completed objectives, failed objectives, and remaining objectives,
-generate a revised list of remaining objectives.
+_OPENAI_REPLAN_SYSTEM = _GEMINI_REPLAN_SYSTEM
 
-Output ONLY valid JSON:
-{
-  "revised_objectives": ["<objective>", ...],
-  "rationale": string
-}
-
-Rules:
-- Only include objectives that are still achievable given the failures.
-- Remove objectives that depended on a failed one if they can no longer succeed.
-- Maximum 4 revised objectives.
-- Each is an action phrase (what to achieve, not how to do it).
-- Return an empty list if the task cannot proceed.
-""".strip()
-
-# ── Gemini — decomposition ─────────────────────────────────────────────────
 _GEMINI_DECOMPOSE_SYSTEM = """
 You are a task decomposition assistant.
-Break the given task into 2 to 5 high-level objectives that together fully accomplish it.
+Break the given task into the MINIMUM number of high-level objectives (1 to 5) that together fully accomplish it.
 
 Respond ONLY with valid JSON:
 {
@@ -316,33 +415,19 @@ Respond ONLY with valid JSON:
 
 Rules:
 1. Each objective is a short action phrase (what to achieve, not how).
-2. Objectives must be in execution order — later ones may depend on earlier ones.
-3. Use 2 for simple tasks, up to 5 for complex multi-step tasks.
+2. Objectives must be in execution order - later ones may depend on earlier ones.
+3. Use as FEW objectives as possible. Prefer 1 or 2 for most tasks; only go up to 5 for genuinely complex multi-step tasks.
 4. Do NOT add save, close, cleanup, export, or delete objectives unless the user explicitly asked for them.
+5. Do NOT add a login or authentication objective unless the user explicitly mentioned needing to log in. Most public websites (GitHub, Wikipedia, news sites, etc.) are fully accessible without an account.
+6. Do NOT break a single navigable action (e.g. "go to a URL and read something") into multiple fetch or navigate sub-steps - one objective is enough.
 """.strip()
 
-# ── OpenAI — decomposition ─────────────────────────────────────────────────
-_OPENAI_DECOMPOSE_SYSTEM = """
-You are a task decomposition assistant.
-Given a task description, break it into 2 to 5 ordered high-level objectives.
+_OPENAI_DECOMPOSE_SYSTEM = _GEMINI_DECOMPOSE_SYSTEM
 
-Output ONLY valid JSON:
-{
-  "objectives": ["<objective 1>", "<objective 2>", ...]
-}
-
-Rules:
-- Each objective is an action phrase describing what to achieve, not how.
-- Order matters — earlier objectives may be prerequisites for later ones.
-- 2 objectives for simple tasks, up to 5 for complex ones.
-- Do not add save, close, cleanup, export, or delete objectives unless the user explicitly requested them.
-""".strip()
-
-# ── Gemini — objectives modification ──────────────────────────────────────
 _GEMINI_MODIFY_OBJECTIVES_SYSTEM = """
 You are an execution planner validating a user-requested change to a list of ordered objectives.
 
-The objectives are steps of an automation task — they must be logically ordered and self-consistent.
+The objectives are steps of an automation task - they must be logically ordered and self-consistent.
 Later objectives may depend on the results of earlier ones, so the order matters.
 
 You will receive the current objectives list and a user change request.
@@ -366,50 +451,29 @@ Rules:
 - Do not add save, close, cleanup, export, or delete objectives unless the user explicitly asked.
 """.strip()
 
-# ── OpenAI — objectives modification ──────────────────────────────────────
-_OPENAI_MODIFY_OBJECTIVES_SYSTEM = """
-You are a task planner validating a proposed change to an ordered list of automation objectives.
-
-Objectives are ordered execution steps; later steps may depend on earlier ones.
-
-Given the current objectives and a user change request:
-1. If the change is logically valid: apply it and return the updated objective list.
-2. If the change would break dependencies or create an impossible ordering: reject it and explain why.
-
-Output ONLY valid JSON:
-{
-  "ok": boolean,
-  "objectives": ["<updated objective>", ...],
-  "reason": string | null
-}
-
-Rules:
-- When ok=true: objectives is the updated list; reason is null.
-- When ok=false: objectives is the original unchanged list; reason explains why the change cannot be applied.
-- Objectives are action phrases describing what to achieve, not how.
-- Execution order must remain valid — prerequisites before dependents.
-- Maximum 5 objectives, minimum 1.
-- Do not add save, close, cleanup, or delete objectives unless explicitly requested.
-""".strip()
+_OPENAI_MODIFY_OBJECTIVES_SYSTEM = _GEMINI_MODIFY_OBJECTIVES_SYSTEM
 
 
 class PromptRegistry:
-    """Serves provider-specific prompts for every phase of orchestration.
-
-    Supported providers: "gemini", "openai".
-    Any unknown provider name falls back to the OpenAI prompts.
-    """
+    """Serves provider-specific prompts for every phase of orchestration."""
 
     def __init__(self, provider_name: str) -> None:
-        self._p: ProviderName = (
-            "gemini" if str(provider_name).lower() == "gemini" else "openai"
-        )
+        normalized = str(provider_name or "openai").strip().lower()
+        self._p = "gemini" if normalized == "gemini" else "openai"
 
-    # ── Public accessors ───────────────────────────────────────────────────
-
-    def action_system_prompt(self) -> str:
+    def action_system_prompt(self, run_domain: str = "mixed") -> str:
         """System prompt for the AgentLoop action-decision phase."""
-        return _GEMINI_ACTION_SYSTEM if self._p == "gemini" else _OPENAI_ACTION_SYSTEM
+        normalized_domain = _normalize_run_domain(run_domain)
+        if normalized_domain == "mixed":
+            return _GEMINI_ACTION_SYSTEM if self._p == "gemini" else _OPENAI_ACTION_SYSTEM
+
+        rendered = _render_action_prompt(
+            _DOMAIN_TOOL_CONFIG.get(normalized_domain, _DOMAIN_TOOL_CONFIG["mixed"]),
+            include_domain_preamble=True,
+        )
+        if self._p == "openai":
+            rendered += "\nPrefer concise rationales and avoid repeating the schema in your reasoning."
+        return rendered
 
     def reflection_system_prompt(self) -> str:
         """System prompt for the ReflectionEngine evaluation phase."""

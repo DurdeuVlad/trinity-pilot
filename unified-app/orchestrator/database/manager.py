@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -48,6 +48,21 @@ def _normalize_status(value: str | TaskStatus | None, fallback: TaskStatus = Tas
         except ValueError:
             return fallback
     return fallback
+
+
+def canonical_task_status(task_payload: dict[str, Any] | None) -> str:
+    """Return the workflow-facing status, preferring persisted result_data when present."""
+    if not isinstance(task_payload, dict):
+        return "unknown"
+    result_data = task_payload.get("result_data")
+    if isinstance(result_data, str):
+        result_data = _safe_json_loads(result_data, {})
+    if isinstance(result_data, dict):
+        normalized = str(result_data.get("status", "") or "").strip().lower()
+        if normalized:
+            return normalized
+    normalized = str(task_payload.get("status", "") or "").strip().lower()
+    return normalized or "unknown"
 
 
 class HistoryManager:
@@ -112,7 +127,7 @@ class HistoryManager:
             task = session.query(TaskHistory).filter_by(task_id=task_id).first()
             if task:
                 task.status = TaskStatus.RUNNING
-                task.started_at = datetime.now(UTC)
+                task.started_at = datetime.now(timezone.utc)
                 session.commit()
 
     def update_task_plan(
@@ -147,7 +162,7 @@ class HistoryManager:
                     task.status = status
                 else:
                     task.status = TaskStatus.COMPLETED if not error_message else TaskStatus.FAILED
-                task.completed_at = datetime.now(UTC)
+                task.completed_at = datetime.now(timezone.utc)
                 task.result_data = json.dumps(result_data or {})
                 task.error_message = error_message
                 session.commit()
@@ -180,9 +195,9 @@ class HistoryManager:
                 return
             step.status = status
             if status == TaskStatus.RUNNING:
-                step.started_at = datetime.now(UTC)
+                    step.started_at = datetime.now(timezone.utc)
             elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
-                step.completed_at = datetime.now(UTC)
+                    step.completed_at = datetime.now(timezone.utc)
             step.result_data = json.dumps(result_data or {})
             step.error_message = error_message
             step.flight_report_path = flight_report_path
@@ -276,7 +291,7 @@ class HistoryManager:
 
         return {
             "version": _ARCHIVE_VERSION,
-            "exported_at": datetime.now(UTC).isoformat(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "source_app": _SOURCE_APP,
             "tasks": [self._task_to_detail(task) for task in tasks],
         }
@@ -310,7 +325,7 @@ class HistoryManager:
                     description=str(task_payload.get("description") or "").strip() or "Imported task",
                     domain=str(task_payload.get("domain") or "cli").strip() or "cli",
                     status=_normalize_status(task_payload.get("status")),
-                    created_at=_parse_timestamp(task_payload.get("created_at")) or datetime.now(UTC),
+                created_at=_parse_timestamp(task_payload.get("created_at")) or datetime.now(timezone.utc),
                     started_at=_parse_timestamp(task_payload.get("started_at")),
                     completed_at=_parse_timestamp(task_payload.get("completed_at")),
                     plan_steps=json.dumps(task_payload.get("plan_steps") or []),

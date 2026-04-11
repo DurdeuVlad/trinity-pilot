@@ -5,9 +5,10 @@ Uses generalistic Playwright-based browser automation for all tasks.
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from browser_agent.core.io_models import BrowserAgentOutput
 from browser_agent.main import run_browser_task
@@ -25,6 +26,14 @@ except ImportError:
 
 from ..adapter import TaskAdapter
 from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retriable
+from ..telemetry import (
+    TASK_CANCELLED,
+    TASK_FAILED,
+    TASK_STARTED,
+    TASK_SUCCEEDED,
+    emit_event,
+    make_event_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +63,15 @@ class BrowserAdapter(TaskAdapter):
         self.page = None
         self._last_url: str = ""
         self._last_text_snapshot: str = ""
+        self._frame_callback: Optional[Callable[[bytes], None]] = None
+
+    def set_frame_callback(self, callback: Optional[Callable[[bytes], None]]) -> None:
+        """Register a callable that receives raw JPEG frame bytes from the CDP screencast.
+
+        Called by the orchestrator after construction to wire live-view frames into the
+        UI event bus without creating a circular import between the adapter and the app.
+        """
+        self._frame_callback = callback
 
     def _effective_timeout(self, task: TaskInput) -> float:
         return float(task.timeout) if task.timeout is not None else DEFAULT_CONTRACT_TIMEOUT_SECONDS
@@ -155,6 +173,7 @@ class BrowserAdapter(TaskAdapter):
                 max_retries=task.max_retries,
                 prior_results=prior_results,
                 reuse_session=reuse_session,
+                on_frame=self._frame_callback,
             )
         )
         loop = asyncio.get_running_loop()
@@ -192,6 +211,7 @@ class BrowserAdapter(TaskAdapter):
         """Execute a browser task using full browser automation only."""
         effective_timeout = self._effective_timeout(task)
         if self._is_cancelled(task):
+            emit_event(TASK_CANCELLED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name))
             return self._contract_failure(
                 task,
                 effective_timeout=effective_timeout,
@@ -200,6 +220,8 @@ class BrowserAdapter(TaskAdapter):
             )
 
         logger.info("Browser task started: task_id=%s description=%s", task.task_id, task.description)
+        _t0 = time.monotonic()
+        emit_event(TASK_STARTED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name))
 
         try:
             typed_result = await self._run_with_contract(task, effective_timeout=effective_timeout)
@@ -208,15 +230,18 @@ class BrowserAdapter(TaskAdapter):
 
             status = self._map_status(typed_result.result)
             category = self._normalize_category(status, typed_result.error_details)
+            raw_result = typed_result.model_dump()
+            result_session_id = getattr(typed_result, "session_id", None) or raw_result.get("session_id") or task.task_id
+            result_objective_id = getattr(typed_result, "objective_id", None) or raw_result.get("objective_id") or task.task_id
             metadata = self._contract_metadata(
                 task,
                 effective_timeout=effective_timeout,
-                raw_result=typed_result.model_dump(),
+                raw_result=raw_result,
             )
             metadata.update(
                 self._flight_report_metadata(
-                    session_id=typed_result.session_id,
-                    objective_id=typed_result.objective_id,
+                    session_id=result_session_id,
+                    objective_id=result_objective_id,
                 )
             )
             if typed_result.extracted_text:
@@ -224,6 +249,7 @@ class BrowserAdapter(TaskAdapter):
                 self._last_text_snapshot = typed_result.extracted_text
             self._last_url = str(metadata.get("raw_result", {}).get("current_url", "") or self._last_url)
 
+            _duration = (time.monotonic() - _t0) * 1000
             logger.info(
                 "Browser task completed: task_id=%s status=%s category=%s actions=%d",
                 task.task_id,
@@ -231,6 +257,8 @@ class BrowserAdapter(TaskAdapter):
                 category,
                 len(typed_result.attempt_log.actions),
             )
+            event_type = TASK_SUCCEEDED if status == "success" else TASK_FAILED
+            emit_event(event_type, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name, duration_ms=_duration, extra={"status": status, "category": category}))
             return TaskResult(
                 task_id=task.task_id,
                 status=status,
@@ -241,6 +269,8 @@ class BrowserAdapter(TaskAdapter):
                 metadata=metadata,
             )
         except Exception as exc:
+            _duration = (time.monotonic() - _t0) * 1000
+            emit_event(TASK_FAILED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name, duration_ms=_duration, extra={"error": str(exc)}))
             logger.exception("Browser adapter error for task %s", task.task_id)
             return self._contract_failure(
                 task,
@@ -250,17 +280,34 @@ class BrowserAdapter(TaskAdapter):
             )
 
     def _build_execution_log(self, result: BrowserAgentOutput) -> List[ExecutionLog]:
+        # Prefer structured history for accurate per-step result
+        history = getattr(result, "history", None) or []
+        if history:
+            return [
+                ExecutionLog(
+                    step=i + 1,
+                    action=f"{item.action.action}: {item.action.selector or ''} {item.action.value or ''}".strip(),
+                    result=item.result,
+                    details=item.error_details or item.action.reasoning,
+                    timestamp=datetime.now().isoformat(),
+                )
+                for i, item in enumerate(history)
+            ]
+        # Fallback to flat attempt_log strings
         entries: List[ExecutionLog] = []
         for index, action in enumerate(result.attempt_log.actions, start=1):
-            details = None
-            if index - 1 < len(result.attempt_log.observations):
-                details = result.attempt_log.observations[index - 1]
+            observation = (
+                result.attempt_log.observations[index - 1]
+                if index - 1 < len(result.attempt_log.observations)
+                else None
+            )
+            step_failed = observation and "fail" in observation.lower()
             entries.append(
                 ExecutionLog(
                     step=index,
                     action=str(action),
-                    result="success",
-                    details=details,
+                    result="failure" if step_failed else "success",
+                    details=observation,
                     timestamp=datetime.now().isoformat(),
                 )
             )

@@ -33,6 +33,8 @@ from orchestrator.database import HistoryManager, TaskStatus
 from orchestrator.checkpoint_manager import CheckpointManager
 from orchestrator.settings_manager import SettingsManager
 from orchestrator.event_bus import get_event_bus
+from mcp_server.app_command_pipe import CommandSurfaceUnavailable, send_command_via_pipe
+from mcp_server.live_test_cases import LiveTestCaseLibrary
 from mcp_server.task_submission_pipe import PipeSubmissionUnavailable, submit_task_via_pipe
 
 _RUNTIME_DIR = Path(__file__).parent.parent / "_runtime"
@@ -88,6 +90,7 @@ class OrchestratorMCPServer:
         self.settings_manager = SettingsManager()
         self.event_bus = get_event_bus()
         self.active_tasks = {}
+        self.case_library = LiveTestCaseLibrary()
 
         # Register tools
         self._register_tools()
@@ -117,7 +120,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["description"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -132,7 +135,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -154,7 +157,7 @@ class OrchestratorMCPServer:
                                 "enum": ["completed", "failed", "running", "cancelled", "pending"]
                             }
                         },
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -169,7 +172,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -184,7 +187,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -199,7 +202,74 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="list_cases",
+                    description="List canonical live test cases from trinity-pilot/docs/live-test-cases/",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="submit_case",
+                    description="Submit a canonical live test case by case_id or path",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "case_id": {
+                                "type": "string",
+                                "description": "Canonical case id such as TC-BROWSER-01 or an absolute case file path"
+                            }
+                        },
+                        "required": ["case_id"],
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="get_live_events",
+                    description="Read incremental live events for a task from the desktop app command surface",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task ID, or 'latest' for the most recent task"
+                            },
+                            "after_sequence": {
+                                "type": "integer",
+                                "description": "Cursor for incremental event reads",
+                                "default": 0,
+                                "minimum": 0
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum events to return",
+                                "default": 200,
+                                "minimum": 1,
+                                "maximum": 1000
+                            }
+                        },
+                        "required": ["task_id"],
+                        "additionalProperties": False
+                    }
+                ),
+                Tool(
+                    name="get_artifact_bundle",
+                    description="Return the normalized artifact bundle for a task",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task ID, or 'latest' for the most recent task"
+                            }
+                        },
+                        "required": ["task_id"],
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -216,7 +286,7 @@ class OrchestratorMCPServer:
                                 "maximum": 100
                             }
                         },
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -231,7 +301,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["filename"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -240,7 +310,7 @@ class OrchestratorMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {},
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -255,7 +325,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["task_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -270,7 +340,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["checkpoint_id"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -279,7 +349,7 @@ class OrchestratorMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {},
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 ),
                 Tool(
@@ -294,7 +364,7 @@ class OrchestratorMCPServer:
                             }
                         },
                         "required": ["settings"],
-                        "additionalProperties": false
+                        "additionalProperties": False
                     }
                 )
             ]
@@ -315,6 +385,14 @@ class OrchestratorMCPServer:
                     return await self._get_execution_log(arguments)
                 elif name == "get_execution_plan":
                     return await self._get_execution_plan(arguments)
+                elif name == "list_cases":
+                    return await self._list_cases_catalog(arguments)
+                elif name == "submit_case":
+                    return await self._submit_case(arguments)
+                elif name == "get_live_events":
+                    return await self._get_live_events(arguments)
+                elif name == "get_artifact_bundle":
+                    return await self._get_artifact_bundle(arguments)
                 elif name == "list_flight_records":
                     return await self._list_flight_records(arguments)
                 elif name == "read_flight_record":
@@ -482,6 +560,108 @@ class OrchestratorMCPServer:
                     "message": f"Failed to submit task: {str(e)}"
                 }, indent=2)
             )]
+
+    async def _list_cases_catalog(self, args: dict) -> list[TextContent]:
+        """List canonical live test cases."""
+        try:
+            return [TextContent(type="text", text=json.dumps({
+                "success": True,
+                "data": {"cases": self.case_library.list_cases()},
+                "error_code": None,
+                "message": "Canonical live test cases retrieved successfully"
+            }, indent=2))]
+        except Exception as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "EXCEPTION",
+                "message": f"Error listing cases: {str(e)}"
+            }, indent=2))]
+
+    async def _submit_case(self, args: dict) -> list[TextContent]:
+        """Submit a canonical live test case via the app command surface."""
+        case_id = (args or {}).get("case_id")
+        if not case_id:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
+                "message": "case_id is required"
+            }, indent=2))]
+        try:
+            response = send_command_via_pipe("submit-case", args={"case_id": case_id})
+            return [TextContent(type="text", text=json.dumps({
+                "success": bool(response.get("ok")),
+                "data": response.get("payload"),
+                "error_code": response.get("error_code"),
+                "message": response.get("message") or "Case submitted"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
+
+    async def _get_live_events(self, args: dict) -> list[TextContent]:
+        """Fetch incremental live events through the app command surface."""
+        task_id = (args or {}).get("task_id")
+        if not task_id:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
+                "message": "task_id is required"
+            }, indent=2))]
+        try:
+            response = send_command_via_pipe(
+                "stream-events",
+                args={
+                    "task_id": task_id,
+                    "after_sequence": int((args or {}).get("after_sequence", 0)),
+                    "limit": int((args or {}).get("limit", 200)),
+                },
+            )
+            return [TextContent(type="text", text=json.dumps({
+                "success": bool(response.get("ok")),
+                "data": response.get("payload"),
+                "error_code": response.get("error_code"),
+                "message": response.get("message") or "Live events retrieved successfully"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
+
+    async def _get_artifact_bundle(self, args: dict) -> list[TextContent]:
+        """Return the normalized artifact bundle for one task."""
+        task_id = (args or {}).get("task_id")
+        if not task_id:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "INVALID_ARG",
+                "message": "task_id is required"
+            }, indent=2))]
+        try:
+            response = send_command_via_pipe("get-artifact-bundle", args={"task_id": task_id})
+            return [TextContent(type="text", text=json.dumps({
+                "success": bool(response.get("ok")),
+                "data": response.get("payload"),
+                "error_code": response.get("error_code"),
+                "message": response.get("message") or "Artifact bundle retrieved successfully"
+            }, indent=2))]
+        except CommandSurfaceUnavailable as e:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "data": None,
+                "error_code": "COMMAND_SURFACE_UNAVAILABLE",
+                "message": str(e)
+            }, indent=2))]
 
     def _submit_task_via_pipe(
         self,

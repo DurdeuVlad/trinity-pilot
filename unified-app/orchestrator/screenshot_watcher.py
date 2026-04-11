@@ -11,7 +11,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 class ScreenshotWatcher(QObject):
     """Poll screenshot directory and emit newly discovered frames."""
 
-    frame_captured = pyqtSignal(str)
+    frame_captured = pyqtSignal(bytes)
     frame_rate_updated = pyqtSignal(float)
 
     def __init__(
@@ -71,8 +71,12 @@ class ScreenshotWatcher(QObject):
                     continue
                 self.seen_files.add(key)
                 if self._can_emit_frame():
+                    try:
+                        frame_bytes = file_path.read_bytes()
+                    except OSError:
+                        continue
                     self.frame_count += 1
-                    self.frame_captured.emit(key)
+                    self.frame_captured.emit(frame_bytes)
 
     def calculate_fps(self) -> None:
         """Emit current frames-per-second estimate."""

@@ -1,7 +1,7 @@
 """Application-level error handling utilities."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 _BACKEND_UNAVAILABLE_MARKERS = (
     "is not available",
@@ -13,7 +13,7 @@ _BACKEND_UNAVAILABLE_MARKERS = (
 )
 
 _DOMAIN_NEXT_ACTION_HINTS: dict[str, str] = {
-    "cli": "Ensure the CLI backend is installed and enabled in Settings → General.",
+    "cli": "Ensure the CLI backend is installed and enabled in Settings -> General.",
     "web": "Ensure the Browser backend is running (requires Playwright) and enabled in Settings.",
     "desktop": "Ensure the Desktop backend is enabled and running on Windows with UIA support.",
 }
@@ -23,11 +23,7 @@ class ErrorHandler:
     """Normalize exceptions into UI/log-friendly payloads."""
 
     def classify_error(self, message: str) -> str:
-        """Classify an error string as 'transient' or 'permanent'.
-
-        Transient errors may succeed on retry with the same approach.
-        Permanent errors require a different approach or are unrecoverable.
-        """
+        """Classify an error string as 'transient' or 'permanent'."""
         lowered = (message or "").lower()
         transient_tokens = (
             "timed out", "timeout", "network", "unreachable", "dns",
@@ -43,15 +39,14 @@ class ErrorHandler:
             "app not found", "cannot find", "does not exist",
             "api_key_invalid", "invalid api key", "unauthenticated",
         )
-        if any(t in lowered for t in transient_tokens):
+        if any(token in lowered for token in transient_tokens):
             return "transient"
-        if any(t in lowered for t in permanent_tokens):
+        if any(token in lowered for token in permanent_tokens):
             return "permanent"
-        return "transient"  # default: assume retryable unless proven otherwise
+        return "transient"
 
     def classify_live_failure(self, message: str) -> str:
         """Return a contract category inferred from legacy live Gemini failures."""
-
         lowered = (message or "").lower()
         if any(token in lowered for token in ("api_key_invalid", "invalid api key", "api key not valid", "unauthenticated", "invalidargument")):
             return "auth_failure"
@@ -65,40 +60,35 @@ class ErrorHandler:
 
     def build_user_message(self, message: str, category: str | None = None) -> str:
         """Return an operator-safe message for contract failure categories."""
-
-        # Gemini-client messages are already user-friendly; preserve them rather
-        # than replacing with a generic category template.
         if (message or "").lstrip().startswith("Gemini "):
             return self.normalize_user_message(message)
 
         resolved_category = category or self.classify_live_failure(message)
         if resolved_category == "auth_failure":
-            return "Authentication failed — check your API key in settings."
+            return "Authentication failed - check your API key in settings."
         if resolved_category == "timeout":
-            return "The request timed out — try again or reduce the task complexity."
+            return "The request timed out - try again or reduce the task complexity."
         if resolved_category == "backend_error":
-            return "The backend encountered an error — check the run log for details."
+            lowered = (message or "").lower()
+            if any(token in lowered for token in ("no module named", "cannot import", "not available in this environment")):
+                return self.normalize_user_message(message)
+            return "The backend encountered an error - check the run log for details."
         if resolved_category == "health_check_failed":
-            return "The backend failed its health check — check the run log for details."
+            return "The backend failed its health check - check the run log for details."
         if resolved_category == "user_error":
-            return "The request could not be understood — try rephrasing the objective."
+            return "The request could not be understood - try rephrasing the objective."
         if resolved_category == "cancelled":
             return "The task was cancelled."
         return self.normalize_user_message(message)
 
     def map_backend_unavailable_reason(self, domain: str, error_text: str) -> str | None:
-        """Return a domain-specific, hint-bearing message if error_text signals a backend-unavailable failure.
-
-        Returns None when the error does not look like a backend-unavailable failure.
-        The returned message includes the domain name and a next-action hint so the
-        operator knows immediately what to fix.
-        """
+        """Return a domain-specific message when the backend is unavailable."""
         lowered = (error_text or "").lower()
         if not any(marker in lowered for marker in _BACKEND_UNAVAILABLE_MARKERS):
             return None
         hint = _DOMAIN_NEXT_ACTION_HINTS.get(
             domain,
-            "Check that the backend is enabled in Settings → General.",
+            "Check that the backend is enabled in Settings -> General.",
         )
         return f"The {domain} backend is not available. {hint}"
 
@@ -129,7 +119,7 @@ class ErrorHandler:
             "category": resolved_category,
             "message": message,
             "context": context,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_message": f"{context}: {safe_message}" if context else safe_message,
         }
         return payload

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+import orchestrator.trinity_bridge as trinity_bridge
 from orchestrator.trinity_bridge import TrinityBridge
 
 
@@ -121,3 +122,17 @@ async def test_execute_task_context_defaults_to_empty_dict():
     )
 
     assert fake.last_task.context == {}
+
+
+@pytest.mark.asyncio
+async def test_initialize_surfaces_missing_dependency_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    bridge = TrinityBridge()
+    monkeypatch.setattr(trinity_bridge, "TrinityExecutor", None)
+    monkeypatch.setattr(
+        trinity_bridge,
+        "_TRINITY_IMPORT_ERROR",
+        ModuleNotFoundError("No module named 'audit_debugger'"),
+    )
+
+    with pytest.raises(RuntimeError, match="audit_debugger"):
+        await bridge.initialize()

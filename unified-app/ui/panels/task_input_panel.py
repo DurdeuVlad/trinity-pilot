@@ -115,7 +115,8 @@ class TaskInputPanel(QWidget):
         lowered = description.lower()
         web_tokens = (
             "browser", "website", "google", "navigate", "search", "wikipedia",
-            "web page", "page", "url", "site",
+            "web page", "page", "url", "site", "github", "go to",
+            "repo", "http", "www", ".com", "open issue", "open bug",
         )
         desktop_tokens = (
             "notepad", "calculator", "window", "desktop", "application", "tab",

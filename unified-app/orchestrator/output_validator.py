@@ -82,8 +82,15 @@ class OutputValidator:
         done = action.get("done")
         if not isinstance(done, bool):
             errors.append(f"'done' must be a boolean, got {type(done)}")
-        elif done and module is not None:
-            warnings.append("done=true should have module=null")
+        elif done:
+            if action_type != "done":
+                errors.append("done=true requires action_type='done'")
+            if module is not None:
+                errors.append("done=true requires module=null")
+            if isinstance(parameters, dict) and parameters:
+                errors.append("done=true requires parameters={}")
+        elif action_type == "done":
+            errors.append("action_type='done' requires done=true")
         
         # Rationale validation
         rationale = action.get("rationale")

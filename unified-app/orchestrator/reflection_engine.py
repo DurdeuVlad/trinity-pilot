@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from .prompt_registry import PromptRegistry
 
@@ -46,7 +46,13 @@ class ReflectionEngine:
         self._provider = provider
         self._registry = registry
 
-    async def reflect(self, objective: str, result: str, attempt: int) -> Reflection:
+    async def reflect(
+        self,
+        objective: str,
+        result: str,
+        attempt: int,
+        execution_log: list[dict[str, Any]] | None = None,
+    ) -> Reflection:
         """Evaluate whether *result* satisfies *objective*.
 
         Returns:
@@ -67,6 +73,15 @@ class ReflectionEngine:
                 "or simplify the objective into a smaller first step."
             )
             logger.info("[Reflection] Fast-path failure for obj='%s...' attempt=%d", objective[:40], attempt)
+            return Reflection(achieved=False, confidence=0.9, critique=critique)
+
+        failure_summary = _summarize_execution_failures(execution_log or [])
+        if failure_summary and not _has_successful_execution_entries(execution_log or []):
+            critique = (
+                f"The execution evidence still shows only failed backend actions: {failure_summary}. "
+                "Use a different selector, command, or interaction path before claiming success."
+            )
+            logger.info("[Reflection] Fast-path execution-log failure for obj='%s...' attempt=%d", objective[:40], attempt)
             return Reflection(achieved=False, confidence=0.9, critique=critique)
 
         if _is_successful_text_capture(objective, result):
@@ -96,6 +111,7 @@ class ReflectionEngine:
                 "content": (
                     f"OBJECTIVE: {objective}\n\n"
                     f"RESULT: {result}\n\n"
+                    f"EXECUTION FAILURES: {failure_summary or 'none'}\n\n"
                     f"This was attempt {attempt + 1}."
                 ),
             },
@@ -109,6 +125,8 @@ class ReflectionEngine:
                 confidence=float(data.get("confidence", 0.5)),
                 critique=data.get("critique") or None,
             )
+            if failure_summary and reflection.critique is None:
+                reflection.critique = f"Execution failures observed: {failure_summary}."
             logger.info(
                 "[Reflection] obj='%s...' attempt=%d achieved=%s confidence=%.2f",
                 objective[:40],
@@ -220,3 +238,30 @@ def _is_successful_python_version(objective: str, result: str) -> bool:
         return True
 
     return bool(re.search(r"\bpython\b|\b\d+(?:\.\d+)+\b", text, re.IGNORECASE))
+
+
+def _summarize_execution_failures(entries: list[dict[str, Any]]) -> str | None:
+    failures: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result", "")).strip().lower()
+        if result != "failure":
+            continue
+        detail = str(entry.get("details") or entry.get("action") or "execution failure").strip()
+        if detail:
+            failures.append(detail[:160])
+        if len(failures) >= 3:
+            break
+    if not failures:
+        return None
+    return " | ".join(failures)
+
+
+def _has_successful_execution_entries(entries: list[dict[str, Any]]) -> bool:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("result", "")).strip().lower() == "success":
+            return True
+    return False

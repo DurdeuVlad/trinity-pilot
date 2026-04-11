@@ -213,6 +213,24 @@ class TrinityExecutor:
         close_session = getattr(adapter, "close_session", None)
         if callable(close_session):
             await close_session(session_id)
+
+    async def close_desktop_session(self, session_id: str) -> None:
+        """Close a persistent desktop session subprocess if the adapter supports it."""
+        adapter = self.adapters.get("desktop")
+        if adapter is None:
+            return
+        close_session = getattr(adapter, "close_session", None)
+        if callable(close_session):
+            await close_session(session_id)
+
+    async def close_cli_session(self, session_id: str) -> None:
+        """Close a persistent CLI backend session if the adapter supports it."""
+        adapter = self.adapters.get("cli")
+        if adapter is None:
+            return
+        close_session = getattr(adapter, "close_session", None)
+        if callable(close_session):
+            await close_session(session_id)
     
     async def get_capabilities_all(self) -> Dict[str, Dict]:
         """Get capabilities of all modules."""

@@ -22,6 +22,14 @@ _TRANSIENT_MARKERS = (
     "retry",
     "503",
     "429",
+    "still loading",
+    "loading",
+    "window_not_found",
+    "window not found",
+    "selector not found",
+    "element not visible",
+    "health check timed out",
+    "page interaction timed out",
 )
 
 _PERMANENT_MARKERS = (

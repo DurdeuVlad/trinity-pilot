@@ -19,12 +19,123 @@ logger = logging.getLogger(__name__)
 
 from ..adapter import TaskAdapter
 from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retriable
+from ..telemetry import (
+    TASK_CANCELLED,
+    TASK_FAILED,
+    TASK_STARTED,
+    TASK_SUCCEEDED,
+    emit_event,
+    make_event_payload,
+)
 
 
 DEFAULT_DESKTOP_RUNTIME_TIMEOUT_SECONDS = 600.0
 _FLIGHT_REPORT_ROOT = Path(__file__).resolve().parents[2] / "unified-app" / "_runtime" / "flight_reports"
 AUTH_TOKENS = ("api_key_invalid", "invalid api key", "api key not valid", "unauthenticated", "authentication failed")
 USER_ERROR_TOKENS = ("clarify", "need assistance", "invalid objective", "unsafe request")
+
+# ---------------------------------------------------------------------------
+# Desktop session pool — one persistent subprocess per task run
+# ---------------------------------------------------------------------------
+
+_ACTIVE_DESKTOP_SESSIONS: dict[str, "DesktopSession"] = {}
+
+
+class DesktopSession:
+    """Wraps a long-running generic_backend.py --session-mode process.
+
+    One instance is created per task run and reused for every desktop action
+    within that run, so COM/UIA handles and any open app windows persist
+    between consecutive calls instead of being torn down after each one.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        self._process: asyncio.subprocess.Process | None = None
+        self._lock = asyncio.Lock()
+
+    async def _ensure_started(self) -> None:
+        if self._process is not None and self._process.returncode is None:
+            return
+        self._process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            _resolve_backend_script(),
+            "--session-mode",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_build_subprocess_env(),
+        )
+
+    async def run_task(self, payload: dict[str, Any], timeout: float) -> "DesktopTaskResult":
+        async with self._lock:
+            await self._ensure_started()
+            assert self._process is not None
+            line = json.dumps(payload) + "\n"
+            self._process.stdin.write(line.encode())
+            await self._process.stdin.drain()
+            deadline = asyncio.get_running_loop().time() + timeout
+            live_events: list[dict] = []
+            text = ""
+            try:
+                while True:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    raw = await asyncio.wait_for(
+                        self._process.stdout.readline(),
+                        timeout=remaining,
+                    )
+                    text = raw.decode().strip()
+                    if not text:
+                        raise ValueError("Desktop session returned empty response")
+                    if text.startswith("[EVT]"):
+                        try:
+                            live_events.append(json.loads(text[5:]))
+                        except Exception:
+                            pass
+                        continue
+                    break
+                result = DesktopTaskResult.model_validate_json(text)
+                if live_events:
+                    meta = dict(result.metadata or {})
+                    meta["live_events"] = live_events
+                    result = result.model_copy(update={"metadata": meta})
+                return result
+            except asyncio.TimeoutError:
+                # Kill the stalled process; next call will restart it cleanly.
+                self._process.kill()
+                self._process = None
+                return DesktopTaskResult(
+                    status="failure",
+                    successful_actions=0,
+                    total_actions=0,
+                    error=f"Desktop task timed out after {int(timeout)}s",
+                    reason="desktop_task_timeout",
+                    metadata={"app_context": payload.get("target_app", "generic"), "timeout_seconds": timeout},
+                )
+
+    async def close(self) -> None:
+        if self._process and self._process.returncode is None:
+            try:
+                self._process.stdin.write(b"__QUIT__\n")
+                await self._process.stdin.drain()
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except Exception:
+                self._process.kill()
+        self._process = None
+
+
+async def get_or_create_desktop_session(session_id: str) -> DesktopSession:
+    if session_id not in _ACTIVE_DESKTOP_SESSIONS:
+        _ACTIVE_DESKTOP_SESSIONS[session_id] = DesktopSession(session_id)
+    return _ACTIVE_DESKTOP_SESSIONS[session_id]
+
+
+async def close_desktop_session(session_id: str) -> None:
+    session = _ACTIVE_DESKTOP_SESSIONS.pop(session_id, None)
+    if session:
+        await session.close()
 
 
 def _resolve_backend_script() -> str:
@@ -83,8 +194,37 @@ def _parse_worker_output(
             },
         )
 
+    live_events: list[dict] = []
+    result_line = ""
+    for line in stdout.splitlines():
+        if line.startswith("[EVT]"):
+            try:
+                live_events.append(json.loads(line[5:]))
+            except Exception:
+                pass
+        elif line.strip():
+            result_line = line.strip()
+
+    if not result_line:
+        return DesktopTaskResult(
+            status="failure",
+            successful_actions=0,
+            total_actions=0,
+            error=stderr or "Desktop worker returned no result line",
+            reason="desktop_worker_start_failed",
+            metadata={
+                "app_context": target_app,
+                "child_exit_code": child_exit_code,
+            },
+        )
+
     try:
-        return DesktopTaskResult.model_validate_json(stdout)
+        result = DesktopTaskResult.model_validate_json(result_line)
+        if live_events:
+            meta = dict(result.metadata or {})
+            meta["live_events"] = live_events
+            result = result.model_copy(update={"metadata": meta})
+        return result
     except Exception as exc:
         return DesktopTaskResult(
             status="failure",
@@ -95,7 +235,7 @@ def _parse_worker_output(
             metadata={
                 "app_context": target_app,
                 "child_exit_code": child_exit_code,
-                "worker_stdout": stdout[:500],
+                "worker_stdout": result_line[:500],
             },
         )
 
@@ -175,6 +315,7 @@ def run_desktop_automation(
         "max_retries": max_retries,
         "glass_box_mode": glass_box_mode,
         "app_exe_path": app_exe_path,
+        "runtime_timeout_seconds": runtime_timeout_seconds,
         "prior_results": prior_results,   # Layer 2: cross-objective context
         "world_state": world_state,        # Layer 3: structured world state
         "session_id": session_id,
@@ -266,6 +407,7 @@ async def run_desktop_automation_async(
         "max_retries": max_retries,
         "glass_box_mode": glass_box_mode,
         "app_exe_path": app_exe_path,
+        "runtime_timeout_seconds": runtime_timeout_seconds,
         "prior_results": prior_results,   # Layer 2: cross-objective context
         "world_state": world_state,        # Layer 3: structured world state
         "session_id": session_id,
@@ -400,12 +542,16 @@ class DesktopAdapter(TaskAdapter):
         
         effective_timeout = self._effective_timeout(task)
         if self._is_cancelled(task):
+            emit_event(TASK_CANCELLED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name="desktop"))
             return self._contract_failure(
                 task,
                 effective_timeout=effective_timeout,
                 category="cancelled",
                 error="Task cancelled before execution started.",
             )
+
+        _t0 = time.monotonic()
+        emit_event(TASK_STARTED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name="desktop"))
 
         try:
             app_name = task.context.get("app_name", "generic")
@@ -414,38 +560,66 @@ class DesktopAdapter(TaskAdapter):
             clipboard_content = task.context.get("clipboard_content")   # Layer 1
             prior_results = task.context.get("_prior_results")          # Layer 2
             world_state = task.context.get("_world_state")              # Layer 3
+            desktop_session_id = task.context.get("_desktop_session_id")
 
             logger.info(
                 "[DESKTOP_ADAPTER] Received task: description=%s app_name=%s "
-                "clipboard=%s prior_results_keys=%s world_state_active_app=%s",
+                "clipboard=%s prior_results_keys=%s world_state_active_app=%s session=%s",
                 task.description, app_name,
                 f"{len(clipboard_content)} chars" if clipboard_content else "none",
                 list(prior_results.keys()) if prior_results else "none",
                 world_state.get("active_app") if world_state else "none",
+                desktop_session_id or "one-shot",
             )
 
-            typed_result: DesktopTaskResult = await run_desktop_automation_async(
-                objective=task.description,
-                target_app=app_name,
-                expected_outcome=task.expected_outcome,
-                max_retries=task.max_retries,
-                glass_box_mode=glass_box,
-                app_exe_path=app_exe_path,
-                runtime_timeout_seconds=effective_timeout,
+            if desktop_session_id:
+                # Session mode: route through the persistent subprocess so app
+                # windows and COM handles survive between consecutive calls.
+                payload = {
+                    "objective": task.description,
+                    "target_app": app_name,
+                    "expected_outcome": task.expected_outcome,
+                    "max_retries": task.max_retries,
+                    "glass_box_mode": glass_box,
+                    "app_exe_path": app_exe_path,
+                    "runtime_timeout_seconds": effective_timeout,
+                    "clipboard_content": clipboard_content,
+                    "prior_results": prior_results,
+                    "world_state": world_state,
+                    "session_id": desktop_session_id,
+                    "objective_id": task.task_id,
+                }
+                session = await get_or_create_desktop_session(desktop_session_id)
+                typed_result = await session.run_task(payload, timeout=effective_timeout)
+            else:
+                typed_result = await run_desktop_automation_async(
+                    objective=task.description,
+                    target_app=app_name,
+                    expected_outcome=task.expected_outcome,
+                    max_retries=task.max_retries,
+                    glass_box_mode=glass_box,
+                    app_exe_path=app_exe_path,
+                    runtime_timeout_seconds=effective_timeout,
                 clipboard_content=clipboard_content,
                 prior_results=prior_results,
                 world_state=world_state,
                 cancel_event=getattr(task, "cancel_event", None),
-            )
+                )
             success_output = (
                 _build_desktop_success_output(task, app_name)
                 if typed_result.status == "success"
                 else None
             )
 
+            _duration = (time.monotonic() - _t0) * 1000
+            _status = "success" if typed_result.status == "success" else "failure"
+            emit_event(
+                TASK_SUCCEEDED if _status == "success" else TASK_FAILED,
+                make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name="desktop", duration_ms=_duration, extra={"status": _status}),
+            )
             return TaskResult(
                 task_id=task.task_id,
-                status="success" if typed_result.status == "success" else "failure",
+                status=_status,
                 category=self._normalize_category(typed_result),
                 error=typed_result.error or typed_result.reason,
                 execution_log=[
@@ -474,12 +648,18 @@ class DesktopAdapter(TaskAdapter):
                 },
             )
         except Exception as e:
+            _duration = (time.monotonic() - _t0) * 1000
+            emit_event(TASK_FAILED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name="desktop", duration_ms=_duration, extra={"error": str(e)}))
             return self._contract_failure(
                 task,
                 effective_timeout=effective_timeout,
                 category="backend_error",
                 error=f"Desktop adapter error: {str(e)}",
             )
+
+    async def close_session(self, session_id: str) -> None:
+        """Close a persistent desktop session and its subprocess."""
+        await close_desktop_session(session_id)
 
     async def health_check(self) -> bool:
         """Check if desktop backend and runner are available."""

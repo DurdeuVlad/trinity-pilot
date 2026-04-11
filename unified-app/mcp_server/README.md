@@ -5,13 +5,20 @@ MCP (Model Context Protocol) server for controlling and testing the Orchestrator
 ## Features
 
 - **Task Submission**: Submit tasks to the live orchestrator via the Qt event bus
+- **Canonical Case Submission**: Submit cases directly from `trinity-pilot/docs/live-test-cases/`
 - **Status Monitoring**: Query task execution status in real-time
+- **Live Event Streaming**: Read incremental live run events through the app command surface
 - **Execution Log**: Read the full turn-by-turn execution log (actions, reflections, replans)
 - **Execution Plan**: Inspect the macro plan steps and their statuses
+- **Artifact Bundles**: Resolve task details, checkpoints, flight reports, prompts, responses, and screenshots together
 - **Flight Records**: Read YAML flight reports saved to disk after each CLI objective
 - **History Access**: Browse task history and execution details
 - **Checkpoint Inspection**: Examine checkpoints and resilience features
 - **Settings Control**: Get and update orchestrator settings
+
+Related local surfaces:
+- `python -m mcp_server.app_control_cli ...` exposes a terminal-friendly command interface to the running app
+- `python -m mcp_server.terminal_session_mcp` exposes a separate durable terminal/session MCP server
 
 ## Installation
 
@@ -28,7 +35,27 @@ pip install mcp
 python -m mcp_server.orchestrator_mcp
 ```
 
-### Available Tools (13 total)
+### Terminal-Friendly App Control
+
+```bash
+python -m mcp_server.app_control_cli list-cases
+python -m mcp_server.app_control_cli submit-case TC-BROWSER-01
+python -m mcp_server.app_control_cli stream-events latest
+python -m mcp_server.app_control_cli get-artifact-bundle latest
+```
+
+### Dedicated Terminal Session MCP
+
+```bash
+python -m mcp_server.terminal_session_mcp
+```
+
+### Notable Additional Tools
+
+- `list_cases`
+- `submit_case`
+- `get_live_events`
+- `get_artifact_bundle`
 
 ---
 

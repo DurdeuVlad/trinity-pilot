@@ -235,6 +235,106 @@ class TestAgentLoop:
         asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1, adapt_hint="Try keyboard shortcut"))
         assert any("Try keyboard shortcut" in c for c in captured)
 
+    def test_steer_hint_injected_on_next_turn_only(self) -> None:
+        captured: list[str] = []
+        steer_calls = 0
+
+        class CapturingProvider:
+            async def call(self, messages: list[dict], **kw) -> str:
+                captured.append(messages[-1]["content"])
+                if len(captured) == 1:
+                    return json.dumps({
+                        "rationale": "rename with cli",
+                        "action_type": "cli",
+                        "module": "cli_runner",
+                        "parameters": {"command": "Rename-Item report.txt summary.txt"},
+                        "done": False,
+                        "result_summary": None,
+                    })
+                return json.dumps({
+                    "rationale": "done",
+                    "action_type": "done",
+                    "module": None,
+                    "parameters": {},
+                    "done": True,
+                    "result_summary": "File renamed",
+                })
+
+        def consume_steer() -> str:
+            nonlocal steer_calls
+            steer_calls += 1
+            return "Prefer keyboard shortcuts" if steer_calls == 2 else ""
+
+        loop = AgentLoop(
+            provider=CapturingProvider(),
+            bridge=FakeBridge(),
+            emit_status=lambda m, l: None,
+            cancel_requested=lambda: False,
+            registry=PromptRegistry("gemini"),
+            consume_steer=consume_steer,
+        )
+
+        result = asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1))
+
+        assert result == "File renamed"
+        assert "USER STEERING" not in captured[0]
+        assert "Prefer keyboard shortcuts" in captured[1]
+
+    def test_steer_skip_request_stays_advisory_and_does_not_bypass_evidence(self) -> None:
+        captured: list[str] = []
+        responses = [
+            json.dumps({
+                "rationale": "skip ahead",
+                "action_type": "done",
+                "module": None,
+                "parameters": {},
+                "done": True,
+                "result_summary": "Skipped",
+            }),
+            json.dumps({
+                "rationale": "rename with cli",
+                "action_type": "cli",
+                "module": "cli_runner",
+                "parameters": {"command": "Rename-Item report.txt summary.txt"},
+                "done": False,
+                "result_summary": None,
+            }),
+            json.dumps({
+                "rationale": "done",
+                "action_type": "done",
+                "module": None,
+                "parameters": {},
+                "done": True,
+                "result_summary": "File renamed",
+            }),
+        ]
+
+        class CapturingProvider:
+            def __init__(self) -> None:
+                self._index = 0
+
+            async def call(self, messages: list[dict], **kw) -> str:
+                captured.append(messages[-1]["content"])
+                response = responses[self._index]
+                self._index += 1
+                return response
+
+        loop = AgentLoop(
+            provider=CapturingProvider(),
+            bridge=FakeBridge(),
+            emit_status=lambda m, l: None,
+            cancel_requested=lambda: False,
+            registry=PromptRegistry("gemini"),
+            consume_steer=lambda: "Skip this and go to the next step",
+        )
+
+        result = asyncio.run(loop.act("Rename report.txt to summary.txt", obj_index=1))
+
+        assert result == "File renamed"
+        assert len(loop._bridge.calls) == 1
+        assert "Do not skip the objective" in captured[0]
+        assert "Skip this and go to the next step" in captured[0]
+
     def test_cancelled_returns_sentinel(self) -> None:
         loop = AgentLoop(
             provider=ScriptedProvider([]),

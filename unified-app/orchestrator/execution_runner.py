@@ -11,6 +11,9 @@ Final status: "success" (all achieved) | "partial" (some failed) | "failure" (al
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
+import json
 import logging
 import re
 import time
@@ -18,7 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .active_reviewer import ActiveReviewer, ReviewStatus
+from .active_reviewer import ActiveReviewer, ReviewResult, ReviewStatus
 from .agent_loop import AgentLoop
 from .checkpoint_manager import CheckpointManager
 from .database import TaskStatus
@@ -28,6 +31,8 @@ from .macro_planner import ExecutionPlan
 from .output_validator import OutputValidator
 from .prompt_registry import PromptRegistry
 from .reflection_engine import ReflectionEngine
+
+from .crash_reporter import write_crash_dump as _write_crash_dump
 
 try:
     from audit_debugger import (
@@ -104,6 +109,8 @@ class TaskExecutionRunner:
         cancel_requested: Callable[[], bool],
         cancel_event: Any,
         resume_event: Any = None,
+        pause_event: Any = None,
+        termination_context: Callable[[], dict[str, Any]] | None = None,
         approved_plan: list[str] | None = None,
         provider_name: str = "gemini",
         timeout_seconds: int = 600,
@@ -124,7 +131,11 @@ class TaskExecutionRunner:
         self.cancel_requested = cancel_requested
         self.cancel_event = cancel_event
         self.resume_event = resume_event
+        self.pause_event = pause_event
+        self.termination_context = termination_context
         self.approved_plan = [step.strip() for step in (approved_plan or []) if step.strip()]
+        self.consume_steer: Callable[[], str] | None = None
+        self.clear_steer: Callable[[], None] | None = None
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.audit_recorder = audit_recorder
@@ -132,6 +143,9 @@ class TaskExecutionRunner:
         self._owns_audit_recorder = False
         self._prompt_logging_token = None
         self._backend_executions: list[dict[str, Any]] = []
+        self._objective_summaries: list[dict[str, Any]] = []
+        self._latest_plan_revisions: dict[int, str] = {}
+        self._run_started_at = 0.0
         self.performance_tracker = None
         self._audit_output_dir = Path(__file__).resolve().parents[1] / "_runtime" / "flight_reports"
 
@@ -174,6 +188,8 @@ class TaskExecutionRunner:
 
     async def _initialize_run(self) -> None:
         """Set up bridge, watchers, and history record for the new run."""
+        self._run_started_at = time.time()
+        self._objective_summaries.clear()
         self._audit_event(
             phase="system",
             message="Initializing task execution runner",
@@ -191,8 +207,10 @@ class TaskExecutionRunner:
             )
         self._status("Preparing automation runtime...", "info")
         await self.bridge.initialize()
+        # Wire the live-view frame callback after the bridge is initialized so the
+        # BrowserAdapter's screencast frames flow directly into the UI event bus.
+        self.bridge.set_frame_callback(self.event_bus.frame_captured.emit)
         self.screenshot_watcher.start_watching()
-        self._signal("execution_started")
         self.history_manager.create_task(
             task_id=self.run_id,
             description=self.task_description,
@@ -202,8 +220,10 @@ class TaskExecutionRunner:
             confidence=0.0,
         )
         self.history_manager.start_task(self.run_id)
+        self._signal("execution_started")
+        self._signal("run_started", self.run_id)
         self._status("Analyzing your task...", "thinking")
-        self._status("Thinking about how to approach your task…", "thinking")
+        self._status("Drafting execution plan…", "thinking")
 
     # ── Phase: Plan ────────────────────────────────────────────────────────
 
@@ -294,7 +314,7 @@ class TaskExecutionRunner:
         self._signal("plan_generated", plan.steps)
         n = len(plan.steps)
         self._status("Starting execution...", "info")
-        self._status(f"Got it — I'll tackle this in {n} step{'s' if n != 1 else ''}.", "success")
+        self._status(f"Plan loaded: {n} objective{'s' if n != 1 else ''}.", "success")
         return plan
 
     # ── Phase: Build attempt context ───────────────────────────────────────
@@ -316,13 +336,33 @@ class TaskExecutionRunner:
             emit_status=self._status,
             cancel_requested=self.cancel_requested,
             registry=self.registry,
+            run_domain=self.domain,
             context=context,
             output_validator=self.output_validator,
             cancel_event=self.cancel_event,
             resume_event=self.resume_event,
+            pause_event=self.pause_event,
             performance_tracker=self.performance_tracker,
+            emit_step_detail=self._emit_step_detail,
+            emit_plan_update=self._emit_plan_update,
+            consume_steer=self.consume_steer,
+            emit_cli_step=self._emit_cli_step,
         )
         return context, start_index, agent_loop
+
+    def _emit_step_detail(self, obj_idx: int, step_num: int, action_type: str, result: str) -> None:
+        self._signal("step_detail", obj_idx, step_num, action_type, result)
+
+    def _emit_cli_step(self, obj_idx: int, step: dict) -> None:
+        self._signal("cli_step_progress", obj_idx, step)
+
+    def _emit_plan_update(self, obj_idx: int, plan_state: dict[str, Any]) -> None:
+        revision_key = f"{_plan_state_revision(plan_state)}:{_format_plan_update(plan_state)}"
+        if self._latest_plan_revisions.get(obj_idx) == revision_key:
+            return
+        self._latest_plan_revisions[obj_idx] = revision_key
+        self._signal("plan_state_updated", obj_idx, plan_state)
+        self._status(_format_plan_update(plan_state), "plan")
 
     # ── Phase: Attempt ─────────────────────────────────────────────────────
 
@@ -348,6 +388,16 @@ class TaskExecutionRunner:
 
             if display_index <= start_index:
                 completed.append((display_index, objective))
+                self._objective_summaries.append(
+                    {
+                        "index": display_index,
+                        "description": objective,
+                        "status": "completed",
+                        "duration_s": None,
+                        "attempt_count": 0,
+                        "restored": True,
+                    }
+                )
                 index += 1
                 continue
 
@@ -362,6 +412,7 @@ class TaskExecutionRunner:
                 "info",
             )
             self._status(f"{display_index}/{len(objectives)}|{objective}", "step")
+            _obj_start = time.time()
             self.history_manager.update_step_status(
                 self.run_id, display_index, TaskStatus.RUNNING
             )
@@ -407,13 +458,15 @@ class TaskExecutionRunner:
                 state=before_snapshot_state,
             )
 
-            objective_achieved, final_result = await self._run_attempts(
+            objective_achieved, final_result, attempt_count = await self._run_attempts(
                 objective, display_index, context, agent_loop
             )
+            self._clear_pending_steer()
             if objective_achieved is None:
                 return None  # cancelled during attempts
 
-            step_payload = dict(agent_loop.last_step_payload or {})
+            step_payload = dict(agent_loop.last_attempt_payload or agent_loop.last_step_payload or {})
+            objective_duration = round(time.time() - _obj_start, 1)
             if objective_achieved and _step_indicates_failure(final_result, step_payload):
                 objective_achieved = False
 
@@ -444,10 +497,20 @@ class TaskExecutionRunner:
                 payload.setdefault("artifacts", [])
                 payload.setdefault("execution_log", [])
                 payload.setdefault("metadata", {})
+                payload["duration_s"] = objective_duration
+                payload["attempt_count"] = attempt_count
+                self._objective_summaries.append(
+                    {
+                        "index": display_index,
+                        "description": objective,
+                        "status": "completed",
+                        "duration_s": objective_duration,
+                        "attempt_count": attempt_count,
+                    }
+                )
                 backend_execution = self._record_backend_execution(display_index, objective, payload)
                 self._signal("step_completed", display_index, payload)
-                self.history_manager.update_step_status(
-                    self.run_id,
+                self._update_step_status(
                     display_index,
                     TaskStatus.COMPLETED,
                     result_data=payload,
@@ -477,15 +540,32 @@ class TaskExecutionRunner:
                         data={"objective_index": display_index},
                     )
                 failed.append((display_index, objective, final_result))
-                payload = dict(agent_loop.last_step_payload or {})
+                payload = dict(agent_loop.last_attempt_payload or agent_loop.last_step_payload or {})
+                payload.setdefault("artifacts", [])
+                payload.setdefault("execution_log", [])
+                payload.setdefault("metadata", {})
+                payload["status"] = "failure"
+                payload["output"] = final_result or payload.get("output", "")
+                payload["error"] = final_result
+                payload["duration_s"] = objective_duration
+                payload["attempt_count"] = attempt_count
+                self._objective_summaries.append(
+                    {
+                        "index": display_index,
+                        "description": objective,
+                        "status": "failed",
+                        "duration_s": objective_duration,
+                        "attempt_count": attempt_count,
+                        "reason": final_result,
+                    }
+                )
                 backend_execution = self._record_backend_execution(display_index, objective, payload)
-                self._signal("step_failed", display_index, final_result)
+                self._signal("step_failed", display_index, payload)
                 self._status(
                     "Couldn't complete this step after multiple attempts. Moving on…",
                     "warning",
                 )
-                self.history_manager.update_step_status(
-                    self.run_id,
+                self._update_step_status(
                     display_index,
                     TaskStatus.FAILED,
                     error_message=final_result,
@@ -545,8 +625,16 @@ class TaskExecutionRunner:
 
             index += 1
 
-        await agent_loop.cleanup_browser_session(0, context)
+        await self._cleanup_agent_sessions(agent_loop, 0, context)
         return completed, failed
+
+    def _clear_pending_steer(self) -> None:
+        if self.clear_steer is None:
+            return
+        try:
+            self.clear_steer()
+        except Exception:
+            return
 
     # ── Phase: Per-objective attempts ──────────────────────────────────────
 
@@ -556,10 +644,10 @@ class TaskExecutionRunner:
         display_index: int,
         context: "ExecutionContext",
         agent_loop: "AgentLoop",
-    ) -> tuple[bool | None, str]:
+    ) -> tuple[bool | None, str, int]:
         """Run Act → Reflect retries for one objective.
 
-        Returns (achieved, final_result).
+        Returns (achieved, final_result, attempt_count).
         achieved is None when a cancellation occurred.
         """
         objective_achieved = False
@@ -568,9 +656,9 @@ class TaskExecutionRunner:
 
         for attempt in range(MAX_ATTEMPTS_PER_OBJECTIVE):
             if self.cancel_requested():
-                await agent_loop.cleanup_browser_session(display_index, context)
+                await self._cleanup_agent_sessions(agent_loop, display_index, context)
                 self._complete_as_cancelled(active_step=display_index)
-                return None, ""
+                return None, "", attempt + 1
 
             if attempt > 0:
                 self._status(
@@ -578,7 +666,7 @@ class TaskExecutionRunner:
                     "thinking",
                 )
                 self._status(
-                    "Hmm, that didn't quite work. Let me try a different approach…",
+                    "Previous attempt did not complete. Trying a different approach…",
                     "thinking",
                 )
 
@@ -590,16 +678,25 @@ class TaskExecutionRunner:
             )
 
             if result == "[cancelled]":
-                await agent_loop.cleanup_browser_session(display_index, context)
+                await self._cleanup_agent_sessions(agent_loop, display_index, context)
                 self._complete_as_cancelled(active_step=display_index)
-                return None, ""
+                return None, "", attempt + 1
+
+            if result.startswith("[policy_stop:"):
+                await self._cleanup_agent_sessions(agent_loop, display_index, context)
+                reason = result[len("[policy_stop:"):].rstrip("]").strip()
+                self._complete_as_cancelled(active_step=display_index, fallback_reason=reason)
+                return None, "", attempt + 1
 
             final_result = result
+            step_payload = dict(agent_loop.last_attempt_payload or agent_loop.last_step_payload or {})
+            self._replay_backend_events(step_payload, display_index)
 
             reflection = await self.reflection_engine.reflect(
                 objective=objective,
                 result=result,
                 attempt=attempt,
+                execution_log=step_payload.get("execution_log", []),
             )
             self._audit_event(
                 phase="reflection",
@@ -615,7 +712,6 @@ class TaskExecutionRunner:
                 importance=2,
             )
 
-            step_payload = dict(agent_loop.last_step_payload or {})
             if reflection.achieved and _completion_lacks_execution_evidence(objective, step_payload):
                 critique = (
                     "The previous attempt claimed completion without any successful execution evidence. "
@@ -655,14 +751,26 @@ class TaskExecutionRunner:
             review = await self.active_reviewer.review_progress(
                 objective=objective,
                 completed_tasks=self._get_completed_tasks_for_review(context, display_index),
-                world_state=context.world_state.__dict__ if hasattr(context, 'world_state') else {},
+                world_state=context.world_state.to_context_dict() if hasattr(context, 'world_state') else {},
                 attempt=attempt,
-                max_attempts=MAX_ATTEMPTS_PER_OBJECTIVE
+                max_attempts=MAX_ATTEMPTS_PER_OBJECTIVE,
+                execution_log=step_payload.get("execution_log", []),
+                error_history=[
+                    {"type": e.error_type, "message": e.error_message}
+                    for e in context.error_history
+                ],
+                plan_state=step_payload.get("metadata", {}).get("plan_state", {}),
+            )
+            review = _stabilize_review_result(
+                review=review,
+                final_result=final_result,
+                step_payload=step_payload,
+                attempt=attempt,
+                max_attempts=MAX_ATTEMPTS_PER_OBJECTIVE,
             )
             
             if review.status == ReviewStatus.CONTINUE:
-                feedback_msg = self.active_reviewer.format_feedback_for_executor(review)
-                self._status(f"Reviewer feedback:\n{feedback_msg}", "info")
+                self._status(f"{review.assessment} — {'; '.join(review.next_steps[:2])}", "review")
                 self._audit_event(
                     phase="reflection",
                     message="Active reviewer requested continuation",
@@ -686,8 +794,7 @@ class TaskExecutionRunner:
                 ])
                 continue
             elif review.status == ReviewStatus.PIVOT:
-                feedback_msg = self.active_reviewer.format_feedback_for_executor(review)
-                self._status(f"Reviewer suggests pivot:\n{feedback_msg}", "warning")
+                self._status(f"PIVOT: {review.assessment} — try: {'; '.join(review.alternative_strategies[:2])}", "review")
                 self._audit_event(
                     phase="reflection",
                     message="Active reviewer requested pivot",
@@ -706,6 +813,37 @@ class TaskExecutionRunner:
                     f"Reason: {review.assessment}",
                     "Try these alternatives: " + "; ".join(review.alternative_strategies)
                 ])
+                continue
+
+            if _is_loading_related_failure(final_result, step_payload) and attempt < MAX_ATTEMPTS_PER_OBJECTIVE - 1:
+                critique = (
+                    "The previous attempt likely failed because the browser page, window, or application "
+                    "was still loading or attaching. Wait for the UI to settle, then retry by re-reading "
+                    "state before treating the target as missing."
+                )
+                self._status(
+                    "The target may still be loading. Waiting briefly before retrying...",
+                    "warning",
+                )
+                self._audit_event(
+                    phase="reflection",
+                    message="Retry triggered by probable UI loading delay",
+                    level="warning",
+                    data={
+                        "objective": objective,
+                        "objective_index": display_index,
+                        "attempt": attempt + 1,
+                        "reason": critique,
+                    },
+                    importance=2,
+                )
+                context.add_error(ErrorRecord(
+                    error_type="ui_loading_delay",
+                    error_message=critique,
+                    attempted_action={"objective": objective, "attempt": attempt},
+                    timestamp=time.time(),
+                ))
+                await asyncio.sleep(1.0)
                 continue
 
             failure_text = " ".join(
@@ -796,11 +934,8 @@ class TaskExecutionRunner:
                 reflection.critique
                 or "The previous attempt did not fully achieve the objective. Try a different approach."
             )
+            self._status(critique[:200], "reflect")
             self._status("That attempt didn't fully achieve the goal. Retrying…", "warning")
-            self._status(
-                f"Objective {display_index} is not complete yet. Retrying...",
-                "warning",
-            )
             self._audit_event(
                 phase="reflection",
                 message="Retry triggered",
@@ -823,7 +958,7 @@ class TaskExecutionRunner:
                 timestamp=time.time(),
             ))
 
-        return objective_achieved, final_result
+        return objective_achieved, final_result, attempt + 1
 
     # ── Phase: Finalize ────────────────────────────────────────────────────
 
@@ -848,7 +983,7 @@ class TaskExecutionRunner:
 
         if n_failed == 0:
             status, category = "success", "success"
-            msg = "All done! Everything completed successfully."
+            msg = "Execution finished. All objectives completed."
             error_message = None
         elif n_done == 0:
             status, category = "failure", "failure"
@@ -856,7 +991,7 @@ class TaskExecutionRunner:
             error_message = msg
         else:
             status, category = "partial", "partial"
-            msg = f"Partially done — completed {n_done} of {effective_total} steps."
+            msg = f"Execution finished with partial completion: {n_done} of {effective_total} objectives completed."
             error_message = msg
 
         self._signal("execution_complete", {"status": status, "category": category})
@@ -869,19 +1004,28 @@ class TaskExecutionRunner:
         if self.audit_recorder is not None:
             self.audit_recorder.report.diagnostics["backend_executions"] = list(self._backend_executions)
         if status == "success":
-            self._status("Execution completed successfully.", "success")
+            self._status("Execution finished successfully.", "success")
         level = "done" if status == "success" else "fail"
         self._status(msg, level)
 
         if status == "success":
-            chat_msg = f"Done! Task completed: {self.task_description}"
+            chat_msg = f"Execution finished: {self.task_description}"
             if n_done > 1:
-                chat_msg += f" ({n_done} steps completed)"
+                chat_msg += f" ({n_done} objectives completed)"
         elif status == "partial":
-            chat_msg = f"Partially done — {n_done} of {effective_total} steps succeeded."
+            chat_msg = f"Execution partially completed: {n_done} of {effective_total} objectives succeeded."
         else:
             chat_msg = "Task failed. Check the log below for details."
-        self._signal("task_result_ready", chat_msg)
+
+        summary = {
+            "status": status,
+            "total_objectives": len(plan_steps),
+            "duration_s": round(max(0.0, time.time() - self._run_started_at), 1),
+            "objectives": list(self._objective_summaries),
+            "completed": [(idx, obj) for idx, obj in completed],
+            "failed": [(idx, obj, reason) for idx, obj, reason in failed],
+        }
+        self._signal("task_result_ready", chat_msg, summary)
 
         if status == "failure" and failed:
             core = _extract_error_core(failed[0][2])
@@ -901,6 +1045,7 @@ class TaskExecutionRunner:
         if callable(provider_close):
             await provider_close()
         self.screenshot_watcher.stop_watching()
+        self._signal("run_ended", self.run_id)
         self._signal("execution_ended")
         await self.bridge.shutdown()
         self.history_manager.close()
@@ -986,7 +1131,11 @@ class TaskExecutionRunner:
                 confidence=0.0,
             )
             self.history_manager.start_task(self.run_id)
-        self.history_manager.complete_task(self.run_id, error_message=error_payload["message"])
+        self.history_manager.complete_task(
+            self.run_id,
+            result_data={"status": "failed", "category": error_payload["category"]},
+            error_message=error_payload["message"],
+        )
         self._status(error_payload["user_message"], "error")
         self._signal("execution_complete", {
             "status": "failure",
@@ -996,21 +1145,48 @@ class TaskExecutionRunner:
 
     # ── Cancellation ──────────────────────────────────────────────────────
 
-    def _complete_as_cancelled(self, active_step: int | None = None) -> None:
-        self._status("Stopped — cancelled by you.", "cancelled")
-        self._signal("execution_complete", {"status": "cancelled", "category": "cancelled"})
-        self._set_audit_status("cancelled")
+    def _complete_as_cancelled(self, active_step: int | None = None, fallback_reason: str | None = None) -> None:
+        termination = self._get_termination_context(fallback_reason=fallback_reason)
+        terminal_status = termination["status"]
+        category = termination["category"]
+        reason = termination["reason"]
+        db_status = termination["db_status"]
+        level = "cancelled" if terminal_status == "cancelled" else "error"
+        self._status(reason, level)
+        self._signal("execution_complete", {"status": terminal_status, "category": category, "error": reason})
+        self._set_audit_status("cancelled" if terminal_status == "cancelled" else "failure")
         if active_step is not None:
             self.history_manager.update_step_status(
-                self.run_id, active_step, TaskStatus.CANCELLED,
-                error_message="Cancelled by user",
+                self.run_id,
+                active_step,
+                db_status,
+                result_data={"status": terminal_status, "category": category},
+                error_message=reason,
             )
         self.history_manager.complete_task(
             self.run_id,
-            result_data={"status": "cancelled", "category": "cancelled"},
-            error_message="Cancelled by user",
-            status=TaskStatus.CANCELLED,
+            result_data={"status": terminal_status, "category": category},
+            error_message=reason,
+            status=db_status,
         )
+
+    def _get_termination_context(self, *, fallback_reason: str | None = None) -> dict[str, Any]:
+        details = {}
+        if callable(self.termination_context):
+            try:
+                details = dict(self.termination_context() or {})
+            except Exception:
+                details = {}
+        terminal_status = str(details.get("status") or ("policy_terminated" if fallback_reason else "cancelled")).strip().lower()
+        category = str(details.get("category") or ("policy_stop" if terminal_status == "policy_terminated" else "cancelled")).strip().lower()
+        reason = str(details.get("reason") or fallback_reason or "Stopped — cancelled by you.").strip()
+        db_status = TaskStatus.FAILED if terminal_status == "failed" else TaskStatus.CANCELLED
+        return {
+            "status": terminal_status or "cancelled",
+            "category": category or "cancelled",
+            "reason": reason or "Stopped — cancelled by you.",
+            "db_status": db_status,
+        }
 
     # ── Signal helpers ─────────────────────────────────────────────────────
 
@@ -1020,11 +1196,28 @@ class TaskExecutionRunner:
         
         if hasattr(context, 'module_results'):
             for module, result in context.module_results.items():
+                description = f"{module} result"
+                status = getattr(result, "status", "unknown")
+                output = str(getattr(result, "output", "") or "")[:200]
+                error = str(getattr(result, "error", "") or "")[:200]
                 completed.append({
-                    "description": f"{module} task",
-                    "status": result.get("status", "unknown"),
-                    "result": str(result.get("output", ""))[:200]
+                    "description": description,
+                    "status": status,
+                    "result": output or error,
                 })
+
+        if hasattr(context, "backend_plan_state"):
+            objective_key = f"objective_{current_obj_index}"
+            plan_map = context.backend_plan_state.get(objective_key, {})
+            if isinstance(plan_map, dict):
+                for backend, plan_state in plan_map.items():
+                    if not isinstance(plan_state, dict) or not plan_state:
+                        continue
+                    completed.append({
+                        "description": f"{backend} live plan",
+                        "status": _review_status_from_plan_state(plan_state),
+                        "result": _review_plan_state_summary(plan_state),
+                    })
         
         if hasattr(context, 'accumulated_state'):
             for key, value in context.accumulated_state.items():
@@ -1034,14 +1227,16 @@ class TaskExecutionRunner:
                         "status": "success" if value else "unknown",
                         "result": str(value)[:200]
                     })
-        
+
         return completed
 
     def _signal(self, event_name: str, *args) -> None:
         """Emit an event on the bus if available."""
         try:
             if self.event_bus:
-                getattr(self.event_bus, event_name).emit(*args)
+                signal = getattr(self.event_bus, event_name, None)
+                if signal is not None:
+                    signal.emit(*args)
         except RuntimeError:
             pass
 
@@ -1050,6 +1245,80 @@ class TaskExecutionRunner:
             self.event_bus.emit_status(message, level)
         except RuntimeError:
             pass
+
+    def _replay_backend_events(self, step_payload: dict, obj_idx: int) -> None:
+        """Forward live events captured by the desktop backend to the event bus."""
+        live_events = step_payload.get("metadata", {}).get("live_events", [])
+        for evt in live_events:
+            t = evt.get("type", "")
+            if t in ("phase", "action_start"):
+                self._status(evt.get("description", ""), "info")
+            elif t == "action_done":
+                self._signal(
+                    "step_detail",
+                    obj_idx,
+                    evt.get("step_index", 0) + 1,
+                    evt.get("action_type", "desktop"),
+                    evt.get("result", ""),
+                )
+            elif t == "frame":
+                path = evt.get("path")
+                if path:
+                    try:
+                        import pathlib
+                        data = pathlib.Path(path).read_bytes()
+                        self._signal("frame_captured", data)
+                    except Exception:
+                        pass
+            elif t == "blocker":
+                msg = evt.get("message")
+                if msg:
+                    self._signal("blocker_detected", msg)
+            elif t == "verify_done":
+                level = "success" if evt.get("result") == "passed" else "warning"
+                self._status(f"Check: {evt.get('reason', '')}", level)
+
+    async def _cleanup_agent_sessions(
+        self,
+        agent_loop: "AgentLoop",
+        display_index: int,
+        context: "ExecutionContext",
+    ) -> None:
+        """Cleanup backend sessions while tolerating sync test doubles."""
+        await self._call_agent_cleanup(getattr(agent_loop, "cleanup_browser_session", None), display_index, context)
+        await self._call_agent_cleanup(getattr(agent_loop, "cleanup_desktop_session", None), context)
+        await self._call_agent_cleanup(getattr(agent_loop, "cleanup_cli_session", None), context)
+
+    async def _call_agent_cleanup(self, cleanup_fn: Any, *args: Any) -> None:
+        if not callable(cleanup_fn):
+            return
+        result = cleanup_fn(*args)
+        if inspect.isawaitable(result):
+            await result
+
+    def _update_step_status(
+        self,
+        step_index: int,
+        status: TaskStatus,
+        **kwargs: Any,
+    ) -> None:
+        """Call HistoryManager.update_step_status with backward-compatible kwargs."""
+        try:
+            self.history_manager.update_step_status(
+                self.run_id,
+                step_index,
+                status,
+                **kwargs,
+            )
+        except TypeError:
+            compatibility_kwargs = dict(kwargs)
+            compatibility_kwargs.pop("flight_report_path", None)
+            self.history_manager.update_step_status(
+                self.run_id,
+                step_index,
+                status,
+                **compatibility_kwargs,
+            )
 
     def _start_audit_recording(self) -> None:
         if self.audit_recorder is not None:
@@ -1107,6 +1376,12 @@ class TaskExecutionRunner:
             )
         except Exception as exc:
             logger.warning("Failed to start orchestrator audit recording: %s", exc)
+            _write_crash_dump(
+                exc,
+                run_id=self.run_id,
+                task_description=self.task_description,
+                phase="audit_recording_start",
+            )
             self.audit_recorder = None
             self._owns_audit_recorder = False
 
@@ -1129,6 +1404,7 @@ class TaskExecutionRunner:
                 self.performance_tracker.finalize()
             if finalize_cost_metrics is not None:
                 finalize_cost_metrics(self.audit_recorder)
+            self._aggregate_backend_cost_metrics()
             self.audit_recorder.__exit__(
                 type(caught_error) if caught_error else None,
                 caught_error,
@@ -1191,6 +1467,10 @@ class TaskExecutionRunner:
             "flight_report_path": self._derive_backend_report_path(payload),
             "status": payload.get("status"),
         }
+        plan_state = metadata.get("plan_state")
+        if isinstance(plan_state, dict):
+            execution["plan_state_version"] = plan_state.get("version")
+            execution["plan_state_current_step_id"] = plan_state.get("current_step_id")
         if execution["backend_module"] or execution["flight_report_path"]:
             self._backend_executions.append(execution)
             self._audit_event(
@@ -1254,8 +1534,72 @@ class TaskExecutionRunner:
             "domain": self.domain,
             "context_summary": context.to_summary(),
             "world_state": context.world_state.to_context_dict(),
+            "plan_state": context.get_plan_state_snapshot(),
             "payload": payload,
         }
+
+    def _aggregate_backend_cost_metrics(self) -> None:
+        if self.audit_recorder is None:
+            return
+
+        cost_tracking = self.audit_recorder.report.metrics.setdefault("cost_tracking", {})
+        if not isinstance(cost_tracking, dict):
+            return
+
+        backend_reports: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        backend_total_cost = 0.0
+        backend_by_provider: dict[str, float] = {}
+        backend_by_module: dict[str, float] = {}
+
+        for execution in self._backend_executions:
+            report_path = execution.get("flight_report_path")
+            if not isinstance(report_path, str) or not report_path.strip() or report_path in seen_paths:
+                continue
+            seen_paths.add(report_path)
+            report_data = self._load_backend_report(report_path)
+            if not isinstance(report_data, dict):
+                continue
+
+            metrics = report_data.get("metrics", {})
+            backend_cost_tracking = metrics.get("cost_tracking", {}) if isinstance(metrics, dict) else {}
+            if not isinstance(backend_cost_tracking, dict):
+                continue
+
+            total_cost = float(backend_cost_tracking.get("total_cost_usd", 0.0) or 0.0)
+            backend_total_cost += total_cost
+            for provider, value in (backend_cost_tracking.get("by_provider", {}) or {}).items():
+                backend_by_provider[provider] = round(backend_by_provider.get(provider, 0.0) + float(value or 0.0), 9)
+            for module, value in (backend_cost_tracking.get("by_module", {}) or {}).items():
+                backend_by_module[module] = round(backend_by_module.get(module, 0.0) + float(value or 0.0), 9)
+
+            backend_reports.append({
+                "path": report_path,
+                "module": report_data.get("module"),
+                "status": report_data.get("status"),
+                "total_cost_usd": round(total_cost, 9),
+            })
+
+        orchestrator_total_cost = float(cost_tracking.get("total_cost_usd", 0.0) or 0.0)
+        cost_tracking["backend_total_cost_usd"] = round(backend_total_cost, 9)
+        cost_tracking["true_total_cost_usd"] = round(orchestrator_total_cost + backend_total_cost, 9)
+        if backend_by_provider:
+            cost_tracking["backend_by_provider"] = backend_by_provider
+        if backend_by_module:
+            cost_tracking["backend_by_module"] = backend_by_module
+
+        diagnostics = self.audit_recorder.report.diagnostics
+        if isinstance(diagnostics, dict):
+            diagnostics["backend_cost_reports"] = backend_reports
+
+    def _load_backend_report(self, report_path: str) -> dict[str, Any] | None:
+        try:
+            with Path(report_path).open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else None
+        except Exception as exc:
+            logger.warning("Failed to read backend report %s: %s", report_path, exc)
+            return None
 
     def _write_snapshot_artifact(
         self,
@@ -1435,6 +1779,132 @@ def _payload_failure_text(payload: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _stabilize_review_result(
+    *,
+    review: ReviewResult,
+    final_result: str,
+    step_payload: dict[str, Any],
+    attempt: int,
+    max_attempts: int,
+) -> ReviewResult:
+    if review.status not in {ReviewStatus.FAILED, ReviewStatus.PIVOT}:
+        return review
+    if attempt >= max_attempts - 1:
+        return review
+
+    plan_state = {}
+    metadata = step_payload.get("metadata", {}) if isinstance(step_payload, dict) else {}
+    if isinstance(metadata, dict):
+        raw_plan_state = metadata.get("plan_state", {})
+        if isinstance(raw_plan_state, dict):
+            plan_state = raw_plan_state
+
+    has_unfinished_plan = _plan_state_has_unfinished_steps(plan_state)
+    if not has_unfinished_plan and not _is_loading_related_failure(final_result, step_payload):
+        return review
+
+    missing = list(review.missing) or ["Stable UI state not yet confirmed"]
+    next_steps = list(review.next_steps) or [
+        "Wait for the target page, window, or application to finish loading or attaching.",
+        "Refresh the observed state before declaring the target missing.",
+    ]
+    hints = list(review.hints) or [
+        "Treat immediately-missing or not-visible targets as transient right after launch, navigation, or refresh.",
+    ]
+    assessment = (
+        review.assessment.strip()
+        or "The target still appears to be loading or the backend plan is not finished yet."
+    )
+    if "loading" not in assessment.lower() and "plan" not in assessment.lower():
+        assessment = f"{assessment} The live plan is still unfinished or the target may still be loading."
+
+    return ReviewResult(
+        status=ReviewStatus.CONTINUE,
+        assessment=assessment,
+        missing=missing,
+        next_steps=next_steps,
+        hints=hints,
+        alternative_strategies=list(review.alternative_strategies),
+        confidence=min(review.confidence, 0.5),
+    )
+
+
+def _plan_state_has_unfinished_steps(plan_state: dict[str, Any]) -> bool:
+    if not isinstance(plan_state, dict):
+        return False
+
+    steps = plan_state.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return False
+
+    unfinished_statuses = {"pending", "in_progress", "running", "blocked", "unknown"}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        status = str(step.get("status", "unknown") or "unknown").strip().lower()
+        if status in unfinished_statuses:
+            return True
+    return False
+
+
+def _review_status_from_plan_state(plan_state: dict[str, Any]) -> str:
+    if not isinstance(plan_state, dict):
+        return "unknown"
+    return "running" if _plan_state_has_unfinished_steps(plan_state) else "success"
+
+
+def _review_plan_state_summary(plan_state: dict[str, Any]) -> str:
+    if not isinstance(plan_state, dict):
+        return ""
+
+    steps = plan_state.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return str(plan_state.get("last_update", "") or "")[:200]
+
+    latest_labels: list[str] = []
+    for step in steps[-3:]:
+        if not isinstance(step, dict):
+            continue
+        status = str(step.get("status", "unknown") or "unknown").strip()
+        label = (
+            str(step.get("title") or "").strip()
+            or str(step.get("command") or "").strip()
+            or _format_plan_action_value(step.get("action"))
+            or "step"
+        )
+        latest_labels.append(f"[{status}] {label}")
+    return " | ".join(latest_labels)[:200]
+
+
+def _is_loading_related_failure(result_text: str, payload: dict[str, Any]) -> bool:
+    normalized = " ".join(
+        part for part in (
+            str(result_text or ""),
+            _payload_failure_text(payload),
+        )
+        if part
+    ).lower()
+    if not normalized:
+        return False
+
+    markers = (
+        "selector not found",
+        "element not visible",
+        "element detached",
+        "window_not_found",
+        "window not found",
+        "attach_timeout",
+        "launch_timeout",
+        "health check timed out",
+        "page interaction timed out",
+        "execution context was destroyed",
+        "still loading",
+        "not yet visible",
+        "not yet ready",
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _text_indicates_missing_resource(value: Any) -> bool:
     normalized = str(value or "").strip().lower()
     return any(
@@ -1572,6 +2042,65 @@ def _is_meaningful_payload_text(value: Any) -> bool:
     )):
         return False
     return True
+
+
+def _plan_state_revision(plan_state: dict[str, Any]) -> str:
+    if not isinstance(plan_state, dict):
+        return "na"
+    for key in ("revision", "replan_count", "attempt_count", "version"):
+        value = plan_state.get(key)
+        if value is not None:
+            return str(value)
+    return "na"
+
+
+def _format_plan_update(plan_state: dict[str, Any]) -> str:
+    if not isinstance(plan_state, dict):
+        return "Live plan update unavailable."
+
+    raw_steps = plan_state.get("steps", [])
+    if not isinstance(raw_steps, list) or not raw_steps:
+        last_update = str(plan_state.get("last_update") or plan_state.get("status") or "").strip()
+        return f"Live plan update: {last_update or 'no steps reported'}"
+
+    lines = ["Live steps:"]
+    for step in raw_steps[:8]:
+        if not isinstance(step, dict):
+            continue
+        status = _plan_status_label(str(step.get("status", "pending") or "pending"))
+        title = (
+            str(step.get("title") or "").strip()
+            or str(step.get("command") or "").strip()
+            or _format_plan_action_value(step.get("action"))
+            or f"step {step.get('index', '?')}"
+        )
+        lines.append(f"{status} {title}")
+    return "\n".join(lines)
+
+
+def _plan_status_label(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    return {
+        "done": "[ok]",
+        "success": "[ok]",
+        "completed": "[ok]",
+        "in_progress": "[run]",
+        "running": "[run]",
+        "failed": "[x]",
+        "failure": "[x]",
+        "blocked": "[wait]",
+        "pending": "[ ]",
+    }.get(normalized, f"[{normalized or '?'}]")
+
+
+def _format_plan_action_value(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [
+            str(value.get("action") or "").strip(),
+            str(value.get("id") or value.get("target_id") or value.get("keys") or "").strip(),
+        ]
+        return " ".join(part for part in parts if part).strip()
+    return str(value or "").strip()
 
 
 def _counts_toward_task_completion(objective: str) -> bool:

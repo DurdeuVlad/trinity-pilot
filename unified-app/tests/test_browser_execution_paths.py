@@ -116,3 +116,4 @@ async def test_agent_loop_reuses_and_cleans_up_browser_session_across_objectives
 
     assert bridge.closed_sessions == [session_ids[0]]
     assert "task_browser_session_id" not in context.accumulated_state
+

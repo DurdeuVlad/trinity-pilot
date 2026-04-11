@@ -54,3 +54,11 @@ def test_classify_transient_wins_over_permanent_on_mixed() -> None:
 
 def test_classify_ambiguous_none_input() -> None:
     assert classify(None) == FailureKind.AMBIGUOUS  # type: ignore[arg-type]
+
+
+def test_classify_transient_window_not_found_during_attach() -> None:
+    assert classify("window_not_found while attaching to the launched app") == FailureKind.TRANSIENT
+
+
+def test_classify_transient_selector_not_found_after_navigation() -> None:
+    assert classify("selector not found after page navigation") == FailureKind.TRANSIENT

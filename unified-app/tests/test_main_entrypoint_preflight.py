@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = APP_ROOT.parent
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
@@ -159,3 +161,26 @@ def test_run_preflight_closes_provider_on_failure(monkeypatch):
 
     assert readiness.ready is False
     assert seen["close"] is True
+
+
+def test_main_bootstrap_adds_repo_local_dependency_paths(monkeypatch):
+    main_path = APP_ROOT / "main.py"
+    expected_paths = {
+        str(REPO_ROOT.resolve()),
+        str((REPO_ROOT / "api-accessibility-poc").resolve()),
+        str((REPO_ROOT / "browser-gui-automation").resolve()),
+        str((REPO_ROOT / "cli-automation-poc").resolve()),
+        str((REPO_ROOT / "audit-debugger" / "src").resolve()),
+    }
+    filtered = [entry for entry in sys.path if entry not in expected_paths]
+    monkeypatch.setattr(sys, "path", [str(APP_ROOT.resolve()), *filtered])
+
+    spec = importlib.util.spec_from_file_location("bootstrap_probe_main", main_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    for expected in expected_paths:
+        assert expected in sys.path

@@ -4,13 +4,21 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
-from cli_backend import run_cli_automation
+from cli_backend import CLIBackend, run_cli_automation
 from cli_io_models import CLITaskResult
 from cli_validator import CommandValidator
 from ..adapter import TaskAdapter
 from ..models import TaskInput, TaskResult, ExecutionLog, failure_code, is_retriable
+from ..telemetry import (
+    TASK_CANCELLED,
+    TASK_FAILED,
+    TASK_STARTED,
+    TASK_SUCCEEDED,
+    emit_event,
+    make_event_payload,
+)
 
 
 DEFAULT_CONTRACT_TIMEOUT_SECONDS = 600
@@ -19,6 +27,24 @@ AUTH_CATEGORY_TOKENS = {"auth", "auth_failure"}
 TIMEOUT_CATEGORY_TOKENS = {"timeout"}
 USER_ERROR_CATEGORY_TOKENS = {"user_error", "need_assistance"}
 AUTH_MESSAGE_TOKENS = ("api_key_invalid", "invalid api key", "api key not valid", "unauthenticated", "authentication failed")
+
+# ---------------------------------------------------------------------------
+# CLI session pool — one CLIBackend instance per task run
+# ---------------------------------------------------------------------------
+
+_ACTIVE_CLI_SESSIONS: Dict[str, CLIBackend] = {}
+
+
+def get_or_create_cli_session(session_id: str) -> CLIBackend:
+    if session_id not in _ACTIVE_CLI_SESSIONS:
+        _ACTIVE_CLI_SESSIONS[session_id] = CLIBackend()
+    return _ACTIVE_CLI_SESSIONS[session_id]
+
+
+def close_cli_session(session_id: str) -> None:
+    backend = _ACTIVE_CLI_SESSIONS.pop(session_id, None)
+    if backend:
+        backend.close()
 
 class CLIAdapter(TaskAdapter):
     """Adapter for cli-automation-poc module."""
@@ -94,6 +120,7 @@ class CLIAdapter(TaskAdapter):
         """Execute CLI task using backend wrapper."""
         effective_timeout = self._effective_timeout(task)
         if self._is_cancelled(task):
+            emit_event(TASK_CANCELLED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name))
             return self._contract_failure(
                 task,
                 effective_timeout=effective_timeout,
@@ -101,8 +128,17 @@ class CLIAdapter(TaskAdapter):
                 error="Task cancelled before execution started.",
             )
 
+        _t0 = time.monotonic()
+        emit_event(TASK_STARTED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name))
+
         try:
             prior_results = task.context.get("_prior_results")  # Layer 2
+            cli_session_id = task.context.get("_cli_session_id")
+            progress_cb = task.context.get("_cli_progress_cb")
+
+            # Reuse a session-level CLIBackend when a session ID is in context
+            # so the SmartOrchestrator retains shell state across calls.
+            reuse_backend = get_or_create_cli_session(cli_session_id) if cli_session_id else None
 
             # Run sync backend in a separate thread
             typed_result: CLITaskResult = await asyncio.to_thread(
@@ -112,14 +148,24 @@ class CLIAdapter(TaskAdapter):
                 max_retries=task.max_retries,
                 timeout=effective_timeout,
                 prior_results=prior_results,
+                session_id=task.task_id,
+                objective_id=task.task_id,
+                _reuse_backend=reuse_backend,
+                progress_cb=progress_cb,
             )
             self._last_output_text = "\n".join(
                 (log.output or "") for log in typed_result.execution_log if log.output
             )
-            
+
+            _duration = (time.monotonic() - _t0) * 1000
+            _status = "success" if typed_result.status == "success" else "failure"
+            emit_event(
+                TASK_SUCCEEDED if _status == "success" else TASK_FAILED,
+                make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name, duration_ms=_duration, extra={"status": _status}),
+            )
             return TaskResult(
                 task_id=task.task_id,
-                status="success" if typed_result.status == "success" else "failure",
+                status=_status,
                 category=self._normalize_category(typed_result),
                 error=typed_result.error or typed_result.reason,
                 execution_log=[
@@ -147,6 +193,8 @@ class CLIAdapter(TaskAdapter):
                 }
             )
         except Exception as e:
+            _duration = (time.monotonic() - _t0) * 1000
+            emit_event(TASK_FAILED, make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name, duration_ms=_duration, extra={"error": str(e)}))
             return self._contract_failure(
                 task,
                 effective_timeout=effective_timeout,
@@ -161,6 +209,10 @@ class CLIAdapter(TaskAdapter):
             return True
         except ImportError:
             return False
+
+    async def close_session(self, session_id: str) -> None:
+        """Close a persistent CLI session and release its backend resources."""
+        close_cli_session(session_id)
     
     def get_capabilities(self) -> Dict:
         """Return CLI module capabilities conforming to schema v1."""

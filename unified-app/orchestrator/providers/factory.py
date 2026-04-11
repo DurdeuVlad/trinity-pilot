@@ -32,9 +32,10 @@ def make_provider(provider_name: str, api_key: str) -> LLMProvider:
         cache = make_cache(enabled=not mock_mode)
         return GeminiProvider(api_key=resolved, cache=cache)
 
-    if name in ("openai", "chatgpt"):
-        from .openai_provider import OpenAIProvider
-        return OpenAIProvider(api_key=api_key)
+    # OpenAI provider disabled — using Gemini only.
+    # if name in ("openai", "chatgpt"):
+    #     from .openai_provider import OpenAIProvider
+    #     return OpenAIProvider(api_key=api_key)
 
     raise ValueError(
         f"Unknown AI provider: {provider_name!r}. "

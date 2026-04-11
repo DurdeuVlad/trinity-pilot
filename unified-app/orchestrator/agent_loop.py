@@ -57,6 +57,9 @@ class _State:
     history: list[_Turn] = field(default_factory=list)
     iteration: int = 0
     adapt_hint: str = ""  # Consumed once per message build; set by loop guards or caller
+    steer_hint: str = ""  # Consumed once per decision turn; advisory only
+    consecutive_failures: int = 0
+    last_action_failed: bool = False
 
 
 class AgentLoop:
@@ -79,28 +82,74 @@ class AgentLoop:
         emit_status: Callable[[str, str], None],
         cancel_requested: Callable[[], bool],
         registry: PromptRegistry,
+        run_domain: str = "mixed",
         context: Optional[ExecutionContext] = None,
         output_validator: Optional[OutputValidator] = None,
         cancel_event: Any = None,
         resume_event: Optional[threading.Event] = None,
+        pause_event: Optional[threading.Event] = None,
         performance_tracker: Any = None,
+        emit_step_detail: Optional[Callable[[int, int, str, str], None]] = None,
+        emit_plan_update: Optional[Callable[[int, dict[str, Any]], None]] = None,
+        consume_steer: Optional[Callable[[], str]] = None,
+        emit_cli_step: Optional[Callable[[int, dict], None]] = None,
     ) -> None:
         self._provider = provider
         self._bridge = bridge
         self._emit = emit_status
         self._cancel = cancel_requested
         self._registry = registry
+        self._run_domain = self._normalize_run_domain(run_domain)
         self._context = context
         self._validator = output_validator or OutputValidator()
         self._cancel_event = cancel_event
         self._resume_event = resume_event
+        self._pause_event = pause_event
         self._performance_tracker = performance_tracker
+        self._emit_step_detail = emit_step_detail
+        self._emit_plan_update = emit_plan_update
+        self._consume_steer = consume_steer
+        self._emit_cli_step = emit_cli_step
         self.last_step_payload: dict[str, Any] | None = None
+        self.last_attempt_payload: dict[str, Any] | None = None
+        self.last_attempt_trace: list[dict[str, Any]] = []
 
     @staticmethod
     def _browser_session_state_key(obj_index: int) -> str:
         del obj_index
         return "task_browser_session_id"
+
+    def _handle_cli_step(self, step: dict, obj_index: int) -> None:
+        event = step.get("event", "")
+        if event == "plan_ready":
+            self._emit(f"Planning complete — {step['total']} steps", "thinking")
+        elif event == "step_started":
+            cmd = step.get("command", "")
+            action = step.get("action", "")
+            total = step.get("total", "?")
+            idx = step.get("step_index", 0) + 1
+            label = cmd.strip() if cmd.strip() else action
+            if len(label) > 120:
+                label = label[:120].rsplit(" ", 1)[0] + "…"
+            self._emit(f"[{idx}/{total}] $ {label}", "thinking")
+        elif event == "step_done":
+            stdout_summary = step.get("stdout_summary", "")
+            verification = step.get("verification", "skipped")
+            next_action = step.get("next_action")
+            if step.get("status") == "success":
+                detail = stdout_summary if stdout_summary and stdout_summary != "no output" else "Done."
+                self._emit(f"✓ {step['action']}: {detail}", "step")
+                if verification == "passed":
+                    self._emit("Verified ✓", "step")
+                if next_action:
+                    self._emit(f"Next: {next_action}", "thinking")
+            else:
+                self._emit(f"✗ {step['action']} failed", "warning")
+        elif event == "replanning":
+            msg = step.get("message", "Replanning…")
+            self._emit(msg, "warning")
+        if self._emit_cli_step is not None:
+            self._emit_cli_step(obj_index, step)
 
     async def act(
         self,
@@ -120,6 +169,8 @@ class AgentLoop:
         """
         state = _State(objective=objective, adapt_hint=adapt_hint)
         self.last_step_payload = None
+        self.last_attempt_payload = None
+        self.last_attempt_trace = []
         recent_keys: deque[str] = deque(maxlen=3)
         loop_guard_hits = 0
         deadline = asyncio.get_running_loop().time() + MAX_WALL_SECONDS
@@ -128,14 +179,34 @@ class AgentLoop:
         while state.iteration < MAX_ITERATIONS:
             if self._cancel():
                 return "[cancelled]"
+            # If the user pressed Pause in the overlay, wait here between turns.
+            if self._pause_event is not None and not self._pause_event.is_set():
+                self._emit("Paused — waiting for you to resume...", "warning")
+                while not self._pause_event.is_set():
+                    await asyncio.sleep(0.2)
+                    if self._cancel():
+                        return "[cancelled]"
+                self._emit("Resuming...", "info")
             if asyncio.get_running_loop().time() > deadline:
                 return f"[timeout after {MAX_WALL_SECONDS}s]"
 
             state.iteration += 1
-            self._emit("Thinking…", "thinking")
+            if state.iteration == MAX_ITERATIONS:
+                self._emit(f"Step {state.iteration} — Last attempt…", "thinking")
+            elif state.consecutive_failures >= 3:
+                self._emit(
+                    f"Step {state.iteration} — {state.consecutive_failures} failures in a row…",
+                    "warning",
+                )
+            elif state.last_action_failed:
+                self._emit(f"Step {state.iteration} — Retrying after failure…", "thinking")
+            else:
+                self._emit(f"Step {state.iteration} — Thinking…", "thinking")
+            state.steer_hint = self._drain_steer()
 
             messages = self._build_messages(state)
             state.adapt_hint = ""  # Consumed — clear so it doesn't repeat next turn
+            state.steer_hint = ""  # Consumed — clear so it doesn't repeat next turn
 
             # ── LLM call ──────────────────────────────────────────────────
             try:
@@ -188,19 +259,60 @@ class AgentLoop:
                     return "[stuck: same action repeated after rethink — objective may be unreachable]"
                 # First repeat: warn and clear deque so LLM gets a fresh slate
                 recent_keys.clear()
-                state.adapt_hint = (
-                    "You just repeated an action that already ran. That approach is not working. "
-                    "Choose a completely different strategy: different module, different parameters, "
-                    "or a different interpretation of what the objective needs."
-                )
+                if self._run_domain == "mixed":
+                    state.adapt_hint = (
+                        "You just repeated an action that already ran. That approach is not working. "
+                        "Choose a completely different strategy: different module, different parameters, "
+                        "or a different interpretation of what the objective needs."
+                    )
+                else:
+                    state.adapt_hint = (
+                        "You just repeated an action that already ran. That approach is not working. "
+                        f"Stay inside the {self._run_domain} domain and choose a different in-domain strategy: "
+                        "different parameters, a different action in the same module family, or a different "
+                        "interpretation of what the objective needs."
+                    )
                 self._emit("That same approach isn't working. Switching strategy…", "warning")
                 continue
             recent_keys.append(action_key)
 
+            policy_violation = self._domain_policy_violation(action)
+            if policy_violation is not None:
+                self.last_step_payload = {
+                    "status": "failure",
+                    "output": policy_violation,
+                    "error": policy_violation,
+                    "artifacts": [],
+                    "execution_log": [
+                        {
+                            "step": state.iteration,
+                            "action": self._describe_action(action),
+                            "result": "failure",
+                            "details": policy_violation,
+                        }
+                    ],
+                    "metadata": {
+                        "policy_violation": True,
+                        "policy_category": "domain_escape",
+                        "canonical_status": "policy_terminated",
+                        "allowed_domain": self._run_domain,
+                    },
+                }
+                self._emit(policy_violation, "error")
+                return f"[policy_stop: {policy_violation}]"
+
             # ── Execute ────────────────────────────────────────────────────
             rationale = action.get("rationale", "").strip()
             if rationale:
-                self._emit(f"→ {rationale[:160]}", "info")
+                _r = rationale
+                if len(_r) > 280:
+                    boundary = max(
+                        _r.rfind(". ", 0, 280),
+                        _r.rfind("? ", 0, 280),
+                        _r.rfind("! ", 0, 280),
+                    )
+                    _r = _r[: boundary + 1] if boundary >= 40 else _r[:280]
+                self._emit(f"→ {_r}", "info")
             else:
                 atype = action.get("action_type", "action")
                 self._emit(f"→ Running {atype}…", "info")
@@ -210,6 +322,11 @@ class AgentLoop:
 
             if action_type == "cli" and result.strip():
                 self._emit(result.strip(), "output")
+            elif action_type == "desktop" and result.startswith("ERROR:"):
+                # Exception path — bridge threw before the result emit inside _execute ran
+                _verb = params.get("action", "interact")
+                _app = params.get("app", "app")
+                self._emit(f"Desktop: {_verb} {_app} — crashed", "error")
 
             if result.startswith("WAITING_FOR_HUMAN:"):
                 human_msg = result[len("WAITING_FOR_HUMAN:"):].strip()
@@ -236,7 +353,7 @@ class AgentLoop:
                 exec_ctx is not None
                 and action_type == "browse"
                 and params.get("action") in {"read", "copy"}
-                and not result.startswith("ERROR:")
+                and not _result_indicates_failure(None, result)
                 and not result.startswith("OK (status=")
                 and len(result.strip()) >= 20
             ):
@@ -253,24 +370,72 @@ class AgentLoop:
                     module,
                     ModuleResult(
                         module=module,
-                        status="failure" if result.startswith("ERROR:") else "success",
+                        status=_task_result_status(None, result),
                         output=result,
-                        error=result if result.startswith("ERROR:") else None,
+                        error=result if _result_indicates_failure(None, result) else None,
                         timestamp=time.time(),
                     ),
                 )
                 # Note: world state is updated inside _execute() so it also
                 # covers fast-path actions that bypass this block.
 
+            if self._emit_step_detail is not None:
+                self._emit_step_detail(
+                    obj_index,
+                    state.iteration,
+                    action.get("action_type", "?"),
+                    result[:120],
+                )
+
+            self._record_attempt_result(state.iteration, action, result)
             state.history.append(_Turn(action=action, result=result))
 
+            _step_status = (self.last_step_payload or {}).get("status", "")
+            if _result_indicates_failure(None, result) or _step_status == "failure":
+                state.consecutive_failures += 1
+                state.last_action_failed = True
+            else:
+                state.consecutive_failures = 0
+                state.last_action_failed = False
+
         return "[max iterations reached — objective may be incomplete]"
+
+    @staticmethod
+    def _normalize_run_domain(domain: str) -> str:
+        normalized = str(domain or "").strip().lower()
+        return {
+            "browser": "web",
+            "browse": "web",
+            "cross": "mixed",
+        }.get(normalized, normalized or "mixed")
+
+    def _domain_policy_violation(self, action: dict[str, Any]) -> str | None:
+        allowed_action_types = {
+            "web": {"browse"},
+            "desktop": {"desktop"},
+            "cli": {"cli"},
+            "mixed": {"browse", "desktop", "cli"},
+        }.get(self._run_domain, {"browse", "desktop", "cli"})
+
+        action_type = str(action.get("action_type", "") or "").strip().lower()
+        if action_type in allowed_action_types:
+            return None
+
+        label = {
+            "browse": "browser",
+            "desktop": "desktop",
+            "cli": "cli",
+        }.get(action_type, action_type or "unknown")
+        return (
+            f"Domain policy violation: this {self._run_domain} run cannot execute "
+            f"{label} actions. Policy stopped the run instead of allowing cross-domain drift."
+        )
 
     # ── Message builder ────────────────────────────────────────────────────
 
     def _build_messages(self, state: _State) -> list[dict]:
         messages: list[dict] = [
-            {"role": "system", "content": self._registry.action_system_prompt()},
+            {"role": "system", "content": self._registry.action_system_prompt(self._run_domain)},
             {"role": "user",   "content": f"OBJECTIVE: {state.objective}"},
         ]
 
@@ -311,6 +476,22 @@ class AgentLoop:
                         "Do NOT re-read content that is already in Last text."
                     ),
                 })
+                inject_index += 1
+            if (
+                self._run_domain == "mixed"
+                and str(ctx.world_state.active_app or "").strip().lower() == "browser"
+            ):
+                messages.insert(inject_index, {
+                    "role": "user",
+                    "content": (
+                        "BROWSER SESSION CONTINUITY:\n"
+                        "- A Playwright-controlled browser session is already active.\n"
+                        "- If this objective involves browsing, navigation, search, login state, or reading web content, stay inside web_browser.\n"
+                        "- Do NOT use cli_runner or desktop_app to open URLs, launch another browser window, or manage tabs for this browser objective.\n"
+                        "- Only switch away from the browser when the objective explicitly requires a non-browser action on another surface."
+                    ),
+                })
+                inject_index += 1
 
         history = state.history
         if len(history) > 10:
@@ -333,8 +514,28 @@ class AgentLoop:
         final = "Choose your next action. Respond with JSON only."
         if state.adapt_hint:
             final = f"ADAPT: {state.adapt_hint}\n\n{final}"
+        if state.steer_hint:
+            final = (
+                "USER STEERING (advisory for the current objective only):\n"
+                f"{state.steer_hint}\n\n"
+                "Use this to adjust your next action if relevant. "
+                "Do not skip the objective, rewrite the plan, or claim completion without execution evidence.\n\n"
+                f"{final}"
+            )
         messages.append({"role": "user", "content": final})
         return messages
+
+    def _drain_steer(self) -> str:
+        if self._consume_steer is None:
+            return ""
+        try:
+            steer_text = str(self._consume_steer() or "")
+        except Exception:
+            return ""
+        lines = [line.strip() for line in steer_text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        return "\n".join(lines)[:1000]
 
     # ── Action execution ───────────────────────────────────────────────────
 
@@ -343,6 +544,7 @@ class AgentLoop:
         action_type = action.get("action_type", "")
         params = action.get("parameters", {})
         domain = {"browse": "web", "desktop": "desktop", "cli": "cli"}.get(action_type, "web")
+        backend = _backend_plan_state_key(action_type)
         task_id = f"obj{obj_index}_t{turn}_{uuid.uuid4().hex[:6]}"
         ctx = dict(params)
         exec_ctx = self._context
@@ -369,6 +571,10 @@ class AgentLoop:
         # (e.g. skip_relaunch when active_app already matches target)
         if exec_ctx is not None and exec_ctx.world_state.has_state():
             ctx["_world_state"] = exec_ctx.world_state.to_context_dict()
+        if exec_ctx is not None and backend is not None:
+            plan_state = exec_ctx.get_plan_state(f"objective_{obj_index}", backend)
+            if plan_state:
+                ctx["_plan_state"] = plan_state
 
         if action_type == "desktop":
             app = params.get("app", "")
@@ -403,14 +609,34 @@ class AgentLoop:
             else:
                 description = f"{verb} {app} {text}".strip()
             ctx["app_name"] = app or "Windows Desktop"
+            if exec_ctx is not None:
+                desktop_session_key = "task_desktop_session_id"
+                desktop_session_id = exec_ctx.accumulated_state.get(desktop_session_key)
+                if not isinstance(desktop_session_id, str) or not desktop_session_id.strip():
+                    desktop_session_id = f"task_desktop_{uuid.uuid4().hex[:8]}"
+                    exec_ctx.update_state(desktop_session_key, desktop_session_id)
+                ctx["_desktop_session_id"] = desktop_session_id
             logger.info(
                 "[AgentLoop] desktop: app=%s verb=%s description=%s", app, verb, description
             )
+            self._emit(f"→ Desktop: {verb} {app or 'app'}…", "info")
 
         elif action_type == "cli":
             cmd = params.get("command", "")
             args = params.get("args", [])
             description = f"{cmd} {' '.join(args)}".strip()
+            _cli_label = description if description else "cli"
+            if len(_cli_label) > 120:
+                _cli_label = _cli_label[:120].rsplit(" ", 1)[0] + "…"
+            self._emit(f"$ {_cli_label}", "info")
+            if exec_ctx is not None:
+                cli_session_key = "task_cli_session_id"
+                cli_session_id = exec_ctx.accumulated_state.get(cli_session_key)
+                if not isinstance(cli_session_id, str) or not cli_session_id.strip():
+                    cli_session_id = f"task_cli_{uuid.uuid4().hex[:8]}"
+                    exec_ctx.update_state(cli_session_key, cli_session_id)
+                ctx["_cli_session_id"] = cli_session_id
+            ctx["_cli_progress_cb"] = lambda step, _oi=obj_index: self._handle_cli_step(step, _oi)
 
         elif action_type == "browse":
             browse_action = str(params.get("action", "")).strip().lower()
@@ -463,7 +689,7 @@ class AgentLoop:
                 description=description,
                 domain=domain,
                 context=ctx,
-                expected_outcome=action.get("rationale"),
+                expected_outcome=_build_expected_outcome(action, description),
                 timeout=60,
                 max_retries=1,
                 cancel_event=self._cancel_event,
@@ -472,13 +698,42 @@ class AgentLoop:
             if action_timer is not None and self._performance_tracker is not None:
                 self._performance_tracker.finish_action(
                     action_timer,
-                    status="success" if not result_str.startswith("ERROR:") else "failure",
+                    status=_task_result_status(result, result_str),
                     result_summary=result_str,
                     data={"task_id": task_id, "action_type": action_type},
                 )
             self.last_step_payload = _build_step_payload(result, result_str)
+            if exec_ctx is not None and backend is not None:
+                plan_state = _extract_plan_state(self.last_step_payload)
+                if plan_state is not None:
+                    exec_ctx.update_plan_state(f"objective_{obj_index}", backend, plan_state)
+                    if self._emit_plan_update is not None:
+                        self._emit_plan_update(obj_index, dict(plan_state))
             if action_type == "browse":
-                self._emit("Browser automation returned a result.", "info")
+                if result_str and len(result_str) > 4:
+                    preview = result_str.strip()[:160].rsplit(" ", 1)[0]
+                    self._emit(preview, "success")
+                else:
+                    self._emit("Browser step complete.", "success")
+            elif action_type == "cli":
+                _cli_status = (self.last_step_payload or {}).get("status", "")
+                if result_str and len(result_str) > 4:
+                    _preview = result_str.strip()[:160].rsplit(" ", 1)[0]
+                    _level = "success" if _cli_status == "success" else "warning"
+                    self._emit(_preview, _level)
+                elif _cli_status == "failure":
+                    self._emit("Command failed.", "warning")
+            elif action_type == "desktop":
+                _desktop_verb = params.get("action", "interact")
+                _desktop_app = params.get("app", "app")
+                _failed = any(
+                    kw in result_str.lower()
+                    for kw in ("error", "failed", "exception", "unexpected", "traceback")
+                )
+                if _failed:
+                    self._emit(f"Desktop: {_desktop_verb} {_desktop_app} — failed", "error")
+                else:
+                    self._emit(f"Desktop: {_desktop_verb} {_desktop_app} — done", "success")
         except Exception as exc:
             if self._performance_tracker is not None and action_timer is not None:
                 self._performance_tracker.finish_action(
@@ -498,9 +753,87 @@ class AgentLoop:
 
         # Update world state for every action (including fast-path calls)
         if self._context is not None:
-            self._context.update_world_state_from_action(action, result_str)
+            self._context.update_world_state_from_action(action, result_str, self.last_step_payload)
 
         return result_str
+
+    def _record_attempt_result(self, step_num: int, action: dict[str, Any], result: str) -> None:
+        payload = dict(self.last_step_payload or {})
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        execution_log = payload.get("execution_log", [])
+        if not isinstance(execution_log, list):
+            execution_log = []
+
+        trace_entry = {
+            "step": step_num,
+            "action_type": action.get("action_type", ""),
+            "module": action.get("module", ""),
+            "parameters": dict(action.get("parameters", {}) or {}),
+            "rationale": str(action.get("rationale", "") or ""),
+            "result": result,
+            "status": payload.get("status", _task_result_status(None, result)),
+            "execution_log": list(execution_log),
+        }
+        self.last_attempt_trace.append(trace_entry)
+
+        synthetic_entry = {
+            "step": step_num,
+            "action": self._describe_action(action),
+            "result": "failure" if _result_indicates_failure(None, result) else "success",
+            "details": str(result or "")[:240],
+        }
+
+        combined_execution_log: list[dict[str, Any]] = []
+        if self.last_attempt_payload and isinstance(self.last_attempt_payload.get("execution_log"), list):
+            combined_execution_log.extend(self.last_attempt_payload["execution_log"])
+        combined_execution_log.extend(entry for entry in execution_log if isinstance(entry, dict))
+        combined_execution_log.append(synthetic_entry)
+
+        combined_artifacts: list[Any] = []
+        if self.last_attempt_payload and isinstance(self.last_attempt_payload.get("artifacts"), list):
+            combined_artifacts.extend(self.last_attempt_payload["artifacts"])
+        if isinstance(payload.get("artifacts"), list):
+            combined_artifacts.extend(payload["artifacts"])
+
+        combined_metadata = {}
+        if self.last_attempt_payload and isinstance(self.last_attempt_payload.get("metadata"), dict):
+            combined_metadata.update(self.last_attempt_payload["metadata"])
+        combined_metadata.update(metadata)
+
+        if plan_state := _extract_plan_state(payload):
+            combined_metadata["plan_state"] = plan_state
+
+        self.last_attempt_payload = {
+            "status": payload.get("status", _task_result_status(None, result)),
+            "output": result,
+            "error": payload.get("error"),
+            "artifacts": combined_artifacts,
+            "execution_log": combined_execution_log,
+            "metadata": combined_metadata,
+        }
+
+    @staticmethod
+    def _describe_action(action: dict[str, Any]) -> str:
+        action_type = str(action.get("action_type", "") or "").strip()
+        params = dict(action.get("parameters", {}) or {})
+        if action_type == "browse":
+            browse_action = str(params.get("action", "")).strip()
+            target = str(params.get("selector") or params.get("url") or params.get("text") or "").strip()
+            return " ".join(part for part in (browse_action, target) if part).strip() or "browse action"
+        if action_type == "desktop":
+            desktop_action = str(params.get("action", "")).strip()
+            app = str(params.get("app", "")).strip()
+            return " ".join(part for part in (desktop_action, app) if part).strip() or "desktop action"
+        if action_type == "cli":
+            command = str(params.get("command", "")).strip()
+            args = params.get("args", [])
+            if isinstance(args, list):
+                rendered_args = " ".join(str(item) for item in args)
+                return " ".join(part for part in (command, rendered_args) if part).strip() or "cli action"
+            return command or "cli action"
+        return action_type or "action"
 
     async def cleanup_browser_session(
         self,
@@ -520,6 +853,36 @@ class AgentLoop:
         close_browser_session = getattr(self._bridge, "close_browser_session", None)
         if callable(close_browser_session):
             await close_browser_session(session_id)
+
+    async def cleanup_desktop_session(
+        self,
+        context: Optional[ExecutionContext] = None,
+    ) -> None:
+        """Close the persistent desktop subprocess session for this run, if one exists."""
+        exec_ctx = context or self._context
+        if exec_ctx is None:
+            return
+        session_id = exec_ctx.accumulated_state.pop("task_desktop_session_id", None)
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
+        close_fn = getattr(self._bridge, "close_desktop_session", None)
+        if callable(close_fn):
+            await close_fn(session_id)
+
+    async def cleanup_cli_session(
+        self,
+        context: Optional[ExecutionContext] = None,
+    ) -> None:
+        """Close the persistent CLI backend session for this run, if one exists."""
+        exec_ctx = context or self._context
+        if exec_ctx is None:
+            return
+        session_id = exec_ctx.accumulated_state.pop("task_cli_session_id", None)
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
+        close_fn = getattr(self._bridge, "close_cli_session", None)
+        if callable(close_fn):
+            await close_fn(session_id)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -542,8 +905,16 @@ def _extract_result(result: Any) -> str:
         if str(error).startswith("WAITING_FOR_HUMAN:"):
             return str(error)
         return f"ERROR: {error}"
+    execution_log = getattr(result, "execution_log", []) or []
+    if _execution_log_has_only_failures(execution_log):
+        failure_detail = _execution_log_failure_detail(execution_log)
+        if failure_detail:
+            return f"ERROR: {failure_detail}"
     metadata = getattr(result, "metadata", None)
     if isinstance(metadata, dict):
+        error = metadata.get("error") or metadata.get("error_details")
+        if isinstance(error, str) and error.strip() and _looks_like_backend_failure(error):
+            return f"ERROR: {error.strip()}"
         for candidate in (
             metadata.get("text_output"),
             metadata.get("output"),
@@ -559,7 +930,6 @@ def _extract_result(result: Any) -> str:
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip()[:500]
     if hasattr(result, "execution_log"):
-        execution_log = getattr(result, "execution_log") or []
         if execution_log:
             details = getattr(execution_log[-1], "details", None)
             if isinstance(details, str) and details.strip():
@@ -588,6 +958,8 @@ def _build_step_payload(result: Any, output: str) -> dict[str, Any]:
     if error := getattr(result, "error", None):
         payload["error"] = error
     payload["metadata"].setdefault("raw_result", raw_result)
+    if plan_state := _extract_plan_state(payload):
+        payload["metadata"].setdefault("plan_state", plan_state)
     return payload
 
 
@@ -630,6 +1002,135 @@ def _serialize_result(result: Any) -> dict[str, Any]:
         "artifacts": list(getattr(result, "artifacts", []) or []),
         "metadata": dict(getattr(result, "metadata", {}) or {}),
     }
+
+
+def _build_expected_outcome(action: dict[str, Any], description: str) -> str:
+    action_type = str(action.get("action_type", "")).strip().lower()
+    params = action.get("parameters", {}) if isinstance(action.get("parameters"), dict) else {}
+
+    if action_type == "browse":
+        browse_action = str(params.get("action", "")).strip().lower()
+        url = str(params.get("url", "")).strip()
+        selector = str(params.get("selector", "")).strip()
+        text = str(params.get("text", "")).strip()
+        if browse_action == "navigate" and url:
+            return f"The browser is open on {url}."
+        if browse_action == "type" and text:
+            target = selector or "the active field"
+            return f"The text '{text}' is visible in {target}."
+        if browse_action in {"read", "copy"}:
+            target = selector or "the current page"
+            return f"The requested content from {target} has been extracted."
+        if browse_action == "click":
+            target = selector or url or "the requested element"
+            return f"The click on {target} changed the page into the requested state."
+
+    if action_type == "desktop":
+        desktop_action = str(params.get("action", "")).strip().lower()
+        app = str(params.get("app", "")).strip() or "the target application"
+        text = str(params.get("text", "")).strip()
+        if desktop_action == "open":
+            return f"{app} is open and ready."
+        if desktop_action == "focus":
+            return f"{app} is focused."
+        if desktop_action in {"type", "paste"} and text:
+            return f"The text '{text}' is present in {app}."
+
+    if action_type == "cli":
+        command = str(params.get("command", "")).strip()
+        if command:
+            return f"The command '{command}' completed and produced the requested output."
+
+    return description.rstrip(".") + "."
+
+
+def _backend_plan_state_key(action_type: str) -> str | None:
+    return {
+        "browse": "browser",
+        "desktop": "desktop",
+        "cli": "cli",
+    }.get(str(action_type or "").strip().lower())
+
+
+def _task_result_status(result: Any, result_str: str | None = None) -> str:
+    return "failure" if _result_indicates_failure(result, result_str) else "success"
+
+
+def _result_indicates_failure(result: Any, result_str: str | None = None) -> bool:
+    text = str(result_str or "").strip()
+    if text.startswith("ERROR:"):
+        return True
+    if _looks_like_backend_failure(text):
+        return True
+    if result is None:
+        return False
+
+    status = str(getattr(result, "status", "")).strip().lower()
+    if status == "failure":
+        return True
+
+    execution_log = getattr(result, "execution_log", []) or []
+    if _execution_log_has_only_failures(execution_log):
+        return True
+
+    error = getattr(result, "error", None)
+    if isinstance(error, str) and error.strip() and _looks_like_backend_failure(error):
+        return True
+
+    metadata = getattr(result, "metadata", None)
+    if isinstance(metadata, dict):
+        raw_result = metadata.get("raw_result", {})
+        if isinstance(raw_result, dict):
+            raw_error = raw_result.get("error") or raw_result.get("error_details")
+            if isinstance(raw_error, str) and raw_error.strip() and _looks_like_backend_failure(raw_error):
+                return True
+
+    return False
+
+
+def _execution_log_has_only_failures(entries: list[Any]) -> bool:
+    saw_failure = False
+    for entry in entries:
+        result = str(getattr(entry, "result", None) if not isinstance(entry, dict) else entry.get("result", "")).strip().lower()
+        if result == "success":
+            return False
+        if result == "failure":
+            saw_failure = True
+    return saw_failure
+
+
+def _execution_log_failure_detail(entries: list[Any]) -> str | None:
+    for entry in reversed(entries):
+        details = getattr(entry, "details", None) if not isinstance(entry, dict) else entry.get("details")
+        action = getattr(entry, "action", None) if not isinstance(entry, dict) else entry.get("action")
+        for candidate in (details, action):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()[:500]
+    return None
+
+
+def _looks_like_backend_failure(value: str) -> bool:
+    stripped = str(value or "").strip()
+    return stripped.startswith("[BG-ACT-")
+
+
+def _extract_plan_state(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    metadata = payload.get("metadata", {})
+    if isinstance(metadata, dict):
+        plan_state = metadata.get("plan_state")
+        if isinstance(plan_state, dict):
+            return dict(plan_state)
+
+        raw_result = metadata.get("raw_result", {})
+        if isinstance(raw_result, dict):
+            raw_metadata = raw_result.get("metadata", {})
+            if isinstance(raw_metadata, dict):
+                nested_plan_state = raw_metadata.get("plan_state")
+                if isinstance(nested_plan_state, dict):
+                    return dict(nested_plan_state)
+    return None
 
 
 def _requires_execution_evidence(objective: str) -> bool:

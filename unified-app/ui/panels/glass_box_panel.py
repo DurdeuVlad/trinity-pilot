@@ -1,8 +1,6 @@
 """Glass-box panel for real-time screenshot feedback."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
@@ -52,14 +50,13 @@ class GlassBoxPanel(QWidget):
             "background-color: #1f1f1f; color: #888; border: 1px solid #555; font-size: 14px;"
         )
 
-    @pyqtSlot(str)
-    def display_frame(self, frame_path: str) -> None:
-        """Render the provided frame path if available."""
-        path = Path(frame_path)
-        if not path.exists():
+    @pyqtSlot(bytes)
+    def display_frame(self, frame_data: bytes) -> None:
+        """Render a raw JPEG frame received from the CDP screencast."""
+        if not frame_data:
             return
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull():
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(frame_data):
             return
 
         scaled = pixmap.scaled(

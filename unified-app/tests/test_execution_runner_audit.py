@@ -25,6 +25,8 @@ def _make_event_bus() -> MagicMock:
         "step_started",
         "step_completed",
         "step_failed",
+        "step_detail",
+        "plan_state_updated",
         "execution_complete",
         "execution_ended",
         "task_result_ready",
@@ -185,10 +187,11 @@ async def test_run_attempts_emits_reflection_and_retry_events() -> None:
         "execution_log": [{"action": "run"}],
         "metadata": {},
     }
+    agent_loop.last_attempt_payload = agent_loop.last_step_payload
     agent_loop.act = AsyncMock(side_effect=["first result", "second result"])
 
     with patch("orchestrator.execution_runner.classify", return_value=FailureKind.TRANSIENT):
-        achieved, final_result = await runner._run_attempts(
+        achieved, final_result, attempt_count = await runner._run_attempts(
             "run a command",
             1,
             ExecutionContext(objective="run a command"),
@@ -197,9 +200,85 @@ async def test_run_attempts_emits_reflection_and_retry_events() -> None:
 
     assert achieved is True
     assert final_result == "second result"
+    assert attempt_count == 2
     messages = [call.kwargs["message"] for call in runner.audit_recorder.event.call_args_list]
     assert "Objective reflection complete" in messages
     assert "Retry triggered" in messages
+
+
+async def test_run_attempts_downgrades_failed_review_when_plan_is_unfinished() -> None:
+    runner = _make_runner()
+    runner.reflection_engine.reflect = AsyncMock(
+        side_effect=[
+            SimpleNamespace(achieved=False, critique="page still settling"),
+            SimpleNamespace(achieved=True, critique=None),
+        ]
+    )
+    runner.active_reviewer.review_progress = AsyncMock(
+        return_value=ReviewResult(
+            status=ReviewStatus.FAILED,
+            assessment="The task failed",
+            missing=["dashboard"],
+            next_steps=[],
+            hints=[],
+            alternative_strategies=[],
+            confidence=0.2,
+        )
+    )
+
+    first_payload = {
+        "status": "failure",
+        "execution_log": [{"action": "click"}],
+        "metadata": {
+            "plan_state": {
+                "revision": 1,
+                "steps": [
+                    {"title": "Wait for dashboard", "status": "in_progress"},
+                    {"title": "Read result", "status": "pending"},
+                ],
+            }
+        },
+    }
+    second_payload = {
+        "status": "success",
+        "execution_log": [{"action": "extract_text"}],
+        "metadata": {
+            "plan_state": {
+                "revision": 2,
+                "steps": [
+                    {"title": "Wait for dashboard", "status": "done"},
+                    {"title": "Read result", "status": "done"},
+                ],
+            }
+        },
+    }
+
+    agent_loop = MagicMock()
+    agent_loop.cleanup_browser_session = AsyncMock()
+    agent_loop.last_step_payload = first_payload
+    agent_loop.last_attempt_payload = first_payload
+    results = iter(["first result", "second result"])
+    payloads = iter([first_payload, second_payload])
+
+    async def _act(**_kwargs):
+        payload = next(payloads)
+        agent_loop.last_step_payload = payload
+        agent_loop.last_attempt_payload = payload
+        return next(results)
+
+    agent_loop.act = AsyncMock(side_effect=_act)
+
+    with patch("orchestrator.execution_runner.classify", return_value=FailureKind.PERMANENT):
+        achieved, final_result, attempt_count = await runner._run_attempts(
+            "wait for the dashboard",
+            1,
+            ExecutionContext(objective="wait for the dashboard"),
+            agent_loop,
+        )
+
+    assert achieved is True
+    assert final_result == "second result"
+    assert attempt_count == 2
 
 
 async def test_try_replan_logs_completion_event() -> None:
@@ -218,6 +297,27 @@ async def test_try_replan_logs_completion_event() -> None:
     assert revised == ["fallback objective"]
     messages = [call.kwargs["message"] for call in runner.audit_recorder.event.call_args_list]
     assert "Replanning complete" in messages
+
+
+def test_get_completed_tasks_for_review_includes_backend_plan_context() -> None:
+    runner = _make_runner()
+    context = ExecutionContext(objective="read the page")
+    context.backend_plan_state["objective_1"] = {
+        "browser": {
+            "revision": 3,
+            "steps": [
+                {"title": "Open site", "status": "done"},
+                {"title": "Wait for page", "status": "in_progress"},
+            ],
+        }
+    }
+
+    completed = runner._get_completed_tasks_for_review(context, 1)
+
+    assert any(task["description"] == "browser live plan" for task in completed)
+    browser_plan = next(task for task in completed if task["description"] == "browser live plan")
+    assert browser_plan["status"] == "running"
+    assert "Wait for page" in browser_plan["result"]
 
 
 def test_derive_backend_report_path_reads_nested_raw_result_metadata() -> None:
@@ -241,7 +341,7 @@ def test_derive_backend_report_path_reads_nested_raw_result_metadata() -> None:
 async def test_attempt_phase_persists_backend_flight_report_path() -> None:
     runner = _make_runner()
     runner.checkpoint_manager.save_checkpoint = MagicMock(return_value="cp-1")
-    runner._run_attempts = AsyncMock(return_value=(True, "done"))
+    runner._run_attempts = AsyncMock(return_value=(True, "done", 1))
     context = ExecutionContext(objective="do something")
 
     agent_loop = MagicMock()
@@ -257,6 +357,7 @@ async def test_attempt_phase_persists_backend_flight_report_path() -> None:
             }
         },
     }
+    agent_loop.last_attempt_payload = agent_loop.last_step_payload
 
     result = await runner._attempt_phase(["step 1"], context, 0, agent_loop)
 
@@ -267,7 +368,7 @@ async def test_attempt_phase_persists_backend_flight_report_path() -> None:
 async def test_attempt_phase_updates_prompt_logging_objective_context() -> None:
     runner = _make_runner()
     runner.checkpoint_manager.save_checkpoint = MagicMock(return_value="cp-1")
-    runner._run_attempts = AsyncMock(return_value=(True, "done"))
+    runner._run_attempts = AsyncMock(return_value=(True, "done", 1))
     context = ExecutionContext(objective="do something")
 
     agent_loop = MagicMock()

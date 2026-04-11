@@ -6,11 +6,13 @@ import logging
 import os
 import threading
 import uuid
+from collections import deque
 from typing import Optional
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 
 from .clarification_engine import ClarificationEngine
+from .crash_reporter import write_crash_dump as _write_crash_dump
 from .database import HistoryManager
 from .error_handler import ErrorHandler
 from .event_bus import get_event_bus
@@ -81,16 +83,67 @@ class OrchestratorWorker(QObject):
         self._cancelled = False
         self._cancel_event = threading.Event()
         self._resume_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # not paused initially
+        self._steer_lock = threading.Lock()
+        self._steer_queue: deque[str] = deque()
+        self._termination_status = "cancelled"
+        self._termination_category = "cancelled"
+        self._termination_reason = "Stopped — cancelled by you."
         self.run_id = f"run_{uuid.uuid4().hex[:12]}"
 
-    def cancel(self) -> None:
+    def cancel(
+        self,
+        *,
+        reason: str = "Stopped — cancelled by you.",
+        status: str = "cancelled",
+        category: str = "cancelled",
+    ) -> None:
         """Request cancellation for next safe checkpoint."""
+        self._termination_reason = str(reason or "Stopped — cancelled by you.")
+        self._termination_status = str(status or "cancelled")
+        self._termination_category = str(category or "cancelled")
         self._cancelled = True
         self._cancel_event.set()
+        self._pause_event.set()  # unblock any pause wait so loop can see cancel
+
+    def termination_context(self) -> dict[str, str]:
+        return {
+            "reason": self._termination_reason,
+            "status": self._termination_status,
+            "category": self._termination_category,
+        }
+
+    def pause(self) -> None:
+        """Pause the agent loop between action turns."""
+        self._pause_event.clear()
 
     def resume(self) -> None:
-        """Unblock the agent loop after a human-in-the-loop pause."""
+        """Unblock the agent loop after a human-in-the-loop pause or CAPTCHA."""
         self._resume_event.set()
+        self._pause_event.set()
+
+    def submit_steer(self, text: str) -> None:
+        """Queue mid-run user guidance for the next safe decision turn."""
+        cleaned = " ".join(str(text or "").split()).strip()
+        if not cleaned:
+            return
+        with self._steer_lock:
+            self._steer_queue.append(cleaned[:280])
+
+    def consume_steer(self) -> str:
+        """Drain queued steer text in arrival order for the current objective."""
+        with self._steer_lock:
+            if not self._steer_queue:
+                return ""
+            combined = "\n".join(self._steer_queue)
+            self._steer_queue.clear()
+        return combined[:1000]
+
+    def clear_steer(self) -> None:
+        """Discard any pending steer text at objective boundaries."""
+        with self._steer_lock:
+            self._steer_queue.clear()
 
     def run(self) -> None:
         """Thread entry point."""
@@ -98,8 +151,17 @@ class OrchestratorWorker(QObject):
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(self._execute())
-        except Exception as exc:  # pragma: no cover - guarded by tests on error signal path
-            self.error.emit(str(exc))
+        except BaseException as exc:  # pragma: no cover - guarded by tests on error signal path
+            _write_crash_dump(
+                exc,
+                run_id=getattr(self, "run_id", "unknown"),
+                task_description=getattr(self, "task_description", ""),
+                phase="worker_thread",
+            )
+            if isinstance(exc, Exception):
+                self.error.emit(str(exc))
+            else:
+                raise
         finally:
             _shutdown_event_loop(loop)
             self.finished.emit()
@@ -136,11 +198,15 @@ class OrchestratorWorker(QObject):
             cancel_requested=lambda: self._cancelled,
             cancel_event=self._cancel_event,
             resume_event=self._resume_event,
+            pause_event=self._pause_event,
+            termination_context=self.termination_context,
             approved_plan=self.approved_plan,
             provider_name=self.provider_name,
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
         )
+        runner.consume_steer = self.consume_steer
+        runner.clear_steer = self.clear_steer
         await runner.execute()
 
 
@@ -165,13 +231,33 @@ class OrchestratorCore(QObject):
             self.on_task_submitted,
             Qt.ConnectionType.QueuedConnection,
         )
+        self.event_bus.pipe_task_submitted.connect(
+            self.on_pipe_task_submitted,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.event_bus.task_cancel_requested.connect(
             self.cancel_current_task,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.event_bus.task_policy_stop_requested.connect(
+            self.request_policy_stop,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.event_bus.steer_input.connect(
+            self.on_steer_input,
             Qt.ConnectionType.QueuedConnection,
         )
 
     def on_task_submitted(self, task_description: str, domain: str) -> None:
         """Start a new orchestration run if idle."""
+        self._accept_submission(task_description, domain)
+
+    def on_pipe_task_submitted(self, task_description: str, domain: str, request_id: str) -> None:
+        """Start a new orchestration run for a request-aware pipe submission."""
+        self._accept_submission(task_description, domain, request_id=request_id)
+
+    def _accept_submission(self, task_description: str, domain: str, request_id: str | None = None) -> None:
+        """Start a new orchestration run if idle and publish any request/run mapping."""
         block_reason = self.get_submission_block_reason()
         if block_reason is not None:
             self.event_bus.emit_status(block_reason, "warning")
@@ -184,6 +270,8 @@ class OrchestratorCore(QObject):
         if domain in {"browser", "desktop", "mixed"}:
             self.event_bus.desktop_takeover_started.emit(domain)
         self._start_worker(task_description, domain)
+        if request_id and self.current_worker is not None:
+            self.event_bus.pipe_task_registered.emit(request_id, self.current_worker.run_id)
 
     def handle_chat_message(self, user_text: str) -> None:
         """Process a chat message through the clarification engine in a background thread."""
@@ -393,11 +481,37 @@ class OrchestratorCore(QObject):
         if self.current_worker is not None:
             self.current_worker.cancel()
 
+    def request_policy_stop(self, reason: str) -> None:
+        """Fail closed with an explicit policy-terminated state."""
+        if self.current_worker is None:
+            return
+        clean_reason = str(reason or "Policy stop requested").strip() or "Policy stop requested"
+        self.current_worker.cancel(
+            reason=clean_reason,
+            status="policy_terminated",
+            category="policy_stop",
+        )
+
     def resume_agent(self) -> None:
         """Resume a paused agent after the user resolves a blocker."""
         if self.current_worker is not None:
             self.current_worker.resume()
             get_event_bus().blocker_resolved.emit()
+
+    def pause_agent(self) -> None:
+        """Pause the running agent between action turns."""
+        if self.current_worker is not None:
+            self.current_worker.pause()
+
+    def on_steer_input(self, text: str) -> None:
+        """Queue advisory steer text for the active worker."""
+        if self.current_worker is None:
+            return
+        cleaned = " ".join(str(text or "").split()).strip()
+        if not cleaned:
+            return
+        self.current_worker.submit_steer(cleaned)
+        self.event_bus.emit_status("Steer queued for the next decision turn.", "info")
 
     def _on_worker_finished(self) -> None:
         if self._pending_worker_error is not None:
@@ -475,7 +589,7 @@ class OrchestratorCore(QObject):
     def _detect_domain(self, description: str) -> str:
         """Infer a coarse execution domain for pre-run objective generation."""
         lowered = description.lower()
-        web_tokens = ("browser", "website", "google", "navigate", "search", "wikipedia", "web page", "url", "site")
+        web_tokens = ("browser", "website", "google", "navigate", "search", "wikipedia", "web page", "url", "site", "github", "go to", "repo", "http", "www", ".com", "open issue", "open bug")
         desktop_tokens = ("notepad", "calculator", "window", "desktop", "application", "tab")
         cli_tokens = ("directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory")
         hits = {
