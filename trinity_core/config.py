@@ -106,7 +106,7 @@ class TrinityConfig(BaseModel):
                 allow_dangerous=os.getenv(f"{env_prefix}_CLI_ALLOW_DANGEROUS", "false").lower() == "true",
                 timeout=int(os.getenv(f"{env_prefix}_CLI_TIMEOUT", "300")),
                 max_retries=int(os.getenv(f"{env_prefix}_CLI_MAX_RETRIES", "2"))
-            )
+            ),
         )
     
     def to_dict(self) -> Dict[str, Any]:

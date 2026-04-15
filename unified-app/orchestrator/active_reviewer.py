@@ -53,6 +53,7 @@ class ActiveReviewer:
         execution_log: Optional[List[Dict]] = None,
         error_history: Optional[List[Dict]] = None,
         plan_state: Optional[Dict] = None,
+        verification: Optional[Dict] = None,
     ) -> ReviewResult:
         """
         Review executor progress and provide actionable feedback.
@@ -80,6 +81,7 @@ class ActiveReviewer:
             execution_log or [],
             error_history or [],
             plan_state or {},
+            verification or {},
         )
 
         try:
@@ -111,6 +113,16 @@ class ActiveReviewer:
 
         except Exception as exc:
             self.logger.error("[ActiveReviewer] Review failed: %s", exc)
+            if attempt >= max_attempts - 1:
+                return ReviewResult(
+                    status=ReviewStatus.FAILED,
+                    assessment=f"Unable to assess progress after {attempt + 1} attempts (reviewer error: {exc})",
+                    missing=["Unknown"],
+                    next_steps=[],
+                    hints=[],
+                    alternative_strategies=[],
+                    confidence=0.3,
+                )
             return ReviewResult(
                 status=ReviewStatus.CONTINUE,
                 assessment="Unable to assess progress",
@@ -131,6 +143,7 @@ class ActiveReviewer:
         execution_log: List[Dict],
         error_history: List[Dict],
         plan_state: Dict,
+        verification: Dict,
     ) -> str:
         """Build the review prompt for the LLM."""
         tasks_summary = self._format_tasks(completed_tasks)
@@ -138,6 +151,7 @@ class ActiveReviewer:
         log_summary = self._format_execution_log(execution_log)
         errors_summary = self._format_error_history(error_history)
         plan_state_summary = self._format_plan_state(plan_state)
+        verification_summary = self._format_verification(verification)
 
         return f"""You are a coach reviewing an AI agent's progress on a task.
 
@@ -155,6 +169,9 @@ ERROR HISTORY (failures across all attempts so far):
 CURRENT LOW-LEVEL PLAN STATE:
 {plan_state_summary}
 
+DETERMINISTIC VERIFICATION:
+{verification_summary}
+
 MODULE RESULTS (last result per backend):
 {tasks_summary}
 
@@ -169,6 +186,9 @@ Your job is to:
 5. Suggest alternative approaches if the agent is stuck
 
 Guidelines:
+- The deterministic verification layer already evaluated structured postconditions. Treat it as the primary source of truth.
+- If deterministic verification status is FAILURE, do not mark SUCCESS. Your job is only to coach the next attempt.
+- If deterministic verification status is UNKNOWN, use the failed or unknown checks and evidence summary to decide whether to CONTINUE, PIVOT, or FAIL.
 - If the execution log shows repeated identical errors, mark as PIVOT or FAILED, not CONTINUE.
 - If the same error appears more than twice in error history, suggest a different approach.
 - Only mark SUCCESS if there is concrete execution evidence the objective was completed.
@@ -261,6 +281,25 @@ Respond with your assessment and guidance."""
                 or f"step {idx}"
             )
             lines.append(f"  [{status}] {str(label)[:160]}")
+        return "\n".join(lines)
+
+    def _format_verification(self, verification: Dict) -> str:
+        if not isinstance(verification, dict) or not verification:
+            return "No deterministic verification available"
+
+        status = str(verification.get("status", "unknown") or "unknown").strip()
+        summary = str(verification.get("summary", "") or "").strip()
+        checks = verification.get("checks") or []
+        lines = [f"status={status}"]
+        if summary:
+            lines.append(f"summary={summary}")
+        for check in checks[:6]:
+            if not isinstance(check, dict):
+                continue
+            check_status = str(check.get("status", "unknown") or "unknown").strip()
+            kind = str(check.get("kind", "check") or "check").strip()
+            message = str(check.get("message", "") or "").strip()
+            lines.append(f"[{check_status}] {kind}: {message}")
         return "\n".join(lines)
 
     def _parse_review(self, response: Dict) -> ReviewResult:

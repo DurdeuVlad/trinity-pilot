@@ -35,6 +35,7 @@ from ..telemetry import (
     emit_event,
     make_event_payload,
 )
+from ..verification import build_failure_verification, build_verification
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,12 @@ class BrowserAdapter(TaskAdapter):
         metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
         metadata["adapter_name"] = self.module_name
         metadata["domain"] = task.domain
+        verification = build_failure_verification(
+            module="browser",
+            error=error,
+            evidence={"category": category},
+        )
+        metadata["verification"] = verification.model_dump()
         return TaskResult(
             task_id=task.task_id,
             status="failure",
@@ -123,6 +130,7 @@ class BrowserAdapter(TaskAdapter):
             error=error,
             execution_log=[],
             artifacts=[],
+            verification=verification,
             metadata=metadata,
         )
 
@@ -240,6 +248,16 @@ class BrowserAdapter(TaskAdapter):
                 metadata["text_output"] = typed_result.extracted_text
                 self._last_text_snapshot = typed_result.extracted_text
             self._last_url = str(metadata.get("raw_result", {}).get("current_url", "") or self._last_url)
+            execution_log = self._build_execution_log(typed_result)
+            verification = build_verification(
+                task=task,
+                module="browser",
+                backend_result=raw_result,
+                task_status=status,
+                execution_log=execution_log,
+                output_text=typed_result.extracted_text,
+            )
+            metadata["verification"] = verification.model_dump()
 
             _duration = (time.monotonic() - _t0) * 1000
             logger.info(
@@ -256,8 +274,9 @@ class BrowserAdapter(TaskAdapter):
                 status=status,
                 category=category,
                 error=typed_result.error_details,
-                execution_log=self._build_execution_log(typed_result),
+                execution_log=execution_log,
                 artifacts=self._extract_artifacts(typed_result),
+                verification=verification,
                 metadata=metadata,
             )
         except Exception as exc:

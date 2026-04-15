@@ -570,6 +570,24 @@ class OrchestratorCore(QObject):
                 self.event_bus.emit_status("Could not stop active task yet. Try closing again.", "warning")
                 return False
         self._cleanup_worker_state()
+        
+        # Close provider to cleanup Gemini async client
+        if hasattr(self, '_provider') and self._provider is not None:
+            provider_close = getattr(self._provider, "close", None)
+            if callable(provider_close):
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Schedule cleanup but don't wait (app is shutting down)
+                        asyncio.ensure_future(provider_close())
+                    else:
+                        # Run cleanup synchronously if loop is stopped
+                        loop.run_until_complete(asyncio.wait_for(provider_close(), timeout=2.0))
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Provider cleanup failed: {e}")
+        
         return True
 
     async def _generate_objective_preview(self, task_summary: str) -> list[str]:

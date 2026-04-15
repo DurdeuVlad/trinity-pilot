@@ -62,6 +62,8 @@ async def test_cli_adapter_passes_effective_timeout_to_backend():
     assert result.status == "success"
     assert run_cli_automation.call_args.kwargs["timeout"] == 42
     assert result.metadata["effective_timeout_seconds"] == 42
+    assert result.verification is not None
+    assert result.metadata["verification"]["status"] == result.verification.status
 
 
 @pytest.mark.asyncio

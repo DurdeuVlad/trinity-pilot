@@ -52,6 +52,7 @@ class ReflectionEngine:
         result: str,
         attempt: int,
         execution_log: list[dict[str, Any]] | None = None,
+        verification: dict[str, Any] | None = None,
     ) -> Reflection:
         """Evaluate whether *result* satisfies *objective*.
 
@@ -112,6 +113,7 @@ class ReflectionEngine:
                     f"OBJECTIVE: {objective}\n\n"
                     f"RESULT: {result}\n\n"
                     f"EXECUTION FAILURES: {failure_summary or 'none'}\n\n"
+                    f"DETERMINISTIC VERIFICATION: {json.dumps(verification or {}, ensure_ascii=True)}\n\n"
                     f"This was attempt {attempt + 1}."
                 ),
             },

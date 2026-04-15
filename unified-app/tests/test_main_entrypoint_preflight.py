@@ -163,6 +163,77 @@ def test_run_preflight_closes_provider_on_failure(monkeypatch):
     assert seen["close"] is True
 
 
+def test_run_preflight_with_retries_succeeds_after_transient_failure(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="local",
+        api_key="live-key",
+        key_source="environment",
+        env_path=None,
+    )
+    calls = {"count": 0}
+
+    async def fake_run_preflight(_config):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return app_main.StartupReadiness(
+                provider_name="local",
+                ready=False,
+                user_message="Local blocked: startup preflight failed.",
+                block_task_submission=True,
+            )
+        return app_main.StartupReadiness(
+            provider_name="local",
+            ready=True,
+            user_message="Local ready.",
+            block_task_submission=False,
+        )
+
+    monkeypatch.setattr(app_main, "run_preflight", fake_run_preflight)
+
+    readiness = asyncio.run(
+        app_main.run_preflight_with_retries(
+            config,
+            retries=2,
+            retry_delay_seconds=0,
+        )
+    )
+
+    assert readiness.ready is True
+    assert calls["count"] == 2
+
+
+def test_run_preflight_with_retries_does_not_retry_non_transient_failure(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="gemini",
+        api_key="bad-key",
+        key_source="environment",
+        env_path=None,
+    )
+    calls = {"count": 0}
+
+    async def fake_run_preflight(_config):
+        calls["count"] += 1
+        return app_main.StartupReadiness(
+            provider_name="gemini",
+            ready=False,
+            user_message="Gemini blocked: invalid API key. Check your key in Settings.",
+            block_task_submission=True,
+        )
+
+    monkeypatch.setattr(app_main, "run_preflight", fake_run_preflight)
+
+    readiness = asyncio.run(
+        app_main.run_preflight_with_retries(
+            config,
+            retries=2,
+            retry_delay_seconds=0,
+        )
+    )
+
+    assert readiness.ready is False
+    assert calls["count"] == 1
+
+
 def test_main_bootstrap_adds_repo_local_dependency_paths(monkeypatch):
     main_path = APP_ROOT / "main.py"
     expected_paths = {

@@ -144,6 +144,8 @@ def _install_stop_hotkey(callback) -> _HotkeyFilter:
     return filt
 
 STARTUP_PREFLIGHT_TIMEOUT_SECONDS = 8.0
+STARTUP_PREFLIGHT_RETRIES = 2
+STARTUP_PREFLIGHT_RETRY_DELAY_SECONDS = 3.0
 
 
 @dataclass(slots=True)
@@ -242,6 +244,22 @@ def _format_preflight_block_message(exc: Exception, provider_name: str) -> str:
     return f"{label} blocked: {safe_message}."
 
 
+def _is_retryable_preflight_message(message: str) -> bool:
+    """Return whether a failed preflight looks transient enough to retry."""
+    lowered = (message or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "timed out",
+            "startup preflight failed",
+            "service unreachable",
+            "not reachable",
+            "connection refused",
+            "temporarily unavailable",
+        )
+    )
+
+
 async def run_preflight(config: StartupConfig) -> StartupReadiness:
     """Probe the configured AI provider and CLI planner before allowing task submission."""
     if _is_mock_startup(config):
@@ -281,6 +299,35 @@ async def run_preflight(config: StartupConfig) -> StartupReadiness:
         ready=True,
         user_message=f"{config.provider_name.capitalize()} ready.",
         block_task_submission=False,
+    )
+
+
+async def run_preflight_with_retries(
+    config: StartupConfig,
+    *,
+    retries: int = STARTUP_PREFLIGHT_RETRIES,
+    retry_delay_seconds: float = STARTUP_PREFLIGHT_RETRY_DELAY_SECONDS,
+) -> StartupReadiness:
+    """Retry transient startup preflight failures before blocking the app."""
+    attempts = max(1, retries + 1)
+    last_readiness: StartupReadiness | None = None
+
+    for attempt in range(attempts):
+        readiness = await run_preflight(config)
+        last_readiness = readiness
+        if readiness.ready:
+            return readiness
+        if attempt >= attempts - 1:
+            return readiness
+        if not _is_retryable_preflight_message(readiness.user_message):
+            return readiness
+        await asyncio.sleep(retry_delay_seconds)
+
+    return last_readiness or StartupReadiness(
+        provider_name=config.provider_name,
+        ready=False,
+        user_message=f"{config.provider_name.capitalize()} blocked: startup preflight failed.",
+        block_task_submission=True,
     )
 
 
@@ -591,7 +638,7 @@ class MainWindow(QMainWindow):
         import threading
 
         def _run() -> None:
-            readiness = asyncio.run(run_preflight(config))
+            readiness = asyncio.run(run_preflight_with_retries(config))
             self.event_bus.preflight_done.emit(readiness)
 
         threading.Thread(target=_run, daemon=True).start()

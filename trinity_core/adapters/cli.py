@@ -11,6 +11,7 @@ from cli_io_models import CLITaskResult
 from cli_validator import CommandValidator
 from ..adapter import TaskAdapter
 from ..models import TaskInput, TaskResult, ExecutionLog, failure_code, is_retriable
+from ..verification import build_failure_verification, build_verification
 from ..telemetry import (
     TASK_CANCELLED,
     TASK_FAILED,
@@ -84,6 +85,12 @@ class CLIAdapter(TaskAdapter):
         metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
         metadata["adapter_name"] = self.module_name
         metadata["domain"] = task.domain
+        verification = build_failure_verification(
+            module="cli",
+            error=error,
+            evidence={"category": category},
+        )
+        metadata["verification"] = verification.model_dump()
         return TaskResult(
             task_id=task.task_id,
             status="failure",
@@ -93,6 +100,7 @@ class CLIAdapter(TaskAdapter):
             error=error,
             execution_log=[],
             artifacts=[],
+            verification=verification,
             metadata=metadata,
         )
 
@@ -159,6 +167,24 @@ class CLIAdapter(TaskAdapter):
 
             _duration = (time.monotonic() - _t0) * 1000
             _status = "success" if typed_result.status == "success" else "failure"
+            execution_log = [
+                ExecutionLog(
+                    step=log.step,
+                    action=log.action,
+                    result=log.result,
+                    details=log.output or log.error,
+                    timestamp=datetime.now().isoformat()
+                )
+                for log in typed_result.execution_log
+            ]
+            verification = build_verification(
+                task=task,
+                module="cli",
+                backend_result=typed_result.model_dump(),
+                task_status=_status,
+                execution_log=execution_log,
+                output_text=self._last_output_text,
+            )
             emit_event(
                 TASK_SUCCEEDED if _status == "success" else TASK_FAILED,
                 make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name=self.module_name, duration_ms=_duration, extra={"status": _status}),
@@ -168,17 +194,9 @@ class CLIAdapter(TaskAdapter):
                 status=_status,
                 category=self._normalize_category(typed_result),
                 error=typed_result.error or typed_result.reason,
-                execution_log=[
-                    ExecutionLog(
-                        step=log.step,
-                        action=log.action,
-                        result=log.result,
-                        details=log.output or log.error,
-                        timestamp=datetime.now().isoformat()
-                    )
-                    for log in typed_result.execution_log
-                ],
+                execution_log=execution_log,
                 artifacts=[],
+                verification=verification,
                 metadata={
                     **self._contract_metadata(
                         task,
@@ -190,6 +208,7 @@ class CLIAdapter(TaskAdapter):
                         objective_id=typed_result.metadata.get("objective_id"),
                     ),
                     "success_rate": typed_result.success_rate,
+                    "verification": verification.model_dump(),
                 }
             )
         except Exception as e:

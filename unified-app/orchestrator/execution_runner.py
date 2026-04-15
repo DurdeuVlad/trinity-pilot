@@ -31,6 +31,7 @@ from .macro_planner import ExecutionPlan
 from .output_validator import OutputValidator
 from .prompt_registry import PromptRegistry
 from .reflection_engine import ReflectionEngine
+from trinity_core.verification import coerce_verification
 
 from .crash_reporter import write_crash_dump as _write_crash_dump
 
@@ -689,12 +690,40 @@ class TaskExecutionRunner:
             final_result = result
             step_payload = dict(agent_loop.last_attempt_payload or agent_loop.last_step_payload or {})
             self._replay_backend_events(step_payload, display_index)
+            verification = _payload_verification(step_payload)
+            verification_status = _payload_verification_status(step_payload)
+            if verification_status == "success" and _step_indicates_failure(final_result, step_payload):
+                verification_status = "unknown"
+                verification = {
+                    **verification,
+                    "status": "unknown",
+                    "summary": "Deterministic verification conflicts with the backend step payload.",
+                    "review_required": True,
+                }
+            self._audit_event(
+                phase="verification",
+                message="Deterministic verification evaluated objective attempt",
+                data={
+                    "objective": objective,
+                    "objective_index": display_index,
+                    "attempt": attempt + 1,
+                    "verification_status": verification_status,
+                    "verification_summary": str(verification.get("summary", "") or "")[:200],
+                    "module": _payload_module_name(step_payload),
+                },
+                importance=2,
+            )
+            if verification_status == "success":
+                self._status("Structured verification confirmed the objective outcome.", "review")
+                objective_achieved = True
+                break
 
             reflection = await self.reflection_engine.reflect(
                 objective=objective,
                 result=result,
                 attempt=attempt,
                 execution_log=step_payload.get("execution_log", []),
+                verification=verification,
             )
             self._audit_event(
                 phase="reflection",
@@ -705,10 +734,18 @@ class TaskExecutionRunner:
                     "attempt": attempt + 1,
                     "achieved": reflection.achieved,
                     "critique": reflection.critique,
+                    "verification_status": verification_status,
                     "result_summary": str(result)[:200],
                 },
                 importance=2,
             )
+
+            if reflection.achieved and verification_status == "failure":
+                reflection = reflection.__class__(
+                    achieved=False,
+                    confidence=reflection.confidence,
+                    critique=_verification_summary(step_payload) or reflection.critique,
+                )
 
             if reflection.achieved and _completion_lacks_execution_evidence(objective, step_payload):
                 critique = (
@@ -742,23 +779,54 @@ class TaskExecutionRunner:
                 ))
                 continue
 
-            if reflection.achieved:
+            if reflection.achieved and verification_status != "failure":
+                objective_achieved = True
+                break
+
+            if _has_verified_backend_success(step_payload):
+                self._status(
+                    "Structured backend verification confirmed the objective outcome.",
+                    "review",
+                )
+                self._audit_event(
+                    phase="reflection",
+                    message="Structured backend verification accepted objective completion",
+                    data={
+                        "objective": objective,
+                        "objective_index": display_index,
+                        "attempt": attempt + 1,
+                        "module": _payload_module_name(step_payload),
+                    },
+                    importance=2,
+                )
                 objective_achieved = True
                 break
             
-            review = await self.active_reviewer.review_progress(
-                objective=objective,
-                completed_tasks=self._get_completed_tasks_for_review(context, display_index),
-                world_state=context.world_state.to_context_dict() if hasattr(context, 'world_state') else {},
-                attempt=attempt,
-                max_attempts=MAX_ATTEMPTS_PER_OBJECTIVE,
-                execution_log=step_payload.get("execution_log", []),
-                error_history=[
-                    {"type": e.error_type, "message": e.error_message}
-                    for e in context.error_history
-                ],
-                plan_state=step_payload.get("metadata", {}).get("plan_state", {}),
-            )
+            if verification_status == "failure":
+                review = ReviewResult(
+                    status=ReviewStatus.FAILED,
+                    assessment=_verification_summary(step_payload) or "Deterministic verification failed.",
+                    missing=[],
+                    next_steps=[],
+                    hints=[],
+                    alternative_strategies=[],
+                    confidence=0.9,
+                )
+            else:
+                review = await self.active_reviewer.review_progress(
+                    objective=objective,
+                    completed_tasks=self._get_completed_tasks_for_review(context, display_index),
+                    world_state=context.world_state.to_context_dict() if hasattr(context, 'world_state') else {},
+                    attempt=attempt,
+                    max_attempts=MAX_ATTEMPTS_PER_OBJECTIVE,
+                    execution_log=step_payload.get("execution_log", []),
+                    error_history=[
+                        {"type": e.error_type, "message": e.error_message}
+                        for e in context.error_history
+                    ],
+                    plan_state=step_payload.get("metadata", {}).get("plan_state", {}),
+                    verification=verification,
+                )
             review = _stabilize_review_result(
                 review=review,
                 final_result=final_result,
@@ -1768,6 +1836,200 @@ def _payload_failure_text(payload: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _payload_task_result(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    raw_result = metadata.get("raw_result", {})
+    return raw_result if isinstance(raw_result, dict) else {}
+
+
+def _payload_backend_result(payload: dict[str, Any]) -> dict[str, Any]:
+    task_result = _payload_task_result(payload)
+    metadata = task_result.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    raw_result = metadata.get("raw_result", {})
+    return raw_result if isinstance(raw_result, dict) else {}
+
+
+def _payload_verification(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    direct = _payload_direct_verification(payload)
+    if direct:
+        return direct
+
+    if _has_verified_backend_success(payload):
+        return {
+            "status": "success",
+            "checks": [],
+            "summary": "Legacy backend evidence confirmed completion.",
+            "evidence": {"module": _payload_module_name(payload)},
+            "review_required": False,
+            "source": "fallback",
+        }
+    if _step_indicates_failure(str(payload.get("output", "") or ""), payload):
+        return {
+            "status": "failure",
+            "checks": [],
+            "summary": "Legacy backend payload indicates failure.",
+            "evidence": {"module": _payload_module_name(payload)},
+            "review_required": False,
+            "source": "fallback",
+        }
+    return {}
+
+
+def _payload_direct_verification(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    direct = coerce_verification(payload.get("verification"))
+    if direct is not None:
+        return direct.model_dump()
+
+    metadata = payload.get("metadata", {})
+    if isinstance(metadata, dict):
+        meta_verification = coerce_verification(metadata.get("verification"))
+        if meta_verification is not None:
+            return meta_verification.model_dump()
+
+    task_result = _payload_task_result(payload)
+    task_verification = coerce_verification(task_result.get("verification"))
+    if task_verification is not None:
+        return task_verification.model_dump()
+
+    task_metadata = task_result.get("metadata", {})
+    if isinstance(task_metadata, dict):
+        nested_verification = coerce_verification(task_metadata.get("verification"))
+        if nested_verification is not None:
+            return nested_verification.model_dump()
+
+    return {}
+
+
+def _payload_verification_status(payload: dict[str, Any]) -> str:
+    verification = _payload_verification(payload)
+    return str(verification.get("status", "") or "").strip().lower() or "not_requested"
+
+
+def _verification_summary(payload: dict[str, Any]) -> str:
+    verification = _payload_verification(payload)
+    return str(verification.get("summary", "") or "").strip()
+
+
+def _payload_module_name(payload: dict[str, Any]) -> str:
+    task_result = _payload_task_result(payload)
+    task_metadata = task_result.get("metadata", {})
+    if isinstance(task_metadata, dict):
+        module = str(task_metadata.get("module", "") or "").strip().lower()
+        if module:
+            return module
+
+    payload_metadata = payload.get("metadata", {})
+    if isinstance(payload_metadata, dict):
+        module = str(payload_metadata.get("module", "") or "").strip().lower()
+        if module:
+            return module
+    return ""
+
+
+def _has_verified_backend_success(payload: dict[str, Any]) -> bool:
+    verification = _payload_direct_verification(payload)
+    if verification and str(verification.get("status", "") or "").strip().lower() == "success":
+        return True
+    task_result = _payload_task_result(payload)
+    if str(task_result.get("status", "") or "").strip().lower() != "success":
+        return False
+
+    module = _payload_module_name(payload)
+    backend_result = _payload_backend_result(payload)
+    if module == "cli":
+        return _cli_backend_success_is_verified(task_result, backend_result)
+    if module == "desktop":
+        return _desktop_backend_success_is_verified(backend_result)
+    if module == "browser":
+        return _browser_backend_success_is_verified(backend_result)
+    return False
+
+
+def _cli_backend_success_is_verified(
+    task_result: dict[str, Any],
+    backend_result: dict[str, Any],
+) -> bool:
+    if str(backend_result.get("status", "") or "").strip().lower() != "success":
+        return False
+
+    plan_state = backend_result.get("plan_state", {})
+    if isinstance(plan_state, dict):
+        if str(plan_state.get("status", "") or "").strip().lower() == "complete":
+            return True
+    if _plan_state_all_steps_completed(plan_state):
+        return True
+
+    steps = plan_state.get("steps", []) if isinstance(plan_state, dict) else []
+    saw_steps = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        saw_steps = True
+        status = str(step.get("status", "") or "").strip().lower()
+        verification = str(step.get("verification", "") or "").strip().lower()
+        if verification == "failed" or status in {"failed", "failure"}:
+            return False
+    if saw_steps:
+        return True
+
+    return _execution_log_has_success_no_failures(task_result.get("execution_log", []))
+
+
+def _desktop_backend_success_is_verified(backend_result: dict[str, Any]) -> bool:
+    if str(backend_result.get("status", "") or "").strip().lower() != "success":
+        return False
+    try:
+        successful = int(backend_result.get("successful_actions", 0) or 0)
+        total = int(backend_result.get("total_actions", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return total > 0 and successful == total
+
+
+def _browser_backend_success_is_verified(backend_result: dict[str, Any]) -> bool:
+    if str(backend_result.get("result", "") or "").strip().lower() != "success":
+        return False
+
+    verification_status = str(backend_result.get("verification_status", "") or "").strip().lower()
+    if verification_status not in {"success", "not_requested"}:
+        return False
+
+    plan_state = backend_result.get("plan_state", {})
+    if _plan_state_all_steps_completed(plan_state):
+        return True
+
+    extracted_text = str(backend_result.get("extracted_text", "") or "").strip()
+    return len(extracted_text) >= 20
+
+
+def _execution_log_has_success_no_failures(entries: Any) -> bool:
+    if not isinstance(entries, list) or not entries:
+        return False
+
+    saw_success = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        result = str(entry.get("result", "") or "").strip().lower()
+        if result == "failure":
+            return False
+        if result == "success":
+            saw_success = True
+    return saw_success
+
+
 def _stabilize_review_result(
     *,
     review: ReviewResult,
@@ -1789,6 +2051,9 @@ def _stabilize_review_result(
             plan_state = raw_plan_state
 
     has_unfinished_plan = _plan_state_has_unfinished_steps(plan_state)
+    plan_all_done = _plan_state_all_steps_completed(plan_state)
+    if plan_all_done:
+        return review
     if not has_unfinished_plan and not _is_loading_related_failure(final_result, step_payload):
         return review
 
@@ -1834,6 +2099,26 @@ def _plan_state_has_unfinished_steps(plan_state: dict[str, Any]) -> bool:
         if status in unfinished_statuses:
             return True
     return False
+
+
+def _plan_state_all_steps_completed(plan_state: dict[str, Any]) -> bool:
+    if not isinstance(plan_state, dict):
+        return False
+
+    steps = plan_state.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return False
+
+    completed_statuses = {"done", "success", "completed"}
+    saw_step = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        saw_step = True
+        status = str(step.get("status", "") or "").strip().lower()
+        if status not in completed_statuses:
+            return False
+    return saw_step
 
 
 def _review_status_from_plan_state(plan_state: dict[str, Any]) -> str:

@@ -108,6 +108,24 @@ async def test_execute_task_forwards_context_and_expected_outcome():
 
 
 @pytest.mark.asyncio
+async def test_execute_task_forwards_verification_checks():
+    bridge = TrinityBridge()
+    fake = FakeExecutor()
+    bridge.executor = fake
+    await bridge.initialize()
+
+    await bridge.execute_task(
+        task_id="test_003b",
+        description="Open example.com",
+        domain="web",
+        verification_checks=[{"kind": "url_equals", "target": "current_url", "expected": "https://example.com"}],
+    )
+
+    assert fake.last_task is not None
+    assert fake.last_task.verification_checks[0].kind == "url_equals"
+
+
+@pytest.mark.asyncio
 async def test_execute_task_context_defaults_to_empty_dict():
     """TrinityBridge.execute_task defaults context to {} when not provided."""
     bridge = TrinityBridge()

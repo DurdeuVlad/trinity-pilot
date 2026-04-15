@@ -699,6 +699,7 @@ class AgentLoop:
                 domain=domain,
                 context=ctx,
                 expected_outcome=_build_expected_outcome(action, description),
+                verification_checks=_build_verification_checks(action, description),
                 timeout=60,
                 max_retries=1,
                 cancel_event=self._cancel_event,
@@ -1051,6 +1052,50 @@ def _build_expected_outcome(action: dict[str, Any], description: str) -> str:
             return f"The command '{command}' completed and produced the requested output."
 
     return description.rstrip(".") + "."
+
+
+def _build_verification_checks(action: dict[str, Any], description: str) -> list[dict[str, Any]]:
+    action_type = str(action.get("action_type", "")).strip().lower()
+    params = action.get("parameters", {}) if isinstance(action.get("parameters"), dict) else {}
+
+    if action_type == "browse":
+        browse_action = str(params.get("action", "")).strip().lower()
+        url = str(params.get("url", "")).strip()
+        selector = str(params.get("selector", "")).strip()
+        text = str(params.get("text", "")).strip()
+        if browse_action == "navigate" and url:
+            return [{"kind": "url_matches", "target": "current_url", "expected": url}]
+        if browse_action in {"read", "copy"}:
+            return [{"kind": "plan_steps_completed", "target": "plan_state", "expected": True}]
+        if browse_action == "type" and text:
+            return [{"kind": "text_contains", "target": selector or "combined_text", "expected": text}]
+        if browse_action == "click" and selector:
+            return [{"kind": "element_exists", "target": selector, "expected": True}]
+
+    if action_type == "desktop":
+        desktop_action = str(params.get("action", "")).strip().lower()
+        if desktop_action in {"open", "focus", "type", "paste"}:
+            return []
+
+    if action_type == "cli":
+        checks = [{"kind": "command_exit_code", "target": "latest_command", "expected": 0}]
+        file_target = _extract_file_target_from_action(action, description)
+        if file_target:
+            checks.append({"kind": "file_exists", "target": file_target, "expected": True})
+        return checks
+
+    return []
+
+
+def _extract_file_target_from_action(action: dict[str, Any], description: str) -> str | None:
+    params = action.get("parameters", {}) if isinstance(action.get("parameters"), dict) else {}
+    for value in (params.get("path"), params.get("target"), params.get("file"), description):
+        if not isinstance(value, str):
+            continue
+        match = re.search(r"([A-Za-z]:\\\\[^\s]+|\.{0,2}[\\/][^\s]+)", value)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _backend_plan_state_key(action_type: str) -> str | None:

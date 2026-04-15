@@ -58,7 +58,8 @@ class EventBus(QObject):
             stream = getattr(sys, "stdout", None)
             if stream is None or getattr(stream, "closed", False):
                 return
-            print(f"[{level}] {message}", file=stream, flush=True)
+            # Don't add level prefix - it causes UI pollution when console is captured
+            print(message, file=stream, flush=True)
         except Exception:
             return
 

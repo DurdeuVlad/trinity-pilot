@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from ..adapter import TaskAdapter
 from ..models import ExecutionLog, TaskInput, TaskResult, failure_code, is_retriable
+from ..verification import build_failure_verification, build_verification
 from ..telemetry import (
     TASK_CANCELLED,
     TASK_FAILED,
@@ -500,6 +501,12 @@ class DesktopAdapter(TaskAdapter):
         metadata = self._contract_metadata(task, effective_timeout=effective_timeout)
         metadata["adapter_name"] = self.module_name
         metadata["domain"] = task.domain
+        verification = build_failure_verification(
+            module="desktop",
+            error=error,
+            evidence={"category": category},
+        )
+        metadata["verification"] = verification.model_dump()
         return TaskResult(
             task_id=task.task_id,
             status="failure",
@@ -509,6 +516,7 @@ class DesktopAdapter(TaskAdapter):
             error=error,
             execution_log=[],
             artifacts=[],
+            verification=verification,
             metadata=metadata,
         )
 
@@ -606,6 +614,24 @@ class DesktopAdapter(TaskAdapter):
 
             _duration = (time.monotonic() - _t0) * 1000
             _status = "success" if typed_result.status == "success" else "failure"
+            execution_log = [
+                ExecutionLog(
+                    step=log.step,
+                    action=log.action,
+                    result=log.result,
+                    details=log.details,
+                    timestamp=datetime.now().isoformat(),
+                )
+                for log in typed_result.execution_log
+            ]
+            verification = build_verification(
+                task=task,
+                module="desktop",
+                backend_result=typed_result.model_dump(),
+                task_status=_status,
+                execution_log=execution_log,
+                output_text=success_output,
+            )
             emit_event(
                 TASK_SUCCEEDED if _status == "success" else TASK_FAILED,
                 make_event_payload(task_id=task.task_id, domain=task.domain, adapter_name="desktop", duration_ms=_duration, extra={"status": _status}),
@@ -615,17 +641,9 @@ class DesktopAdapter(TaskAdapter):
                 status=_status,
                 category=self._normalize_category(typed_result),
                 error=typed_result.error or typed_result.reason,
-                execution_log=[
-                    ExecutionLog(
-                        step=log.step,
-                        action=log.action,
-                        result=log.result,
-                        details=log.details,
-                        timestamp=datetime.now().isoformat(),
-                    )
-                    for log in typed_result.execution_log
-                ],
+                execution_log=execution_log,
                 artifacts=[],
+                verification=verification,
                 metadata={
                     **self._contract_metadata(
                         task,
@@ -638,6 +656,7 @@ class DesktopAdapter(TaskAdapter):
                     ),
                     "success_rate": typed_result.success_rate,
                     **({"output": success_output} if success_output else {}),
+                    "verification": verification.model_dump(),
                 },
             )
         except Exception as e:

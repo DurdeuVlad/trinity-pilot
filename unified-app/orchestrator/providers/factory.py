@@ -32,6 +32,12 @@ def make_provider(provider_name: str, api_key: str) -> LLMProvider:
         cache = make_cache(enabled=not mock_mode)
         return GeminiProvider(api_key=resolved, cache=cache)
 
+    if name == "local":
+        from .local_provider import LocalProvider
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+        return LocalProvider(base_url=base_url, model=model)
+
     # OpenAI provider disabled — using Gemini only.
     # if name in ("openai", "chatgpt"):
     #     from .openai_provider import OpenAIProvider
@@ -39,5 +45,5 @@ def make_provider(provider_name: str, api_key: str) -> LLMProvider:
 
     raise ValueError(
         f"Unknown AI provider: {provider_name!r}. "
-        "Valid values are 'gemini' and 'openai'."
+        "Valid values are 'gemini', 'local', and 'openai'."
     )

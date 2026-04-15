@@ -15,10 +15,15 @@ If you are starting from a clean clone, install the backend requirements from th
 
 ## Required Config
 
-Create `unified-app/.env` and add:
+Create `unified-app/.env` based on `.env.example`:
 
 ```env
 GEMINI_API_KEY=your_key_here
+
+# Backend MCP Routing (optional)
+USE_CLI_MCP=false
+USE_BROWSER_MCP=false
+USE_DESKTOP_MCP=false
 ```
 
 From the repository root, you can verify the overall setup with:
@@ -26,6 +31,25 @@ From the repository root, you can verify the overall setup with:
 ```powershell
 python verify_installation.py
 ```
+
+### MCP Backend Integration
+
+The unified app can route backend execution through MCP servers or legacy HTTP services using feature flags:
+
+- **`USE_CLI_MCP=true`** - Route CLI tasks through `cli-automation-poc/cli_mcp_server.py`
+- **`USE_BROWSER_MCP=true`** - Route browser tasks through `browser-gui-automation/browser_mcp_server.py`
+- **`USE_DESKTOP_MCP=true`** - Route desktop tasks through `api-accessibility-poc/desktop_mcp_server.py`
+
+**Default**: All flags are `false`, using legacy HTTP service routing.
+
+**Mixed mode**: Each backend can be toggled independently. For example:
+```env
+USE_CLI_MCP=true
+USE_BROWSER_MCP=false
+USE_DESKTOP_MCP=true
+```
+
+This routes CLI and Desktop through MCP while Browser uses HTTP.
 
 ## What This Module Does
 
