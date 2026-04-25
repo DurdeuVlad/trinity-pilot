@@ -462,7 +462,7 @@ class PromptRegistry:
         self._p = "gemini" if normalized == "gemini" else "openai"
 
     def action_system_prompt(self, run_domain: str = "mixed") -> str:
-        """System prompt for the AgentLoop action-decision phase."""
+        """System prompt for the single-step action-decision phase."""
         normalized_domain = _normalize_run_domain(run_domain)
         if normalized_domain == "mixed":
             return _GEMINI_ACTION_SYSTEM if self._p == "gemini" else _OPENAI_ACTION_SYSTEM

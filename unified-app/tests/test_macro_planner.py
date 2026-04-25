@@ -41,7 +41,13 @@ class _FakeProvider:
     def __init__(self, objectives: list[str]) -> None:
         self._response = json.dumps({"objectives": objectives})
 
-    async def call(self, messages: list[dict], *, json_mode: bool = True) -> str:
+    async def call(
+        self,
+        messages: list[dict],
+        *,
+        json_mode: bool = True,
+        purpose: str | None = None,
+    ) -> str:
         return self._response
 
     async def probe(self) -> None:

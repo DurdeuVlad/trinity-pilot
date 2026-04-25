@@ -24,7 +24,7 @@ dependencies = [
     "fastapi>=0.135.3, <0.136",
     "uvicorn>=0.44.0, <0.45",
     "httpx>=0.28.1, <0.29",
-    "mcp>=1.27.0",
+    "fastmcp>=3.0.0,<4.0.0",
     "pyyaml>=6.0.3",
 ]
 
@@ -42,6 +42,9 @@ dev = [
 build = [
     "pyinstaller>=6.19.0, <6.20",
 ]
+
+[project.scripts]
+trinity-root = "trinity_core.runtime_mcp.root_server:main"
 
 [dependency-groups]
 dev = [

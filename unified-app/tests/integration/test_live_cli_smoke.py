@@ -23,20 +23,20 @@ def live_runtime(monkeypatch: pytest.MonkeyPatch) -> RecordingHistoryManager:
 
 
 @pytest.mark.skipif(
-    not os.getenv("GEMINI_API_KEY", "").strip(),
-    reason="GEMINI_API_KEY is required for live Gemini CLI smoke test.",
+    not os.getenv("OPENAI_API_KEY", "").strip(),
+    reason="OPENAI_API_KEY is required for the active Trinity Core CLI smoke test.",
 )
 async def test_live_cli_directory_inspection_reaches_completed(
     live_runtime: RecordingHistoryManager,
 ) -> None:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        pytest.skip("GEMINI_API_KEY is required for live Gemini smoke")
+        pytest.skip("OPENAI_API_KEY is required for the active Trinity Core smoke test")
 
     worker = OrchestratorWorker(
         "Show the current directory path and list its contents",
         "cli",
-        provider_name="gemini",
+        provider_name="openai",
         api_key=api_key,
     )
     await worker._execute()

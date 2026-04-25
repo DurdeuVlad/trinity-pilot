@@ -15,24 +15,20 @@ from .models import (
     VerificationCheck,
     VerificationEnvelope,
 )
-from .runtime_host import RuntimeHost
-from .backend_registry import (
-    BackendRegistry,
-    create_cli_profile,
-    create_browser_profile,
-    create_desktop_profile,
-    create_default_registry,
+from .mcp_strategy_runtime import MCPStrategyRuntime
+from .strategy_registry import (
+    MCPStrategy,
+    PromptContribution,
+    StrategyRegistry,
 )
 
 __all__ = [
     "BackendProfile",
-    "BackendRegistry",
     "CapabilityDescriptor",
     "RuntimeArtifact",
     "RuntimeEvent",
     "RuntimeEventType",
     "RuntimeFailureCategory",
-    "RuntimeHost",
     "RuntimeResult",
     "RuntimeSession",
     "RuntimeStatus",
@@ -40,8 +36,8 @@ __all__ = [
     "TaskResult",
     "VerificationCheck",
     "VerificationEnvelope",
-    "create_browser_profile",
-    "create_cli_profile",
-    "create_default_registry",
-    "create_desktop_profile",
+    "MCPStrategy",
+    "MCPStrategyRuntime",
+    "PromptContribution",
+    "StrategyRegistry",
 ]

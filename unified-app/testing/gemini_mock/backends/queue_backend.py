@@ -9,11 +9,11 @@ from testing.gemini_mock.mock_genai import GenerationConfig, _flatten_prompt
 
 _DEFAULT_MACRO_RESPONSE = '{"steps":["mock step 1","mock step 2"],"estimated_duration":10,"confidence":0.8}'
 _DEFAULT_OBJECTIVES_RESPONSE = '{"objectives":["complete the mock task"]}'
-_DEFAULT_AGENT_LOOP_RESPONSE = (
+_DEFAULT_ACTION_DECISION_RESPONSE = (
     '{"rationale":"Task complete via mock","action_type":"done","module":null,'
     '"parameters":{},"done":true,"result_summary":"Mock task completed successfully"}'
 )
-_DEFAULT_AGENT_LOOP_FIRST_ACTION = (
+_DEFAULT_ACTION_DECISION_FIRST_ACTION = (
     '{"rationale":"Running required action","action_type":"cli","module":"cli_runner",'
     '"parameters":{"command":"Write-Output","args":["step executed"]},'
     '"done":false,"result_summary":null}'
@@ -67,12 +67,12 @@ class QueueBackend:
         # MacroPlanner.replan system prompt
         if "revised_objectives" in lowered:
             return _DEFAULT_REPLAN_RESPONSE
-        # AgentLoop system prompt — return an action on the first call (no RESULT: yet),
+        # Action-decision system prompt — return an action on the first call (no RESULT: yet),
         # done on subsequent calls (execution history present)
         if "autonomous computer-use agent" in lowered:
             if "RESULT:" not in prompt_text:
-                return _DEFAULT_AGENT_LOOP_FIRST_ACTION
-            return _DEFAULT_AGENT_LOOP_RESPONSE
+                return _DEFAULT_ACTION_DECISION_FIRST_ACTION
+            return _DEFAULT_ACTION_DECISION_RESPONSE
         if (
             "primary domain: web" in lowered
             and "notepad" in lowered

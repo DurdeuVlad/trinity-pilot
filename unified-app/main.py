@@ -57,40 +57,9 @@ from ui.views.settings_view import SettingsView
 # ---------------------------------------------------------------------------
 
 def _detect_domain(description: str) -> str:
-    """Select execution domain from task text heuristics."""
-    lowered = description.lower()
-    web_tokens = (
-        "browser",
-        "browser tab",
-        "website",
-        "web page",
-        "webpage",
-        "web",
-        "google",
-        "github",
-        "navigate",
-        "search",
-        "wikipedia",
-        "url",
-        "site",
-        "link",
-        "chrome",
-        "firefox",
-        "edge",
-        "http://",
-        "https://",
-    )
-    desktop_tokens = ("notepad", "calculator", "window", "desktop", "application", "tab")
-    cli_tokens = ("directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory")
-    hits = {
-        "web": any(t in lowered for t in web_tokens),
-        "desktop": any(t in lowered for t in desktop_tokens),
-        "cli": any(t in lowered for t in cli_tokens),
-    }
-    matched = [d for d, active in hits.items() if active]
-    if len(matched) > 1:
-        return "mixed"
-    return matched[0] if matched else "cli"
+    """Select execution domain from task text heuristics using shared bridge."""
+    from orchestrator.trinity_bridge import TrinityBridge
+    return TrinityBridge().suggest_domain(description)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +139,34 @@ class StartupReadiness:
 
 def _module_env_path() -> Path:
     return Path(__file__).with_name(".env")
+
+
+def _resolve_core_gemini_api_key() -> str:
+    """Read the Gemini key required by Trinity Core from env or saved settings."""
+    settings = SettingsManager().load()
+    return (os.getenv("GEMINI_API_KEY") or str(settings.get("gemini_api_key", ""))).strip()
+
+
+def _ensure_core_execution_key() -> None:
+    """Expose the saved Gemini key to Trinity Core when shell env is empty."""
+    if os.getenv("GEMINI_API_KEY", "").strip():
+        return
+    core_key = _resolve_core_gemini_api_key()
+    if core_key:
+        os.environ["GEMINI_API_KEY"] = core_key
+
+
+def _missing_core_key_readiness(provider_name: str) -> StartupReadiness:
+    """Return the canonical readiness block for missing Core execution credentials."""
+    return StartupReadiness(
+        provider_name=provider_name,
+        ready=False,
+        user_message=(
+            "Trinity Core blocked: Gemini API key missing. "
+            "Set GEMINI_API_KEY in .env or enter the key in Settings."
+        ),
+        block_task_submission=True,
+    )
 
 
 def _load_cli_planner_class():
@@ -264,6 +261,10 @@ async def run_preflight(config: StartupConfig) -> StartupReadiness:
     """Probe the configured AI provider and CLI planner before allowing task submission."""
     if _is_mock_startup(config):
         return _mock_startup_readiness(config.provider_name)
+    core_key = _resolve_core_gemini_api_key()
+    if not core_key:
+        return _missing_core_key_readiness(config.provider_name)
+    _ensure_core_execution_key()
 
     provider = None
     cli_planner = None
@@ -340,6 +341,9 @@ def evaluate_startup_readiness(config: StartupConfig) -> StartupReadiness:
     """
     if _is_mock_startup(config):
         return _mock_startup_readiness(config.provider_name)
+
+    if not _resolve_core_gemini_api_key():
+        return _missing_core_key_readiness(config.provider_name)
 
     if not config.api_key:
         provider_label = config.provider_name.capitalize()

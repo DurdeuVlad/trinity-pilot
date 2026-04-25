@@ -150,7 +150,6 @@ def _collect_evidence(
     combined_text = "\n".join(
         part.strip()
         for part in (
-            str(output_text or ""),
             str(backend_result.get("extracted_text") or ""),
             "\n".join(stdout_snippets),
         )
@@ -160,28 +159,43 @@ def _collect_evidence(
     metadata = backend_result.get("metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
+    extracted_text = str(backend_result.get("extracted_text") or "")
+    successful_actions = sum(1 for entry in entries if str(entry.get("result") or "").strip().lower() == "success")
+    total_actions = len(entries)
     evidence: dict[str, Any] = {
         "module": module,
         "task_description": task.description,
         "expected_outcome": task.expected_outcome,
         "combined_text": combined_text,
+        "model_text": str(output_text or ""),
+        "extracted_text": extracted_text,
         "plan_state": plan_state if isinstance(plan_state, dict) else {},
         "current_url": str(backend_result.get("current_url") or ""),
         "page_title": str(backend_result.get("page_title") or ""),
         "verification_status": str(backend_result.get("verification_status") or ""),
-        "successful_actions": int(backend_result.get("successful_actions") or 0) if str(backend_result.get("successful_actions", "")).strip() else 0,
-        "total_actions": int(backend_result.get("total_actions") or 0) if str(backend_result.get("total_actions", "")).strip() else 0,
-        "app_context": str(metadata.get("app_context") or backend_result.get("app_context") or (task.context or {}).get("app_name") or ""),
+        "successful_actions": int(backend_result.get("successful_actions") or successful_actions) if str(backend_result.get("successful_actions", "")).strip() else successful_actions,
+        "total_actions": int(backend_result.get("total_actions") or total_actions) if str(backend_result.get("total_actions", "")).strip() else total_actions,
+        "app_context": str(
+            metadata.get("app_context")
+            or metadata.get("app")
+            or metadata.get("app_name")
+            or backend_result.get("app_context")
+            or (task.context or {}).get("app_name")
+            or ""
+        ),
         "active_window": str(
             metadata.get("active_window")
             or backend_result.get("active_window")
             or metadata.get("window_title")
+            or metadata.get("title")
             or backend_result.get("window_title")
             or ""
         ),
+        "observed_text": str(metadata.get("text") or ""),
         "exit_codes": [entry.get("exit_code") for entry in entries if entry.get("exit_code") is not None],
         "execution_log_results": [str(entry.get("result") or "") for entry in entries],
         "elements": backend_result.get("elements") if isinstance(backend_result.get("elements"), dict) else {},
+        "artifact_count": len(backend_result.get("artifacts") or []),
     }
     return evidence
 
@@ -298,6 +312,9 @@ def _evaluate_check(check: VerificationCheck, evidence: dict[str, Any]) -> Verif
         actual = exit_codes[-1] if exit_codes else None
         if actual is not None:
             status = "success" if actual == expected else "failure"
+    elif kind == "visible_tool_execution":
+        actual = int(evidence.get("successful_actions") or 0)
+        status = "success" if actual > 0 else "failure"
     elif kind == "plan_steps_completed":
         actual = _plan_steps_completed(evidence.get("plan_state") or {})
         status = "success" if actual is bool(expected) else "failure" if actual is not None else "unknown"
@@ -322,6 +339,7 @@ def _decide_status(
     failed_checks = [check for check in checks if check.status == "failure"]
     unknown_checks = [check for check in checks if check.status == "unknown"]
     success_checks = [check for check in checks if check.status == "success"]
+    substantive_success_checks = [check for check in success_checks if check.kind != "visible_tool_execution"]
 
     if task_status == "failure":
         failure_blob = " ".join(
@@ -350,7 +368,7 @@ def _decide_status(
             return "failure"
         if unknown_checks:
             return "unknown"
-        if success_checks:
+        if substantive_success_checks:
             return "success"
 
     if module == "cli":
@@ -362,25 +380,25 @@ def _decide_status(
             return "failure"
         if plan_complete:
             return "success"
-        if success_checks:
+        if substantive_success_checks:
             return "success"
         return "unknown"
 
     if module == "desktop":
-        total = int(evidence.get("total_actions") or 0)
-        successful = int(evidence.get("successful_actions") or 0)
-        if total > 0 and successful != total:
+        if failed_checks:
             return "failure"
-        if total > 0 and successful == total:
+        if _has_desktop_evidence(evidence):
             return "success" if (plan_complete is not False) else "unknown"
+        if substantive_success_checks:
+            return "success"
         return "unknown"
 
     if module == "browser":
         if failed_checks:
             return "failure"
-        if plan_complete:
+        if plan_complete and _has_browser_evidence(evidence):
             return "success"
-        if str(evidence.get("combined_text") or "").strip():
+        if _has_browser_evidence(evidence):
             return "success"
         return "unknown"
 
@@ -388,8 +406,13 @@ def _decide_status(
         return "failure"
     if unknown_checks:
         return "unknown"
-    if success_checks:
+    if substantive_success_checks:
         return "success"
+    
+    # Generic success fallback for unknown domains if tool execution passed
+    if success_checks and any(c.kind == "visible_tool_execution" for c in success_checks):
+        return "success"
+        
     return "not_requested"
 
 
@@ -473,6 +496,28 @@ def _urls_match(actual: Any, expected: Any) -> bool:
         actual_normalized == expected_normalized
         or actual_normalized.startswith(expected_normalized.rstrip("/"))
         or expected_normalized.startswith(actual_normalized.rstrip("/"))
+    )
+
+def _has_browser_evidence(evidence: dict[str, Any]) -> bool:
+    return any(
+        [
+            str(evidence.get("current_url") or "").strip(),
+            str(evidence.get("page_title") or "").strip(),
+            str(evidence.get("extracted_text") or "").strip(),
+            bool(evidence.get("elements") or {}),
+            int(evidence.get("artifact_count") or 0) > 0,
+        ]
+    )
+
+
+def _has_desktop_evidence(evidence: dict[str, Any]) -> bool:
+    return any(
+        [
+            str(evidence.get("active_window") or "").strip(),
+            str(evidence.get("app_context") or "").strip(),
+            str(evidence.get("observed_text") or "").strip(),
+            bool(evidence.get("elements") or {}),
+        ]
     )
 
 

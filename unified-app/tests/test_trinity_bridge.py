@@ -1,6 +1,7 @@
 """Tests for the unified-app Trinity bridge."""
 from __future__ import annotations
 
+import os
 import pytest
 
 import orchestrator.trinity_bridge as trinity_bridge
@@ -154,3 +155,40 @@ async def test_initialize_surfaces_missing_dependency_reason(monkeypatch: pytest
 
     with pytest.raises(RuntimeError, match="audit_debugger"):
         await bridge.initialize()
+
+
+@pytest.mark.asyncio
+async def test_initialize_uses_saved_openai_key_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    bridge = TrinityBridge()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    class _FakeSettingsManager:
+        def load(self) -> dict[str, str]:
+            return {"openai_api_key": "saved-openai-key"}
+
+    class _FakeExecutor:
+        def __init__(self) -> None:
+            self.initialized = False
+
+        async def initialize(self) -> None:
+            self.initialized = True
+
+        async def shutdown(self) -> None:
+            self.initialized = False
+
+    created: list[_FakeExecutor] = []
+
+    def _build_executor() -> _FakeExecutor:
+        executor = _FakeExecutor()
+        created.append(executor)
+        return executor
+
+    monkeypatch.setattr(trinity_bridge, "SettingsManager", _FakeSettingsManager)
+    monkeypatch.setattr(trinity_bridge, "TrinityExecutor", _build_executor)
+
+    await bridge.initialize()
+
+    assert os.environ["OPENAI_API_KEY"] == "saved-openai-key"
+    assert created and created[0].initialized is True
+
+    await bridge.shutdown()

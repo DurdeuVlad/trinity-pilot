@@ -10,7 +10,7 @@ def test_session_persists_and_loads(tmp_path, monkeypatch):
     session = Session(session_id="session-a")
     session.append_user_message("hello")
     session.append_assistant_message("world")
-    session.append_tool_result("call-1", ToolResult(status="success", output="ok"))
+    session.append_tool_result("call-1", "echo", ToolResult(status="success", output="ok"))
 
     loaded = Session.load("session-a")
     assert len(loaded.messages) == 3

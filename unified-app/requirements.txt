@@ -1,6 +1,9 @@
 # Core framework
 PyQt6>=6.6.0
 
+# MCP
+fastmcp>=3.0.0,<4.0.0
+
 # Planning integration
 google-genai>=0.8.0
 google-generativeai>=0.3.0

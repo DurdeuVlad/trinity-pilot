@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from .llm.llm_provider import ToolCall
 from .tools.base import ToolResult
 
 
@@ -30,10 +31,30 @@ class Session:
         self.messages.append(message)
         self._persist(message)
 
-    def append_tool_result(self, tool_call_id: str, result: ToolResult) -> None:
+    def append_assistant_tool_calls(self, tool_calls: list[ToolCall], content: str = "") -> None:
+        message = {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments),
+                    },
+                }
+                for tool_call in tool_calls
+            ],
+        }
+        self.messages.append(message)
+        self._persist(message)
+
+    def append_tool_result(self, tool_call_id: str, tool_name: str, result: ToolResult) -> None:
         message = {
             "role": "tool",
             "tool_call_id": tool_call_id,
+            "name": tool_name,
             "status": result.status,
             "content": result.output,
             "error": result.error,

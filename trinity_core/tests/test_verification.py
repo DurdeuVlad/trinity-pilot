@@ -124,3 +124,45 @@ def test_url_matches_tolerates_normal_redirect_normalization() -> None:
 
     assert verification.status == "success"
     assert verification.checks[0].status == "success"
+
+
+def test_browser_verification_does_not_treat_model_text_as_browser_evidence() -> None:
+    task = TaskInput(
+        task_id="verify-browser-weak",
+        description="Open the page",
+        domain="web",
+        verification_checks=[{"kind": "visible_tool_execution", "target": "mcp_visible_tools", "expected": True}],
+    )
+
+    verification = build_verification(
+        task=task,
+        module="browser",
+        backend_result={"status": "success", "metadata": {}},
+        task_status="success",
+        execution_log=[{"step": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
+        output_text="done",
+    )
+
+    assert verification.status == "unknown"
+    assert verification.evidence["combined_text"] == "hello"
+    assert verification.evidence["model_text"] == "done"
+
+
+def test_desktop_verification_does_not_treat_generic_tool_success_as_completion() -> None:
+    task = TaskInput(
+        task_id="verify-desktop-weak",
+        description="Open Notepad",
+        domain="desktop",
+        verification_checks=[{"kind": "visible_tool_execution", "target": "mcp_visible_tools", "expected": True}],
+    )
+
+    verification = build_verification(
+        task=task,
+        module="desktop",
+        backend_result={"status": "success", "metadata": {}},
+        task_status="success",
+        execution_log=[{"step": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
+        output_text="done",
+    )
+
+    assert verification.status == "unknown"

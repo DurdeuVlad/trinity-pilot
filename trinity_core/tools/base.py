@@ -43,6 +43,10 @@ class Tool(ABC):
     def parameters(self) -> dict[str, Any]:
         """Return a JSON schema describing accepted tool input."""
 
+    def annotations(self) -> dict[str, Any]:
+        """Return optional tool capability metadata exposed to the orchestrator."""
+        return {}
+
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the tool with keyword arguments validated by parameters()."""

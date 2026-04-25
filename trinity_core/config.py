@@ -1,7 +1,8 @@
 """Unified configuration for Trinity integration."""
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 import os
+from pathlib import Path
 
 class ModuleConfig(BaseModel):
     """Configuration for a specific module."""
@@ -42,29 +43,37 @@ class TrinityConfig(BaseModel):
     )
 
     # Global settings
-    gemini_api_key: str = Field(..., description="Gemini API key (required)")
+    gemini_api_key: str = Field("", description="Gemini API key for Gemini-backed runtimes")
+    openai_api_key: str = Field("", description="OpenAI API key for tool-calling orchestration")
+    ai_provider: str = Field("gemini", description="Tool-capable provider used by the shared MCP runtime (gemini or openai)")
+    ai_model: str = Field("models/gemini-3.1-flash-lite-preview", description="Model name for the shared MCP runtime")
     debug_mode: bool = Field(False, description="Enable debug logging")
     flight_reports_dir: str = Field("_runtime/flight_reports", description="FlightReport output directory")
-    
+    default_timeout: int = Field(300, ge=30, le=3600, description="Default timeout for unknown domains")
+
     # Executor settings
+
     max_concurrent_browser_tasks: int = Field(5, ge=1, le=20, description="Max parallel browser tasks")
 
-    # Runtime layer - set True to route tasks through Architect-Executor-Reviewer runtimes.
-    # Defaults to False to preserve backward-compatible adapter-direct execution.
-    enable_runtimes: bool = Field(False, description="Enable tool-first runtime orchestration layer")
-    
     # Module-specific configs
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     cli: CLIConfig = Field(default_factory=CLIConfig)
     
-    @field_validator("gemini_api_key")
-    @classmethod
-    def validate_api_key(cls, v):
-        """Ensure API key is not empty."""
-        if not v or v.strip() == "":
-            raise ValueError("GEMINI_API_KEY is required and cannot be empty")
-        return v
+    @model_validator(mode="after")
+    def validate_provider_credentials(self) -> "TrinityConfig":
+        """Require only the credentials needed for the selected runtime provider."""
+        provider = (self.ai_provider or "").strip().lower()
+        if provider not in {"openai", "gemini"}:
+            raise ValueError(
+                f"Unsupported ai_provider '{self.ai_provider}'. "
+                "The shared MCP runtime supports 'openai' and 'gemini'."
+            )
+        if provider == "openai" and not (self.openai_api_key or "").strip():
+            raise ValueError("OPENAI_API_KEY is required when ai_provider='openai'")
+        if provider == "gemini" and not (self.gemini_api_key or "").strip():
+            raise ValueError("GEMINI_API_KEY is required when ai_provider='gemini'")
+        return self
     
     @classmethod
     def from_env(cls, env_prefix: str = "TRINITY") -> "TrinityConfig":
@@ -75,13 +84,15 @@ class TrinityConfig(BaseModel):
             # Required
             gemini_api_key=os.getenv(f"{env_prefix}_GEMINI_API_KEY", 
                                     os.getenv("GEMINI_API_KEY", "")),
+            openai_api_key=os.getenv(f"{env_prefix}_OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+            ai_provider=os.getenv(f"{env_prefix}_AI_PROVIDER", "gemini"),
+            ai_model=os.getenv(f"{env_prefix}_AI_MODEL", "models/gemini-3.1-flash-lite-preview"),
             
             # Global
             debug_mode=os.getenv(f"{env_prefix}_DEBUG", "false").lower() == "true",
             flight_reports_dir=os.getenv(f"{env_prefix}_FLIGHT_REPORTS_DIR", 
                                          "_runtime/flight_reports"),
             max_concurrent_browser_tasks=int(os.getenv(f"{env_prefix}_MAX_CONCURRENT_BROWSER", "5")),
-            
             # Browser
             browser=BrowserConfig(
                 enabled=os.getenv(f"{env_prefix}_BROWSER_ENABLED", "true").lower() == "true",

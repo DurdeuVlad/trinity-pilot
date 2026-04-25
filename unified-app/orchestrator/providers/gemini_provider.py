@@ -129,7 +129,7 @@ class GeminiProvider(LLMProvider):
     def report_cache_failure(self) -> None:
         """Signal that the most recent cached response caused a downstream failure.
 
-        Call this when execution_runner detects that the LLM response (which may
+        Call this when the orchestrator detects that the LLM response (which may
         have been served from cache) led to a failed objective.  SmartCache will
         increment the entry's failure_count and evict it once the bypass threshold
         is reached, forcing the next call to hit the live API.

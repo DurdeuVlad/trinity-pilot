@@ -111,31 +111,9 @@ class TaskInputPanel(QWidget):
         self.set_executing(True)
 
     def detect_domain(self, description: str) -> str:
-        """Select execution domain from task text heuristics."""
-        lowered = description.lower()
-        web_tokens = (
-            "browser", "website", "google", "navigate", "search", "wikipedia",
-            "web page", "page", "url", "site", "github", "go to",
-            "repo", "http", "www", ".com", "open issue", "open bug",
-        )
-        desktop_tokens = (
-            "notepad", "calculator", "window", "desktop", "application", "tab",
-        )
-        cli_tokens = (
-            "directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory",
-        )
-
-        hits = {
-            "web": any(token in lowered for token in web_tokens),
-            "desktop": any(token in lowered for token in desktop_tokens),
-            "cli": any(token in lowered for token in cli_tokens),
-        }
-        matched = [domain for domain, active in hits.items() if active]
-        if len(matched) > 1:
-            return "mixed"
-        if matched:
-            return matched[0]
-        return "cli"
+        """Select execution domain from task text heuristics using shared bridge."""
+        from orchestrator.trinity_bridge import TrinityBridge
+        return TrinityBridge().suggest_domain(description)
 
     def set_executing(self, is_executing: bool) -> None:
         """Toggle controls while execution is in progress."""

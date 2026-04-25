@@ -304,9 +304,9 @@ class ExecutionContext:
           1. ``world_state.last_text_artifact`` — explicit, semantically
              filtered (status strings never land here).
           2. ``accumulated_state["latest_text_result"]`` — legacy per-action
-             override written by AgentLoop for browse read/copy results.
+             override written by the older browser read/copy path.
           3. Walk ``objective_N_result`` keys — final fallback from the
-             objective-level result strings stored by ExecutionRunner.
+             objective-level result strings stored by the older execution flow.
 
         Returns None when no text has been captured yet.
         """

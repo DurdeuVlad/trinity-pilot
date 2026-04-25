@@ -13,10 +13,9 @@ from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 
 from .clarification_engine import ClarificationEngine
 from .crash_reporter import write_crash_dump as _write_crash_dump
-from .database import HistoryManager
+from .database import HistoryManager, TaskStatus
 from .error_handler import ErrorHandler
 from .event_bus import get_event_bus
-from .execution_runner import TaskExecutionRunner
 from .macro_planner import MacroPlanner
 from .providers.factory import make_provider
 from .screenshot_watcher import ScreenshotWatcher
@@ -45,6 +44,33 @@ def _shutdown_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     finally:
         asyncio.set_event_loop(None)
         loop.close()
+
+
+def _normalize_execution_domain(domain: str, description: str) -> str:
+    normalized = (domain or "").strip().lower()
+    if normalized in {"browser", "web"}:
+        return "web"
+    if normalized in {"desktop", "cli"}:
+        return normalized
+    if normalized == "mixed":
+        lowered = description.lower()
+        if any(token in lowered for token in ("browser", "website", "url", "http", "https", "google", "github")):
+            return "web"
+        if any(token in lowered for token in ("notepad", "window", "desktop", "application")):
+            return "desktop"
+        return "cli"
+    return "cli"
+
+
+def _select_target_server(domain: str, description: str) -> str | None:
+    normalized = _normalize_execution_domain(domain, description)
+    env_name = f"TRINITY_{normalized.upper()}_MCP_SERVER"
+    configured = (os.getenv(env_name) or "").strip()
+    if configured:
+        return configured
+    if normalized == "web" and any(token in description.lower() for token in ("puppeteer", "chrome devtools")):
+        return "puppeteer_mcp"
+    return None
 
 
 class OrchestratorWorker(QObject):
@@ -178,34 +204,177 @@ class OrchestratorWorker(QObject):
         return self.screenshot_watcher
 
     async def _execute(self) -> None:
-        provider = make_provider(self.provider_name, self.api_key)
-        from .prompt_registry import PromptRegistry
+        finalized_objectives = [step.strip() for step in self.approved_plan if step.strip()] or [self.task_description]
+        normalized_domain = _normalize_execution_domain(self.domain, self.task_description)
+        target_server = _select_target_server(self.domain, self.task_description)
+        bridge = TrinityBridge()
 
-        registry = PromptRegistry(self.provider_name)
-        runner = TaskExecutionRunner(
-            run_id=self.run_id,
-            task_description=self.task_description,
-            domain=self.domain,
-            event_bus=self.event_bus,
-            history_manager=self.history_manager,
-            error_handler=self.error_handler,
-            planner=MacroPlanner(provider, registry=registry),
-            provider=provider,
-            bridge=TrinityBridge(),
-            screenshot_watcher=self._ensure_screenshot_watcher(),
-            cancel_requested=lambda: self._cancelled,
-            cancel_event=self._cancel_event,
-            resume_event=self._resume_event,
-            pause_event=self._pause_event,
-            termination_context=self.termination_context,
-            approved_plan=self.approved_plan,
-            provider_name=self.provider_name,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
+        self.history_manager.create_task(
+            self.run_id,
+            self.task_description,
+            normalized_domain,
+            plan_steps=finalized_objectives,
+            estimated_duration=max(60, len(finalized_objectives) * 60),
+            confidence=0.95 if self.approved_plan else 0.8,
         )
-        runner.consume_steer = self.consume_steer
-        runner.clear_steer = self.clear_steer
-        await runner.execute()
+        for index, step in enumerate(finalized_objectives, start=1):
+            self.history_manager.add_step(self.run_id, index, step)
+        self.history_manager.start_task(self.run_id)
+
+        self.event_bus.run_started.emit(self.run_id)
+        self.event_bus.execution_started.emit()
+        self.event_bus.plan_generated.emit(finalized_objectives)
+        self.event_bus.emit_status(
+            f"Desktop finalized the objective and selected MCP server '{target_server}' for domain '{normalized_domain}'.",
+            "info",
+        )
+
+        if self._cancelled:
+            payload = {"status": "cancelled", "category": "cancelled", "error": self._termination_reason}
+            self.history_manager.complete_task(
+                self.run_id,
+                result_data=payload,
+                error_message=self._termination_reason,
+                status=TaskStatus.CANCELLED,
+            )
+            self.event_bus.execution_complete.emit(payload)
+            self.event_bus.execution_ended.emit()
+            self.event_bus.run_ended.emit(self.run_id)
+            return
+
+        result_payload: dict[str, object]
+        try:
+            await bridge.initialize()
+            self.event_bus.step_started.emit(1, finalized_objectives[0])
+            self.history_manager.update_step_status(self.run_id, 1, TaskStatus.RUNNING)
+            result = await bridge.execute_task(
+                task_id=self.run_id,
+                description=self.task_description,
+                domain=normalized_domain,
+                target_server=target_server,
+                objective_steps=finalized_objectives,
+                context={
+                    "selected_domain": normalized_domain,
+                    "selected_mcp_server": target_server,
+                    "approved_objectives": finalized_objectives,
+                },
+                timeout=self.timeout_seconds,
+                max_retries=self.max_retries,
+                cancel_event=self._cancel_event,
+            )
+            result_payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+        except Exception as exc:
+            payload = self.error_handler.handle(exc, context="Execution", category="backend_error")
+            user_message = str(payload.get("user_message") or "Execution failed.")
+            failure_payload = {
+                "status": "failure",
+                "category": str(payload.get("category") or "backend_error"),
+                "error": user_message,
+                "message": str(payload.get("message") or exc),
+                "error_details": payload.get("error_details", {}),  # ← PRESERVE ERROR DETAILS
+                "run_id": self.run_id,
+                "objective": self.objectives[0] if self.objectives else None,
+            }
+            self.history_manager.update_step_status(
+                self.run_id,
+                1,
+                TaskStatus.FAILED,
+                result_data=failure_payload,
+                error_message=user_message,
+            )
+            self.history_manager.complete_task(
+                self.run_id,
+                result_data=failure_payload,
+                error_message=user_message,
+                status=TaskStatus.FAILED,
+            )
+            self.event_bus.step_failed.emit(1, user_message)
+            self.event_bus.emit_status(user_message, "error")
+            self.event_bus.execution_complete.emit(failure_payload)
+            self.event_bus.execution_ended.emit()
+            self.event_bus.run_ended.emit(self.run_id)
+            return
+        finally:
+            await bridge.shutdown()
+
+        metadata = result_payload.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        output_text = str(
+            metadata.get("output")
+            or result_payload.get("error")
+            or result_payload.get("status")
+            or ""
+        )
+        step_result = {
+            "status": str(result_payload.get("status") or "unknown"),
+            "category": str(result_payload.get("category") or ""),
+            "output": output_text,
+        }
+        succeeded = step_result["status"] == "success"
+        terminal_status = TaskStatus.COMPLETED if succeeded else TaskStatus.FAILED
+
+        for index, step in enumerate(finalized_objectives, start=1):
+            if index > 1:
+                self.event_bus.step_started.emit(index, step)
+            if succeeded:
+                self.history_manager.update_step_status(
+                    self.run_id,
+                    index,
+                    TaskStatus.COMPLETED,
+                    result_data=step_result,
+                )
+                self.event_bus.step_completed.emit(index, step_result)
+            else:
+                self.history_manager.update_step_status(
+                    self.run_id,
+                    index,
+                    TaskStatus.FAILED,
+                    result_data=step_result,
+                    error_message=output_text or "Execution failed.",
+                )
+                self.event_bus.step_failed.emit(index, output_text or "Execution failed.")
+
+        # Build complete result data with all metadata
+        complete_result_data = {
+            "status": step_result["status"],
+            "category": step_result["category"],
+            "output": output_text,
+            "target_server": target_server,
+        }
+        
+        # Include full metadata from TaskResult (contains health_check_error, etc.)
+        if metadata:
+            complete_result_data["metadata"] = metadata
+        
+        # Include error details if present in result_payload
+        if "error" in result_payload:
+            complete_result_data["error"] = result_payload["error"]
+        
+        self.history_manager.complete_task(
+            self.run_id,
+            result_data=complete_result_data,
+            error_message=None if succeeded else (output_text or "Execution failed."),
+            status=terminal_status,
+        )
+
+        summary = {
+            "status": step_result["status"],
+            "category": step_result["category"],
+            "target_server": target_server,
+            "domain": normalized_domain,
+            "objective_count": len(finalized_objectives),
+        }
+        self.event_bus.task_result_ready.emit(output_text or "Execution finished.", summary)
+        self.event_bus.execution_complete.emit({
+            "status": step_result["status"],
+            "category": step_result["category"],
+            "output": output_text,
+            "target_server": target_server,
+            "domain": normalized_domain,
+        })
+        self.event_bus.execution_ended.emit()
+        self.event_bus.run_ended.emit(self.run_id)
 
 
 class OrchestratorCore(QObject):
@@ -600,7 +769,10 @@ class OrchestratorCore(QObject):
         provider = make_provider(provider_name, api_key)
         try:
             planner = MacroPlanner(provider, registry=PromptRegistry(provider_name))
-            domain = self._detect_domain(task_summary)
+            bridge = TrinityBridge()
+            # Note: bridge initialization is needed for deep suggestion, 
+            # but we use coarse fallback if not initialized.
+            domain = bridge.suggest_domain(task_summary)
             plan = await planner.generate_plan(task_summary, domain)
             return [step.strip() for step in plan.steps if step.strip()] or [task_summary]
         finally:
@@ -610,16 +782,4 @@ class OrchestratorCore(QObject):
 
     def _detect_domain(self, description: str) -> str:
         """Infer a coarse execution domain for pre-run objective generation."""
-        lowered = description.lower()
-        web_tokens = ("browser", "website", "google", "navigate", "search", "wikipedia", "web page", "url", "site", "github", "go to", "repo", "http", "www", ".com", "open issue", "open bug")
-        desktop_tokens = ("notepad", "calculator", "window", "desktop", "application", "tab")
-        cli_tokens = ("directory", "terminal", "command", "shell", "powershell", "cmd", "files in current directory")
-        hits = {
-            "web": any(token in lowered for token in web_tokens),
-            "desktop": any(token in lowered for token in desktop_tokens),
-            "cli": any(token in lowered for token in cli_tokens),
-        }
-        matched = [domain for domain, active in hits.items() if active]
-        if len(matched) > 1:
-            return "mixed"
-        return matched[0] if matched else "cli"
+        return TrinityBridge().suggest_domain(description)

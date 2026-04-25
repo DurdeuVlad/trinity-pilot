@@ -132,11 +132,29 @@ def test_run_preflight_closes_provider_on_success(monkeypatch):
 
     monkeypatch.setattr(app_main, "make_provider", lambda *args, **kwargs: FakeProvider())
     monkeypatch.setattr(app_main, "_load_cli_planner_class", lambda: FakePlanner)
+    monkeypatch.setattr(app_main, "_resolve_core_openai_api_key", lambda: "openai-live-key")
+    monkeypatch.setattr(app_main, "_ensure_core_execution_key", lambda: None)
 
     readiness = asyncio.run(app_main.run_preflight(config))
 
     assert readiness.ready is True
     assert seen == {"probe": True, "close": True, "planner_probe": True}
+
+
+def test_run_preflight_blocks_when_core_openai_key_missing(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="gemini",
+        api_key="live-key",
+        key_source="environment",
+        env_path=None,
+    )
+    monkeypatch.setattr(app_main, "_resolve_core_openai_api_key", lambda: "")
+
+    readiness = asyncio.run(app_main.run_preflight(config))
+
+    assert readiness.ready is False
+    assert readiness.block_task_submission is True
+    assert "OpenAI API key missing" in readiness.user_message
 
 
 def test_run_preflight_closes_provider_on_failure(monkeypatch):
@@ -156,11 +174,29 @@ def test_run_preflight_closes_provider_on_failure(monkeypatch):
             seen["close"] = True
 
     monkeypatch.setattr(app_main, "make_provider", lambda *args, **kwargs: FakeProvider())
+    monkeypatch.setattr(app_main, "_resolve_core_openai_api_key", lambda: "openai-live-key")
+    monkeypatch.setattr(app_main, "_ensure_core_execution_key", lambda: None)
 
     readiness = asyncio.run(app_main.run_preflight(config))
 
     assert readiness.ready is False
     assert seen["close"] is True
+
+
+def test_evaluate_startup_readiness_blocks_when_core_openai_key_missing(monkeypatch):
+    config = app_main.StartupConfig(
+        provider_name="gemini",
+        api_key="live-key",
+        key_source="environment",
+        env_path=None,
+    )
+    monkeypatch.setattr(app_main, "_resolve_core_openai_api_key", lambda: "")
+
+    readiness = app_main.evaluate_startup_readiness(config)
+
+    assert readiness.ready is False
+    assert readiness.block_task_submission is True
+    assert "OpenAI API key missing" in readiness.user_message
 
 
 def test_run_preflight_with_retries_succeeds_after_transient_failure(monkeypatch):

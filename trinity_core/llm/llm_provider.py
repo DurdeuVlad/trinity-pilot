@@ -1,7 +1,8 @@
-"""Minimal LLM provider abstraction with tool-calling response format."""
+"""Abstract LLM provider interface for Trinity Core tool-calling runtimes."""
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,11 +27,26 @@ class LLMResponse:
         return bool(self.text) and not self.tool_calls
 
 
-class LLMProvider:
-    """Provider interface used by runtimes for iterative tool selection."""
+class LLMProvider(ABC):
+    """Strategy interface for all LLM backends used by Trinity Core runtimes.
 
+    Symmetric to TrinityMCPServer: enforces a contract, delegates
+    vendor-specific details to concrete subclasses.
+    """
+
+    @abstractmethod
     async def call(self, messages: list[dict], tools: dict[str, Any]) -> LLMResponse:
-        """Return a text response by default, intended to be replaced in production."""
-        if not messages:
-            return LLMResponse(text="No objective provided.")
-        return LLMResponse(text="Execution complete.")
+        """Send messages + available tools; return text or tool-call response."""
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str:
+        """Short identifier, e.g. 'gemini' or 'openai'."""
+
+    @abstractmethod
+    async def probe(self) -> None:
+        """Cheap liveness check. Raises with a descriptive message on failure."""
+
+    async def close(self) -> None:
+        """Release provider resources. Override if the client holds connections."""
+        return None

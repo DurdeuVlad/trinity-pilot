@@ -1,63 +1,54 @@
-"""CLI domain tools built on top of CLIAdapter."""
+"""CLI MCP tools wired directly to CLI execution primitives."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import sys
 import time
-import uuid
+from pathlib import Path
 from typing import Any
 
-from ..adapters.cli import CLIAdapter
-from ..models import TaskInput
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CLI_MODULE_ROOT = PROJECT_ROOT / "cli-automation-poc"
+if str(CLI_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CLI_MODULE_ROOT))
+
+from cli_executor import CLIExecutor  # type: ignore[import-not-found]
+
 from .base import Tool, ToolResult
 
 
-class _CLITool(Tool):
-    def __init__(self, adapter: CLIAdapter) -> None:
-        self.adapter = adapter
-        self._last_output = ""
-
-    async def _run_adapter(self, description: str, context: dict[str, Any] | None = None) -> ToolResult:
-        try:
-            task = TaskInput(
-                task_id=f"tool-cli-{uuid.uuid4().hex[:12]}",
-                description=description,
-                domain="cli",
-                context=context or {},
-            )
-            result = await self.adapter.execute(task)
-            if result.status == "success":
-                self._last_output = (result.error or "") if result.error else str(result.metadata)
-                output_data = {"success": True, **result.metadata}
-                return ToolResult(status="success", output=json.dumps(output_data), metadata=result.metadata)
-            error_msg = result.error or "cli task failed"
-            output_data = {"success": False, "error_code": "CLI_TASK_FAILED", "message": error_msg}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error=error_msg,
-                error_code="CLI_TASK_FAILED",
-                retryable=True,
-            )
-        except Exception as exc:
-            output_data = {"success": False, "error_code": "EXCEPTION", "message": str(exc)}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error=str(exc),
-                error_code="EXCEPTION",
-                retryable=False,
-            )
+class _CLISession:
+    def __init__(self) -> None:
+        self.executor = CLIExecutor(timeout=120)
+        self.last_output = ""
 
 
-class CLIRunCommandTool(_CLITool):
+def _success_payload(**payload: Any) -> ToolResult:
+    return ToolResult(status="success", output=json.dumps({"success": True, **payload}), metadata=payload)
+
+
+def _error_payload(message: str, *, code: str, retryable: bool) -> ToolResult:
+    return ToolResult(
+        status="error",
+        output=json.dumps({"success": False, "error_code": code, "message": message}),
+        error=message,
+        error_code=code,
+        retryable=retryable,
+    )
+
+
+class CLIRunCommandTool(Tool):
+    def __init__(self, session: _CLISession) -> None:
+        self.session = session
+
     def name(self) -> str:
         return "run_command"
 
     def description(self) -> str:
-        return "Run a shell command"
+        return "Run a PowerShell command directly."
 
     def parameters(self) -> dict[str, Any]:
         return {
@@ -69,55 +60,71 @@ class CLIRunCommandTool(_CLITool):
             "required": ["command"],
         }
 
+    def annotations(self) -> dict:
+        return {"title": "Run Command", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+
     async def execute(self, **kwargs: Any) -> ToolResult:
-        if "command" not in kwargs:
-            output_data = {"success": False, "error_code": "INVALID_ARG", "message": "Missing required parameter: command"}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error="Missing required parameter: command",
-                error_code="INVALID_ARG",
+        command = str(kwargs["command"])
+        if bool(kwargs.get("async_mode", False)):
+            return _error_payload(
+                "async_mode is disabled until objective-scoped process cleanup is implemented.",
+                code="ASYNC_MODE_UNSUPPORTED",
                 retryable=False,
             )
-        command = str(kwargs["command"])
-        async_mode = bool(kwargs.get("async_mode", False))
-        if async_mode:
-            process_id = f"async-process:{uuid.uuid4().hex[:8]}"
-            output_data = {"success": True, "process_id": process_id}
-            return ToolResult(status="success", output=json.dumps(output_data))
-        return await self._run_adapter(f"Run this command and return output: {command}")
+
+        result = await asyncio.to_thread(self.session.executor.execute_command, command)
+        combined_output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        self.session.last_output = combined_output
+        if result.exit_code != 0:
+            return _error_payload(
+                combined_output or f"Command exited with code {result.exit_code}",
+                code="CLI_COMMAND_FAILED",
+                retryable=True,
+            )
+        return _success_payload(
+            command=command,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+        )
 
 
-class CLIReadOutputTool(_CLITool):
+class CLIReadOutputTool(Tool):
+    def __init__(self, session: _CLISession) -> None:
+        self.session = session
+
     def name(self) -> str:
         return "read_output"
 
     def description(self) -> str:
-        return "Read output from the last CLI command"
+        return "Read output from the most recent CLI command."
 
     def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {}, "required": []}
+        return {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+
+    def annotations(self) -> dict:
+        return {"title": "Read Output", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        if not self._last_output:
-            output_data = {"success": False, "error_code": "NO_OUTPUT", "message": "No output is available"}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error="No output is available",
-                error_code="NO_OUTPUT",
-                retryable=False,
-            )
-        output_data = {"success": True, "output": self._last_output}
-        return ToolResult(status="success", output=json.dumps(output_data))
+        if not self.session.last_output:
+            return _error_payload("No output is available.", code="NO_OUTPUT", retryable=False)
+        return _success_payload(output=self.session.last_output)
 
 
-class CLIWaitForOutputTool(_CLITool):
+class CLIWaitForOutputTool(Tool):
+    def __init__(self, session: _CLISession) -> None:
+        self.session = session
+
     def name(self) -> str:
         return "wait_for_output"
 
     def description(self) -> str:
-        return "Wait until command output contains specific text"
+        return "Wait until output contains specific text."
 
     def parameters(self) -> dict[str, Any]:
         return {
@@ -129,85 +136,30 @@ class CLIWaitForOutputTool(_CLITool):
             "required": ["text"],
         }
 
+    def annotations(self) -> dict:
+        return {"title": "Wait for Output", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+
     async def execute(self, **kwargs: Any) -> ToolResult:
-        if "text" not in kwargs:
-            output_data = {"success": False, "error_code": "INVALID_ARG", "message": "Missing required parameter: text"}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error="Missing required parameter: text",
-                error_code="INVALID_ARG",
-                retryable=False,
-            )
         text = str(kwargs["text"])
         timeout = float(kwargs.get("timeout", 30))
-        try:
-            await self.adapter.wait_for_output_contains(text=text, timeout=timeout)
-            output_data = {"success": True, "text": text}
-            return ToolResult(status="success", output=json.dumps(output_data))
-        except Exception as exc:
-            error_msg = f"Timed out waiting for output '{text}': {exc}"
-            output_data = {"success": False, "error_code": "TIMEOUT", "message": error_msg}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error=error_msg,
-                error_code="TIMEOUT",
-                retryable=True,
-            )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if text in self.session.last_output:
+                return _success_payload(text=text)
+            await asyncio.sleep(0.5)
+        return _error_payload(
+            f"Timed out waiting for output '{text}'.",
+            code="CLI_OUTPUT_TIMEOUT",
+            retryable=True,
+        )
 
 
-class CLIWaitForProcessTool(_CLITool):
-    def name(self) -> str:
-        return "wait_for_process"
-
-    def description(self) -> str:
-        return "Wait for a process to exit"
-
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "process_id": {"type": "string"},
-                "timeout": {"type": "number", "default": 60},
-            },
-            "required": ["process_id"],
-        }
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        if "process_id" not in kwargs:
-            output_data = {"success": False, "error_code": "INVALID_ARG", "message": "Missing required parameter: process_id"}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error="Missing required parameter: process_id",
-                error_code="INVALID_ARG",
-                retryable=False,
-            )
-        process_id = str(kwargs["process_id"])
-        timeout = float(kwargs.get("timeout", 60))
-        try:
-            await self.adapter.wait_for_process_exit(process_id=process_id, timeout=timeout)
-            output_data = {"success": True, "process_id": process_id}
-            return ToolResult(status="success", output=json.dumps(output_data))
-        except Exception as exc:
-            error_msg = f"Timed out waiting for process {process_id}: {exc}"
-            output_data = {"success": False, "error_code": "TIMEOUT", "message": error_msg}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error=error_msg,
-                error_code="TIMEOUT",
-                retryable=True,
-            )
-
-
-class CLIWaitForFileTool(_CLITool):
+class CLIWaitForFileTool(Tool):
     def name(self) -> str:
         return "wait_for_file"
 
     def description(self) -> str:
-        return "Wait for a file condition"
+        return "Wait for a file condition."
 
     def parameters(self) -> dict[str, Any]:
         return {
@@ -220,45 +172,37 @@ class CLIWaitForFileTool(_CLITool):
             "required": ["file_path"],
         }
 
+    def annotations(self) -> dict:
+        return {"title": "Wait for File", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+
     async def execute(self, **kwargs: Any) -> ToolResult:
-        if "file_path" not in kwargs:
-            output_data = {"success": False, "error_code": "INVALID_ARG", "message": "Missing required parameter: file_path"}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error="Missing required parameter: file_path",
-                error_code="INVALID_ARG",
-                retryable=False,
-            )
         file_path = str(kwargs["file_path"])
-        condition = str(kwargs.get("condition", "exists"))
+        condition = str(kwargs.get("condition", "exists")).lower()
         timeout = float(kwargs.get("timeout", 30))
-        try:
-            await self.adapter.wait_for_file_condition(
-                file_path=file_path,
-                condition=condition,
-                timeout=timeout,
-            )
-            output_data = {"success": True, "file_path": file_path, "condition": condition}
-            return ToolResult(status="success", output=json.dumps(output_data))
-        except Exception as exc:
-            error_msg = f"Timed out waiting for file condition: {exc}"
-            output_data = {"success": False, "error_code": "TIMEOUT", "message": error_msg}
-            return ToolResult(
-                status="error",
-                output=json.dumps(output_data),
-                error=error_msg,
-                error_code="TIMEOUT",
-                retryable=True,
-            )
+        deadline = time.time() + timeout
+        initial_mtime = os.path.getmtime(file_path) if os.path.exists(file_path) else None
+        while time.time() < deadline:
+            exists = os.path.exists(file_path)
+            if condition == "exists" and exists:
+                return _success_payload(file_path=file_path, condition=condition)
+            if condition == "modified" and exists and initial_mtime is not None and os.path.getmtime(file_path) > initial_mtime:
+                return _success_payload(file_path=file_path, condition=condition)
+            if condition == "size" and exists and os.path.getsize(file_path) > 0:
+                return _success_payload(file_path=file_path, condition=condition)
+            await asyncio.sleep(0.5)
+        return _error_payload(
+            f"Timed out waiting for file condition '{condition}' on '{file_path}'.",
+            code="CLI_FILE_TIMEOUT",
+            retryable=True,
+        )
 
 
-def build_cli_tools(adapter: CLIAdapter) -> dict[str, Tool]:
+def build_cli_tools() -> dict[str, Tool]:
+    session = _CLISession()
     tools: list[Tool] = [
-        CLIRunCommandTool(adapter),
-        CLIReadOutputTool(adapter),
-        CLIWaitForOutputTool(adapter),
-        CLIWaitForProcessTool(adapter),
-        CLIWaitForFileTool(adapter),
+        CLIRunCommandTool(session),
+        CLIReadOutputTool(session),
+        CLIWaitForOutputTool(session),
+        CLIWaitForFileTool(),
     ]
     return {tool.name(): tool for tool in tools}

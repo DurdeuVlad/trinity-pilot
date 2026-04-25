@@ -1,141 +1,74 @@
-import os
-import sys
-import time
+import asyncio
 import logging
-import subprocess
-from pathlib import Path
 from typing import Optional
-import httpx
+
+from .trinity_bridge import TrinityBridge
 
 logger = logging.getLogger(__name__)
 
 
 class ServiceManager:
-    """Manages lifecycle of the three module services."""
-    
+    """Compatibility shim that reflects Core-visible MCP health.
+
+    The desktop no longer launches legacy module-service subprocesses. The
+    current product path executes through Trinity Core, so this manager now
+    verifies Core availability and reports health for the selected MCP targets.
+    """
+
     def __init__(self):
-        self.desktop_process: Optional[subprocess.Popen] = None
-        self.cli_process: Optional[subprocess.Popen] = None
-        self.browser_process: Optional[subprocess.Popen] = None
-        
-        self.project_root = Path(__file__).parent.parent.parent
-        self.desktop_script = self.project_root / "api-accessibility-poc" / "desktop_module_service.py"
-        self.cli_script = self.project_root / "cli-automation-poc" / "cli_module_service.py"
-        self.browser_script = self.project_root / "browser-gui-automation" / "browser_module_service.py"
-        
-        self.desktop_port = int(os.getenv("DESKTOP_SERVICE_PORT", "8101"))
-        self.cli_port = int(os.getenv("CLI_SERVICE_PORT", "8102"))
-        self.browser_port = int(os.getenv("BROWSER_SERVICE_PORT", "8103"))
-    
+        self._bridge: Optional[TrinityBridge] = None
+
+    async def _ensure_bridge(self) -> TrinityBridge:
+        if self._bridge is None:
+            self._bridge = TrinityBridge()
+            await self._bridge.initialize()
+        return self._bridge
+
+    async def _get_health_map(self) -> dict:
+        try:
+            bridge = await self._ensure_bridge()
+            capabilities = await bridge.get_capabilities()
+            return {
+                "desktop": {"status": "ok" if "desktop" in capabilities else "unavailable", "data": capabilities.get("desktop")},
+                "cli": {"status": "ok" if "cli" in capabilities else "unavailable", "data": capabilities.get("cli")},
+                "browser": {"status": "ok" if "web" in capabilities else "unavailable", "data": capabilities.get("web")},
+            }
+        except Exception as exc:
+            message = str(exc)
+            logger.error("Trinity Core health check failed: %s", message, exc_info=True)
+            return {
+                "desktop": {"status": "unavailable", "error": message},
+                "cli": {"status": "unavailable", "error": message},
+                "browser": {"status": "unavailable", "error": message},
+            }
+
+    def _run_async(self, coro):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        raise RuntimeError(
+            "ServiceManager sync methods cannot be called from a running event loop. "
+            "Use the async helpers instead."
+        ) from None
+
     def start_all(self, max_wait_per_service: float = 10.0) -> bool:
+        """Verify Trinity Core and the MCP targets are reachable.
+
+        The legacy module-service subprocesses were removed from the supported
+        runtime, so this is now a readiness check rather than a process launcher.
         """
-        Start all three module services and wait for health checks.
-        
-        Args:
-            max_wait_per_service: Maximum seconds to wait for each service to be ready
-            
-        Returns:
-            True if all services started successfully, False otherwise
-        """
-        logger.info("Starting module services...")
-        
-        services = [
-            ("Desktop", self.desktop_script, self.desktop_port, "desktop_process"),
-            ("CLI", self.cli_script, self.cli_port, "cli_process"),
-            ("Browser", self.browser_script, self.browser_port, "browser_process")
-        ]
-        
-        for name, script, port, attr_name in services:
-            if not script.exists():
-                logger.error(f"{name} service script not found: {script}")
-                return False
-            
-            logger.info(f"Starting {name} service on port {port}...")
-            try:
-                process = subprocess.Popen(
-                    [sys.executable, str(script)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=script.parent
-                )
-                setattr(self, attr_name, process)
-                
-                if not self._wait_for_health(name, port, max_wait_per_service):
-                    logger.error(f"{name} service failed to start")
-                    return False
-                
-                logger.info(f"{name} service ready on port {port}")
-                
-            except Exception as e:
-                logger.error(f"Failed to start {name} service: {e}", exc_info=True)
-                return False
-        
-        logger.info("All module services started successfully")
-        return True
-    
-    def _wait_for_health(self, name: str, port: int, max_wait: float) -> bool:
-        """Poll health endpoint until ready or timeout."""
-        url = f"http://127.0.0.1:{port}/health"
-        deadline = time.monotonic() + max_wait
-        
-        while time.monotonic() < deadline:
-            try:
-                response = httpx.get(url, timeout=2.0)
-                if response.status_code == 200:
-                    return True
-            except Exception:
-                pass
-            time.sleep(0.5)
-        
-        return False
-    
+        del max_wait_per_service
+        health = self._run_async(self._get_health_map())
+        return all(entry.get("status") == "ok" for entry in health.values())
+
     def stop_all(self):
-        """Stop all running module services."""
-        logger.info("Stopping module services...")
-        
-        for name, attr_name in [
-            ("Desktop", "desktop_process"),
-            ("CLI", "cli_process"),
-            ("Browser", "browser_process")
-        ]:
-            process = getattr(self, attr_name)
-            if process:
-                logger.info(f"Stopping {name} service...")
-                process.terminate()
-                try:
-                    process.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"{name} service did not terminate, killing...")
-                    process.kill()
-                setattr(self, attr_name, None)
-        
-        logger.info("All module services stopped")
-    
+        """Release Core-side resources. No subprocesses are launched anymore."""
+        if self._bridge is None:
+            return
+        self._run_async(self._bridge.shutdown())
+        self._bridge = None
+
     def health_check_all(self) -> dict:
-        """
-        Check health of all three module services.
-        
-        Returns:
-            dict with service names as keys and health status as values
-        """
-        results = {}
-        
-        for name, port in [
-            ("desktop", self.desktop_port),
-            ("cli", self.cli_port),
-            ("browser", self.browser_port)
-        ]:
-            url = f"http://127.0.0.1:{port}/health"
-            try:
-                response = httpx.get(url, timeout=2.0)
-                results[name] = {
-                    "status": "ok" if response.status_code == 200 else "error",
-                    "data": response.json() if response.status_code == 200 else None
-                }
-            except Exception as e:
-                results[name] = {
-                    "status": "unavailable",
-                    "error": str(e)
-                }
-        
-        return results
+        """Return health for the Core-visible MCP targets."""
+        return self._run_async(self._get_health_map())

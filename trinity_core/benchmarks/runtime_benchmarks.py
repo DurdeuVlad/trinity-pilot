@@ -1,25 +1,21 @@
-"""Runtime benchmark scenarios for browser, desktop, and CLI domains.
+"""MCP strategy runtime benchmark scenarios for browser, desktop, and CLI domains.
 
-These benchmarks use lightweight in-process stubs rather than live backends so
-they can be run in a standard CI environment.  The measurements exercise the
-runtime loop overhead (session management, tool dispatch, reviewer path) and
-are useful for detecting regressions.
-
-Live comparison (runtime vs adapter) is handled by ``PerformanceTracker`` in
-the audit-debugger.
+These benchmarks use the shared MCP-first runtime against the fake strategy
+server so they measure the active orchestration path rather than the retired
+adapter/reviewer runtimes.
 """
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from ..llm.llm_provider import LLMResponse, ToolCall
+from ..mcp_strategy_runtime import MCPStrategyRuntime
 from ..models import TaskInput
-from ..orchestrators.browser_runtime import BrowserRuntime
-from ..orchestrators.cli_runtime import CLIRuntime
-from ..orchestrators.desktop_runtime import DesktopRuntime
-from ..orchestrators.review_types import ReviewResult
+from ..strategy_registry import MCPStrategy
 from .benchmark_framework import Benchmark, BenchmarkResult
 
 
@@ -42,147 +38,78 @@ class _CountingLLM:
             return LLMResponse(tool_calls=[ToolCall(id="1", name=self._tool_name, arguments=self._tool_args)])
         return LLMResponse(text=self._text)
 
-
-class _InstantApproveReviewer:
-    async def review(self, *args: Any, **kwargs: Any) -> ReviewResult:
-        return ReviewResult(approved=True, feedback="ok")
+_FAKE_SERVER = Path(__file__).resolve().parents[1] / "tests" / "fake_strategy_server.py"
 
 
-# ---------------------------------------------------------------------------
-# Browser benchmark
-# ---------------------------------------------------------------------------
+class _StrategyRuntimeBenchmark(Benchmark):
+    strategy_name: str
+    domain: str
+    tool_name: str
+    tool_args: dict[str, Any]
+    description: str
 
-class _BrowserAdapter:
-    async def navigate(self, url: str) -> None: ...
-    async def click(self, selector: str) -> None: ...
-    async def type_text(self, selector: str, text: str) -> None: ...
-    async def extract_text(self, selector: str) -> str: return ""
-    async def screenshot(self) -> bytes: return b""
-    async def wait_for_selector(self, selector: str, timeout: float = 10.0, state: str = "visible") -> None: ...
-    async def wait_for_load_state(self, wait_until: str = "load", timeout: float = 30.0) -> None: ...
-    async def get_current_url(self) -> str: return "https://example.com"
+    def __init__(self) -> None:
+        self._llm: _CountingLLM | None = None
+        self._strategy: MCPStrategy | None = None
+
+    def setup(self) -> None:
+        self._llm = _CountingLLM(self.tool_name, self.tool_args)
+        self._strategy = MCPStrategy(
+            strategy_id=self.strategy_name,
+            server_command=sys.executable,
+            server_args=[str(_FAKE_SERVER)],
+            domain=self.domain,
+            display_name=self.strategy_name,
+            description=f"{self.strategy_name} benchmark strategy",
+        )
+
+    async def run(self) -> BenchmarkResult:
+        assert self._llm is not None
+        assert self._strategy is not None
+        self._llm.calls = 0
+        runtime = MCPStrategyRuntime(strategy=self._strategy, llm_provider=self._llm)
+        try:
+            t0 = time.monotonic()
+            result = await runtime.execute(
+                TaskInput(task_id=f"bench-{self.strategy_name}", description=self.description, domain=self.domain)
+            )
+            duration_ms = (time.monotonic() - t0) * 1000
+            return BenchmarkResult(
+                task_name=self.name,
+                duration_ms=duration_ms,
+                llm_calls=self._llm.calls,
+                tool_calls=1,
+                success=result.status == "success",
+            )
+        finally:
+            await runtime.close()
+
+    def teardown(self) -> None:
+        self._strategy = None
 
 
-class BrowserRuntimeBenchmark(Benchmark):
-    """Benchmark: browser runtime single-tool task (navigate + text response)."""
-
+class BrowserRuntimeBenchmark(_StrategyRuntimeBenchmark):
     name = "browser_runtime_single_tool"
-
-    def __init__(self) -> None:
-        self._llm: _CountingLLM | None = None
-
-    def setup(self) -> None:
-        self._llm = _CountingLLM("navigate", {"url": "https://www.example.com"})
-
-    async def run(self) -> BenchmarkResult:
-        assert self._llm is not None
-        self._llm.calls = 0
-        t0 = time.monotonic()
-        runtime = BrowserRuntime(
-            adapter=_BrowserAdapter(),  # type: ignore[arg-type]
-            llm_provider=self._llm,
-            reviewer=_InstantApproveReviewer(),  # type: ignore[arg-type]
-        )
-        task = TaskInput(task_id="bench-browser", description="Navigate to example.com and search for python", domain="web")
-        # Metrics writes go to a temp path; capture tool/llm counts from llm stub.
-        result = await runtime.execute(task)
-        duration_ms = (time.monotonic() - t0) * 1000
-        return BenchmarkResult(
-            task_name=self.name,
-            duration_ms=duration_ms,
-            llm_calls=self._llm.calls,
-            tool_calls=1,
-            success=result.status == "success",
-        )
+    strategy_name = "browser-bench"
+    domain = "web"
+    tool_name = "inspect_state"
+    tool_args = {}
+    description = "Inspect browser state"
 
 
-# ---------------------------------------------------------------------------
-# Desktop benchmark
-# ---------------------------------------------------------------------------
-
-class _DesktopAdapter:
-    async def open_app(self, app_name: str) -> None: ...
-    async def click(self, element_id: str) -> None: ...
-    async def type_text(self, element_id: str, text: str) -> None: ...
-    async def focus_window(self, window_title: str) -> None: ...
-    async def wait_for_process(self, process_name: str, timeout: float = 10.0) -> None: ...
-    async def wait_for_window_title(self, title: str, timeout: float = 10.0) -> None: ...
-    async def wait_for_ui_element(self, element_id: str, timeout: float = 10.0) -> None: ...
-    async def wait_for_text_in_window(self, window_title: str, text: str, timeout: float = 10.0) -> None: ...
-
-
-class DesktopRuntimeBenchmark(Benchmark):
-    """Benchmark: desktop runtime single-tool task (open_app + text response)."""
-
+class DesktopRuntimeBenchmark(_StrategyRuntimeBenchmark):
     name = "desktop_runtime_single_tool"
-
-    def __init__(self) -> None:
-        self._llm: _CountingLLM | None = None
-
-    def setup(self) -> None:
-        self._llm = _CountingLLM("open_app", {"app_name": "Notepad"})
-
-    async def run(self) -> BenchmarkResult:
-        assert self._llm is not None
-        self._llm.calls = 0
-        t0 = time.monotonic()
-        runtime = DesktopRuntime(
-            adapter=_DesktopAdapter(),  # type: ignore[arg-type]
-            llm_provider=self._llm,
-            reviewer=_InstantApproveReviewer(),  # type: ignore[arg-type]
-        )
-        task = TaskInput(task_id="bench-desktop", description="Open Notepad and type Hello World", domain="desktop")
-        result = await runtime.execute(task)
-        duration_ms = (time.monotonic() - t0) * 1000
-        return BenchmarkResult(
-            task_name=self.name,
-            duration_ms=duration_ms,
-            llm_calls=self._llm.calls,
-            tool_calls=1,
-            success=result.status == "success",
-        )
+    strategy_name = "desktop-bench"
+    domain = "desktop"
+    tool_name = "inspect_window"
+    tool_args = {}
+    description = "Inspect desktop state"
 
 
-# ---------------------------------------------------------------------------
-# CLI benchmark
-# ---------------------------------------------------------------------------
-
-class _CLIAdapter:
-    async def run_command(self, command: str, timeout: float = 30.0) -> tuple[int, str, str]:
-        return 0, "output", ""
-    async def read_output(self, process_id: str) -> str: return "output"
-    async def wait_for_output_contains(self, process_id: str, text: str, timeout: float = 30.0) -> None: ...
-    async def wait_for_process_exit(self, process_id: str, timeout: float = 30.0) -> int: return 0
-    async def wait_for_file_condition(self, path: str, condition: str, timeout: float = 30.0) -> None: ...
-
-
-class CLIRuntimeBenchmark(Benchmark):
-    """Benchmark: CLI runtime single-tool task (run_command + text response)."""
-
+class CLIRuntimeBenchmark(_StrategyRuntimeBenchmark):
     name = "cli_runtime_single_tool"
-
-    def __init__(self) -> None:
-        self._llm: _CountingLLM | None = None
-
-    def setup(self) -> None:
-        self._llm = _CountingLLM("run_command", {"command": "dir"})
-
-    async def run(self) -> BenchmarkResult:
-        assert self._llm is not None
-        self._llm.calls = 0
-        t0 = time.monotonic()
-        runtime = CLIRuntime(
-            adapter=_CLIAdapter(),  # type: ignore[arg-type]
-            llm_provider=self._llm,
-            reviewer=_InstantApproveReviewer(),  # type: ignore[arg-type]
-        )
-        task = TaskInput(task_id="bench-cli", description="Run dir command and wait for output", domain="cli")
-        result = await runtime.execute(task)
-        duration_ms = (time.monotonic() - t0) * 1000
-        return BenchmarkResult(
-            task_name=self.name,
-            duration_ms=duration_ms,
-            llm_calls=self._llm.calls,
-            tool_calls=1,
-            success=result.status == "success",
-        )
+    strategy_name = "cli-bench"
+    domain = "cli"
+    tool_name = "echo"
+    tool_args = {"text": "benchmark output"}
+    description = "Echo benchmark output"

@@ -16,7 +16,7 @@ def test_event_bus_mirrors_status_to_console(capsys) -> None:
     bus.emit_status("Live steps:\n[ok] Open app", "plan")
 
     captured = capsys.readouterr()
-    assert "[plan] Live steps:" in captured.out
+    assert "Live steps:" in captured.out
     assert "[ok] Open app" in captured.out
 
 

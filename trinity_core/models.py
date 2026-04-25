@@ -3,6 +3,8 @@ from typing import Any, Optional, List, Dict, Literal
 from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
+import traceback as tb
+import logging
 
 # Canonical failure code map — machine-readable codes keyed by category.
 _FAILURE_CODE_MAP: dict[str, str] = {
@@ -28,20 +30,133 @@ def is_retriable(category: str) -> bool:
     return category in _RETRIABLE_CATEGORIES
 
 
+class StructuredError(BaseModel):
+    """Structured error with full context for debugging.
+    
+    This model captures errors at any layer with complete context,
+    allowing error chains to be preserved and surfaced in logs and reports.
+    """
+    layer: str = Field(..., description="Layer where error occurred (mcp_runtime, trinity_core, orchestrator, provider, ui)")
+    phase: str = Field(..., description="Operation phase (health_check, execution, initialization, tool_call, etc.)")
+    error_type: str = Field(..., description="Exception class name")
+    message: str = Field(..., description="Human-readable error message")
+    traceback: str = Field(..., description="Full stack trace")
+    context: Dict[str, Any] = Field(default_factory=dict, description="Layer-specific context")
+    underlying_error: Optional['StructuredError'] = Field(None, description="Underlying error in the chain")
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat(), description="When error occurred")
+    
+    def enrich(self, **kwargs: Any) -> 'StructuredError':
+        """Enrich error context with additional fields."""
+        self.context.update(kwargs)
+        return self
+    
+    def format_for_user(self) -> str:
+        """Format error chain for user display."""
+        lines = [f"Error in {self.layer} ({self.phase}): {self.message}"]
+        if self.underlying_error:
+            lines.append(f"  Caused by: {self.underlying_error.format_for_user()}")
+        return "\n".join(lines)
+    
+    def format_for_log(self) -> str:
+        """Format full error details for logging."""
+        lines = [
+            f"=== Error in {self.layer} ({self.phase}) ===",
+            f"Type: {self.error_type}",
+            f"Message: {self.message}",
+            f"Timestamp: {self.timestamp}",
+        ]
+        if self.context:
+            lines.append(f"Context: {self.context}")
+        lines.append(f"Traceback:\n{self.traceback}")
+        if self.underlying_error:
+            lines.append(f"\n{self.underlying_error.format_for_log()}")
+        return "\n".join(lines)
+
+
+def create_structured_error(
+    exc: Exception,
+    layer: str,
+    phase: str,
+    context: Optional[Dict[str, Any]] = None,
+    underlying: Optional[StructuredError] = None,
+) -> StructuredError:
+    """Create a StructuredError from an exception.
+    
+    Args:
+        exc: The exception to wrap
+        layer: Layer where error occurred
+        phase: Operation phase
+        context: Additional context
+        underlying: Underlying error if this is wrapping another StructuredError
+    
+    Returns:
+        StructuredError with full details
+    """
+    return StructuredError(
+        layer=layer,
+        phase=phase,
+        error_type=exc.__class__.__name__,
+        message=str(exc),
+        traceback=tb.format_exc(),
+        context=context or {},
+        underlying_error=underlying,
+    )
+
+
+def log_structured_error(
+    logger: logging.Logger,
+    error: StructuredError,
+    level: int = logging.ERROR,
+) -> None:
+    """Log a structured error with full context.
+    
+    Args:
+        logger: Logger instance
+        error: StructuredError to log
+        level: Logging level (default ERROR)
+    """
+    logger.log(
+        level,
+        f"Error in {error.layer} ({error.phase}): {error.message}",
+        extra={
+            "layer": error.layer,
+            "phase": error.phase,
+            "error_type": error.error_type,
+            "context": error.context,
+            "timestamp": error.timestamp,
+            "traceback": error.traceback,
+            "has_underlying_error": error.underlying_error is not None,
+        },
+        exc_info=False,  # We already have the traceback
+    )
+
+
+StructuredError.model_rebuild()
+
+
 class TaskInput(BaseModel):
     """Unified input model for all Trinity modules."""
     task_id: str = Field(..., description="Unique task identifier")
     description: str = Field(..., description="Task description in natural language")
     expected_outcome: Optional[str] = Field(None, description="Expected result")
+    objective_steps: List[str] = Field(
+        default_factory=list,
+        description="Desktop-approved objective steps supplied as execution guidance.",
+    )
     verification_checks: List["VerificationCheck"] = Field(
         default_factory=list,
         description="Optional structured postcondition checks supplied by the executor",
     )
-    domain: Literal["web", "desktop", "cli"] = Field(..., description="Execution domain")
+    domain: str = Field(..., description="Execution domain")
+    target_server: Optional[str] = Field(
+        None,
+        description="Explicit MCP server selected by the desktop for this task.",
+    )
     context: Dict = Field(default_factory=dict, description="Domain-specific context")
     max_retries: int = Field(3, description="Maximum retry attempts")
     timeout: Optional[int] = Field(None, description="Timeout in seconds")
     cancel_event: Any = Field(None, description="Optional cooperative cancellation signal")
+
 
 class ExecutionLog(BaseModel):
     """Unified execution log entry."""
@@ -49,8 +164,8 @@ class ExecutionLog(BaseModel):
     action: str
     result: Literal["success", "failure", "skipped"]
     details: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     timestamp: str
-
 
 VerificationStatus = Literal["success", "failure", "unknown", "not_requested"]
 

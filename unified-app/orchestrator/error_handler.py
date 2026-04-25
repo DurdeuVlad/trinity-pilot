@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import traceback
+import sys
+from typing import Any, Dict, Optional
 
 _BACKEND_UNAVAILABLE_MARKERS = (
     "is not available",
@@ -109,11 +112,56 @@ class ErrorHandler:
             primary = f"{primary[:177]}..."
         return primary
 
+    def extract_error_details(self, exc: Exception) -> Dict[str, Any]:
+        """Extract all available error details from exception.
+        
+        This preserves StructuredError details if present, otherwise
+        captures standard exception info with full traceback.
+        
+        Args:
+            exc: Exception to extract details from
+            
+        Returns:
+            Dict with error_type, message, traceback, and any structured_error
+        """
+        details: Dict[str, Any] = {
+            "error_type": exc.__class__.__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        
+        # Check if exception carries StructuredError
+        # (Trinity Core may wrap errors in custom exceptions with .structured_error attribute)
+        if hasattr(exc, 'structured_error'):
+            structured = getattr(exc, 'structured_error')
+            if hasattr(structured, 'model_dump'):
+                details["structured_error"] = structured.model_dump()
+            elif isinstance(structured, dict):
+                details["structured_error"] = structured
+        
+        # Check if exception args contain StructuredError dict
+        if hasattr(exc, 'args') and exc.args:
+            if isinstance(exc.args[0], dict) and 'layer' in exc.args[0]:
+                details["structured_error"] = exc.args[0]
+        
+        # Check for TaskResult with error metadata
+        if hasattr(exc, 'metadata') and isinstance(exc.metadata, dict):
+            details["task_metadata"] = exc.metadata
+        
+        return details
+
     def handle(self, error: Exception, context: str = "", category: str | None = None) -> dict:
-        """Convert exception to structured error payload."""
+        """Convert exception to structured error payload.
+        
+        Now preserves full error details including StructuredError if present.
+        """
         message = str(error) or error.__class__.__name__
         resolved_category = category or self.classify_live_failure(message)
         safe_message = self.build_user_message(message, category=resolved_category)
+        
+        # Extract full error details
+        error_details = self.extract_error_details(error)
+        
         payload = {
             "type": error.__class__.__name__,
             "category": resolved_category,
@@ -121,5 +169,6 @@ class ErrorHandler:
             "context": context,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_message": f"{context}: {safe_message}" if context else safe_message,
+            "error_details": error_details,  # ← NEW: Full error details
         }
         return payload

@@ -1,8 +1,8 @@
 """Task queue for serial execution of non-thread-safe modules."""
 import asyncio
-from typing import Dict, Optional, Tuple
+import inspect
+from typing import Any, Dict, Optional
 import logging
-from .adapter import TaskAdapter
 from .models import TaskInput, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,10 @@ class TaskQueue:
         await self.queue.put(None)  # Sentinel to stop
         
         if self.worker_task:
-            await self.worker_task
+            try:
+                await self.worker_task
+            except asyncio.CancelledError:
+                logger.debug(f"Task queue '{self.name}' worker cancelled during shutdown")
             logger.info(f"Task queue '{self.name}' stopped")
     
     async def _worker_loop(self):
@@ -70,12 +73,20 @@ class TaskQueue:
                     metadata={"queue": self.name}
                 )
             finally:
+                close_method = getattr(adapter, "close", None)
+                if callable(close_method):
+                    try:
+                        close_result = close_method()
+                        if inspect.isawaitable(close_result):
+                            await close_result
+                    except Exception as close_exc:
+                        logger.debug("Task %s adapter close failed: %s", task_id, close_exc)
                 self.queue.task_done()
     
     async def submit(
         self,
         task_id: str,
-        adapter: TaskAdapter,
+        adapter: Any,
         task_input: TaskInput,
         timeout: Optional[float] = None
     ) -> TaskResult:

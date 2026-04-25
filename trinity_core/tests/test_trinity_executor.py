@@ -1,63 +1,181 @@
-"""Tests for TrinityExecutor."""
-import pytest
-import asyncio
-from types import SimpleNamespace
+"""Tests for desktop-targeted TrinityExecutor."""
 
-from trinity_core.trinity import TrinityExecutor
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+from trinity_core.config import TrinityConfig
+from trinity_core.llm.llm_provider import LLMResponse, ToolCall
 from trinity_core.models import TaskInput
+import trinity_core.trinity as trinity_module
+from trinity_core.strategy_registry import MCPStrategy, PromptContribution, StrategyRegistry
+from trinity_core.trinity import TrinityExecutor
+
+
+class _FakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen_messages = []
+
+    async def call(self, messages, tools):
+        self.calls += 1
+        self.seen_messages.append(messages)
+        if self.calls == 1:
+            return LLMResponse(tool_calls=[ToolCall(id="1", name="inspect_state", arguments={})])
+        return LLMResponse(text="done")
+
+
+def _fake_strategy_registry(server_script: Path) -> StrategyRegistry:
+    registry = StrategyRegistry()
+    python_exe = sys.executable
+    fake_strategy = MCPStrategy(
+        strategy_id="fake_web",
+        server_command=python_exe,
+        server_args=[str(server_script)],
+        domain="web",
+        display_name="Fake Web Strategy",
+        description="Fake strategy server for tests",
+        prompt_contribution=PromptContribution(
+            tool_guidance=["Use the visible fake tools directly."],
+            forbidden_patterns=["Do not invent hidden tools."],
+        ),
+        serial_execution=False,
+    )
+    registry.register(fake_strategy)
+    registry.register(
+        MCPStrategy(
+            strategy_id="fake_cli",
+            server_command=python_exe,
+            server_args=[str(server_script)],
+            domain="cli",
+            display_name="Fake CLI Strategy",
+            description="Fake strategy server for tests",
+            serial_execution=True,
+        )
+    )
+    registry.register(
+        MCPStrategy(
+            strategy_id="fake_desktop",
+            server_command=python_exe,
+            server_args=[str(server_script)],
+            domain="desktop",
+            display_name="Fake Desktop Strategy",
+            description="Fake strategy server for tests",
+            serial_execution=True,
+        )
+    )
+    return registry
+
+
+@pytest.fixture
+def executor_factory(monkeypatch):
+    server_script = Path(__file__).with_name("fake_strategy_server.py")
+    registry = _fake_strategy_registry(server_script)
+
+    def _factory():
+        monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, project_root: registry))
+        config = TrinityConfig(
+            gemini_api_key="test-gemini-key",
+            openai_api_key="test-openai-key",
+        )
+        return TrinityExecutor(config=config, llm_provider_factory=_FakeLLM)
+
+    return _factory
+
 
 @pytest.mark.asyncio
-async def test_trinity_executor_initialization():
-    """Test executor initialization."""
-    executor = TrinityExecutor()
+async def test_trinity_executor_initialization(executor_factory):
+    executor = executor_factory()
     await executor.initialize()
     assert executor.initialized
     await executor.shutdown()
     assert not executor.initialized
 
+
 @pytest.mark.asyncio
-async def test_trinity_executor_context_manager():
-    """Test context manager support."""
-    async with TrinityExecutor() as executor:
+async def test_trinity_executor_context_manager(executor_factory):
+    async with executor_factory() as executor:
         assert executor.initialized
-    # Should auto-shutdown
+
 
 @pytest.mark.asyncio
-async def test_trinity_executor_health_checks():
-    """Test health checks."""
-    async with TrinityExecutor() as executor:
+async def test_trinity_executor_health_checks(executor_factory):
+    async with executor_factory() as executor:
         health = await executor.health_check_all()
-        assert isinstance(health, dict)
-        assert "web" in health
-        assert "desktop" in health
-        assert "cli" in health
+        assert health == {"fake_web": True, "fake_cli": True, "fake_desktop": True}
+
 
 @pytest.mark.asyncio
-async def test_trinity_executor_capabilities():
-    """Test capability reporting."""
-    async with TrinityExecutor() as executor:
+async def test_trinity_executor_capabilities_show_visible_tools(executor_factory):
+    async with executor_factory() as executor:
         caps = await executor.get_capabilities_all()
-        assert caps["web"]["constraints"]["thread_safe"] is True
-        assert caps["desktop"]["constraints"]["thread_safe"] is False
-        assert caps["cli"]["constraints"]["thread_safe"] is False
+        assert caps["fake_web"]["strategy_id"] == "fake_web"
+        assert "echo" in caps["fake_web"]["tools"]
+        assert "inspect_state" in caps["fake_web"]["tools"]
 
 
 @pytest.mark.asyncio
-async def test_trinity_executor_returns_failure_when_backend_unhealthy():
-    """Unhealthy adapters should fail fast with a clean TaskResult payload."""
-    async with TrinityExecutor() as executor:
-        async def _unhealthy() -> bool:
-            return False
+async def test_trinity_executor_returns_failure_when_strategy_unhealthy(executor_factory):
+    async with executor_factory() as executor:
+        class _UnhealthyRuntime:
+            async def health_check(self) -> tuple[bool, None]:
+                return False, None
 
-        executor.adapters["cli"] = SimpleNamespace(
-            health_check=_unhealthy,
-            execute=None,
-        )
+            async def close(self) -> None:
+                return None
 
+        executor._build_runtime = lambda strategy_id: _UnhealthyRuntime()
         result = await executor.execute(
-            TaskInput(task_id="task-unhealthy", description="list files", domain="cli")
+            TaskInput(task_id="task-unhealthy", description="list files", domain="cli", target_server="fake_cli")
         )
 
     assert result.status == "failure"
     assert "not available" in (result.error or "")
     assert result.metadata.get("reason") == "health_check_failed"
+
+
+@pytest.mark.asyncio
+async def test_trinity_executor_executes_through_selected_strategy(executor_factory):
+    async with executor_factory() as executor:
+        result = await executor.execute(
+            TaskInput(task_id="task-web", description="say hello", domain="web", target_server="fake_web")
+        )
+
+    assert result.status == "success"
+    assert result.metadata["strategy_id"] == "fake_web"
+    assert result.metadata["target_server"] == "fake_web"
+    assert "inspect_state" in result.metadata["visible_tools"]
+    system_prompt = executor._llm_provider.seen_messages[0][0]["content"]
+    assert "Use the visible fake tools directly." in system_prompt
+    assert "inspect_state" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_trinity_executor_builds_fresh_runtime_per_execution(executor_factory, monkeypatch):
+    created = []
+    original_build_runtime = TrinityExecutor._build_runtime
+
+    def _tracked_build_runtime(self, strategy_id):
+        runtime = original_build_runtime(self, strategy_id)
+        created.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(TrinityExecutor, "_build_runtime", _tracked_build_runtime)
+
+    async with executor_factory() as executor:
+        first = await executor.execute(
+            TaskInput(task_id="task-web-1", description="say hello", domain="web", target_server="fake_web")
+        )
+        executor._llm_provider.calls = 0
+        second = await executor.execute(
+            TaskInput(task_id="task-web-2", description="say hello again", domain="web", target_server="fake_web")
+        )
+
+    assert first.status == "success"
+    assert second.status == "success"
+    execute_runtimes = [runtime for runtime in created if runtime.strategy.strategy_id == "fake_web"]
+    assert len(execute_runtimes) >= 4  # health runtime + execution runtime for each objective
+    assert execute_runtimes[1] is not execute_runtimes[3]

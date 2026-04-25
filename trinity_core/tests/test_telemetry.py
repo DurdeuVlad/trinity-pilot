@@ -17,6 +17,7 @@ from trinity_core.telemetry import (
     TASK_FAILED,
     TASK_CANCELLED,
 )
+from trinity_core.config import TrinityConfig
 from trinity_core.models import TaskInput
 
 
@@ -103,26 +104,25 @@ class TestExecutorTelemetry:
     @pytest.mark.asyncio
     async def test_successful_dispatch_emits_started_and_succeeded(self):
         from trinity_core.trinity import TrinityExecutor
+        from trinity_core.models import TaskResult
+
+        class _Runtime:
+            async def health_check(self):
+                return True, None
+
+            async def execute(self, task):
+                return TaskResult(task_id=task.task_id, status="success", metadata={})
+
+            async def close(self):
+                return None
 
         collector = InMemoryCollector()
         register_collector(collector)
         try:
-            async with TrinityExecutor() as executor:
+            config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
+            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-ok", description="list files", domain="cli")
-                # Mock adapter to return success immediately
-                import asyncio as _asyncio
-                from trinity_core.models import TaskResult
-
-                async def _healthy():
-                    return True
-
-                async def _execute(t):
-                    return TaskResult(task_id=t.task_id, status="success", metadata={})
-
-                executor.adapters["cli"] = SimpleNamespace(
-                    health_check=_healthy,
-                    execute=_execute,
-                )
+                executor._build_runtime = lambda _strategy_id: _Runtime()
                 result = await executor.execute(task)
         finally:
             unregister_collector(collector)
@@ -135,20 +135,28 @@ class TestExecutorTelemetry:
     @pytest.mark.asyncio
     async def test_unhealthy_adapter_emits_started_and_failed(self):
         from trinity_core.trinity import TrinityExecutor
+        from trinity_core.models import TaskResult, StructuredError
+
+        class _Runtime:
+            async def health_check(self):
+                return False, StructuredError(
+                    layer="test",
+                    phase="health_check",
+                    error_type="TestError",
+                    message="Unhealthy",
+                    traceback="",
+                )
+
+            async def close(self):
+                return None
 
         collector = InMemoryCollector()
         register_collector(collector)
         try:
-            async with TrinityExecutor() as executor:
+            config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
+            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-bad", description="list files", domain="cli")
-
-                async def _unhealthy():
-                    return False
-
-                executor.adapters["cli"] = SimpleNamespace(
-                    health_check=_unhealthy,
-                    execute=None,
-                )
+                executor._build_runtime = lambda _strategy_id: _Runtime()
                 await executor.execute(task)
         finally:
             unregister_collector(collector)
@@ -162,22 +170,23 @@ class TestExecutorTelemetry:
         from trinity_core.trinity import TrinityExecutor
         from trinity_core.models import TaskResult
 
+        class _Runtime:
+            async def health_check(self):
+                return True, None
+
+            async def execute(self, task):
+                return TaskResult(task_id=task.task_id, status="success", metadata={})
+
+            async def close(self):
+                return None
+
         collector = InMemoryCollector()
         register_collector(collector)
         try:
-            async with TrinityExecutor() as executor:
+            config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
+            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-fields", description="test", domain="cli")
-
-                async def _healthy():
-                    return True
-
-                async def _execute(t):
-                    return TaskResult(task_id=t.task_id, status="success", metadata={})
-
-                executor.adapters["cli"] = SimpleNamespace(
-                    health_check=_healthy,
-                    execute=_execute,
-                )
+                executor._build_runtime = lambda _strategy_id: _Runtime()
                 await executor.execute(task)
         finally:
             unregister_collector(collector)

@@ -1,8 +1,11 @@
 """Bridge between unified-app UI and Trinity Core."""
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
+
+from .settings_manager import SettingsManager
 
 try:
     from trinity_core.models import TaskInput, TaskResult
@@ -14,11 +17,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - runtime optional in pac
     TrinityExecutor = None
     _TRINITY_IMPORT_ERROR = exc
 
-Domain = Literal["web", "desktop", "cli"]
+Domain = str
 
 
 class TrinityBridge:
-    """Owns Trinity lifecycle and task execution for the desktop app."""
+    """Owns the desktop-to-Core handoff for finalized objectives."""
 
     def __init__(self) -> None:
         self.executor: Optional[Any] = None
@@ -33,11 +36,22 @@ class TrinityBridge:
                         f"{_TRINITY_IMPORT_ERROR}"
                     ) from _TRINITY_IMPORT_ERROR
                 raise RuntimeError("Trinity Core is not available in this environment")
-            self.executor = TrinityExecutor()
+            try:
+                self.executor = TrinityExecutor()
+            except Exception as exc:
+                if "GEMINI_API_KEY" in str(exc):
+                    raise RuntimeError(
+                        "Trinity Core execution requires GEMINI_API_KEY. Set it in unified-app/.env"
+                    ) from exc
+                if "OPENAI_API_KEY" in str(exc):
+                    raise RuntimeError(
+                        "Trinity Core execution requires GEMINI_API_KEY (not OpenAI). Set it in unified-app/.env"
+                    ) from exc
+                raise
         await self.executor.initialize()
 
     async def get_capabilities(self) -> dict:
-        """Return the capability map of all initialized adapters."""
+        """Return the capability map of all Core-visible MCP targets."""
         if self.executor is None:
             return {}
         fn = getattr(self.executor, "get_capabilities_all", None)
@@ -48,34 +62,49 @@ class TrinityBridge:
                 return {}
         return {}
 
+    def suggest_domain(self, description: str) -> str:
+        """Suggest a domain based on description keywords using core registry."""
+        if self.executor is None or not self.executor.initialized:
+            # Coarse fallback if not initialized
+            lowered = description.lower()
+            if any(t in lowered for t in ("browser", "url", "http")): return "web"
+            if any(t in lowered for t in ("window", "app")): return "desktop"
+            return "cli"
+        
+        try:
+            return self.executor.strategy_registry.suggest_domain(description)
+        except Exception:
+            return "cli"
+
     async def execute_task(
         self,
         task_id: str,
         description: str,
         domain: Domain,
         context: Optional[dict] = None,
+        target_server: Optional[str] = None,
+        objective_steps: Optional[list[str]] = None,
         expected_outcome: Optional[str] = None,
         verification_checks: Optional[list[dict[str, Any]]] = None,
         timeout: Optional[int] = None,
         max_retries: Optional[int] = None,
         cancel_event: Any = None,
     ) -> Any:
-        """Execute one task through Trinity Core."""
+        """Execute one finalized desktop task through Trinity Core."""
         if self.executor is None:
             raise RuntimeError("TrinityBridge is not initialized")
-        available = getattr(self.executor, "adapters", {})
-        if domain not in available:
-            live = ", ".join(available.keys()) if available else "none"
-            raise RuntimeError(
-                f"Domain '{domain}' is not available (initialized adapters: {live}). "
-                "Check that the backend is enabled in config."
-            )
+        merged_context = dict(context or {})
+        if target_server:
+            merged_context.setdefault("target_server", target_server)
+            merged_context.setdefault("selected_mcp_server", target_server)
         if TaskInput is None:
             task = SimpleNamespace(
                 task_id=task_id,
                 description=description,
                 domain=domain,
-                context=context or {},
+                context=merged_context,
+                target_server=target_server,
+                objective_steps=objective_steps or [],
                 expected_outcome=expected_outcome,
                 verification_checks=verification_checks or [],
                 timeout=timeout,
@@ -87,7 +116,9 @@ class TrinityBridge:
                 task_id=task_id,
                 description=description,
                 domain=domain,
-                context=context or {},
+                context=merged_context,
+                target_server=target_server,
+                objective_steps=objective_steps or [],
                 expected_outcome=expected_outcome,
                 verification_checks=verification_checks or [],
                 timeout=timeout,
