@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import tempfile
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -44,20 +46,38 @@ class MCPStrategyClient:
         self.stdio = None
         self.write = None
         self._connected = False
+        self._stderr_file = None
+        self._last_stderr = ""
 
     async def connect(self) -> None:
         if self._connected:
             return
+        self._stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
         server_params = StdioServerParameters(
             command=self.command,
             args=self.args,
             env={**os.environ, **self.env},
         )
-        stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
-        await self.session.initialize()
-        self._connected = True
+        try:
+            stdio_transport = await self.exit_stack.enter_async_context(
+                stdio_client(server_params, errlog=self._stderr_file)
+            )
+            self.stdio, self.write = stdio_transport
+            self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+            await self.session.initialize()
+            self._connected = True
+            self._last_stderr = self._read_stderr()
+        except BaseException:
+            self._last_stderr = self._read_stderr()
+            try:
+                await self.exit_stack.aclose()
+            except BaseException:
+                pass
+            self.exit_stack = AsyncExitStack()
+            if self._stderr_file is not None:
+                self._stderr_file.close()
+                self._stderr_file = None
+            raise
 
     async def disconnect(self) -> None:
         if not self._connected:
@@ -67,13 +87,28 @@ class MCPStrategyClient:
         except BaseException as exc:
             if exc.__class__.__name__ != "CancelledError":
                 raise
+        finally:
+            self._last_stderr = self._read_stderr()
+            if self._stderr_file is not None:
+                self._stderr_file.close()
+                self._stderr_file = None
         self._connected = False
         self.session = None
 
-    async def list_tools(self) -> list[MCPToolDescriptor]:
+    def _read_stderr(self) -> str:
+        if self._stderr_file is None:
+            return self._last_stderr
+        try:
+            self._stderr_file.flush()
+            self._stderr_file.seek(0)
+            return self._stderr_file.read()
+        except Exception:
+            return self._last_stderr
+
+    async def list_tools(self, *, timeout: float = 10.0) -> list[MCPToolDescriptor]:
         await self.connect()
         assert self.session is not None
-        result = await self.session.list_tools()
+        result = await asyncio.wait_for(self.session.list_tools(), timeout=timeout)
         return [
             MCPToolDescriptor(
                 name=tool.name,
@@ -96,10 +131,10 @@ class MCPStrategyClient:
                 return dumped
         return {}
 
-    async def list_prompts(self) -> list[MCPPromptDescriptor]:
+    async def list_prompts(self, *, timeout: float = 10.0) -> list[MCPPromptDescriptor]:
         await self.connect()
         assert self.session is not None
-        result = await self.session.list_prompts()
+        result = await asyncio.wait_for(self.session.list_prompts(), timeout=timeout)
         return [
             MCPPromptDescriptor(
                 name=p.name,
@@ -123,10 +158,10 @@ class MCPStrategyClient:
                 texts.append(text)
         return "\n".join(texts)
 
-    async def list_resources(self) -> list[str]:
+    async def list_resources(self, *, timeout: float = 10.0) -> list[str]:
         await self.connect()
         assert self.session is not None
-        result = await self.session.list_resources()
+        result = await asyncio.wait_for(self.session.list_resources(), timeout=timeout)
         return [str(r.uri) for r in result.resources]
 
     async def read_resource(self, uri: str) -> str:
@@ -139,10 +174,10 @@ class MCPStrategyClient:
                 return text
         return ""
 
-    async def call_tool(self, name: str, arguments: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    async def call_tool(self, name: str, arguments: Optional[dict[str, Any]] = None, *, timeout: float = 30.0) -> dict[str, Any]:
         await self.connect()
         assert self.session is not None
-        result = await self.session.call_tool(name, arguments or {})
+        result = await asyncio.wait_for(self.session.call_tool(name, arguments or {}), timeout=timeout)
         texts: list[str] = []
         for item in getattr(result, "content", []) or []:
             text = getattr(item, "text", None)
