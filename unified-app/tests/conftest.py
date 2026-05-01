@@ -41,6 +41,7 @@ _LIVE_SMOKE_NODE_FRAGMENTS = (
     "tests/integration/test_live_cli_smoke.py".replace("/", os.sep),
     "tests/integration/test_live_browser_smoke.py".replace("/", os.sep),
     "tests/integration/test_live_desktop_smoke.py".replace("/", os.sep),
+    "tests/integration/test_live_cross_domain_smoke.py".replace("/", os.sep),
 )
 _RELOAD_MODULES = (
     "orchestrator.trinity_bridge",
