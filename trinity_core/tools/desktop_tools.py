@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,10 @@ def focus_window(title: str) -> str:
     return _load_uia_tools().focus_window(title)
 
 
+def get_focused_window() -> str:
+    return _load_uia_tools().get_focused_window()
+
+
 def launch_app(name: str) -> str:
     return _load_uia_tools().launch_app(name)
 
@@ -59,6 +64,7 @@ def read_window_content(app: str) -> str:
 
 def type_text(text: str) -> str:
     return _load_uia_tools().type_text(text)
+
 
 from .base import Tool, ToolResult
 
@@ -113,11 +119,37 @@ class DesktopOpenAppTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         app_name = str(kwargs["app_name"])
+        windows_before = await asyncio.to_thread(list_open_windows)
         raw = await asyncio.to_thread(launch_app, str(kwargs.get("app_exe_path") or app_name))
         if not raw.startswith("ERROR:"):
-            self.state.active_app = app_name
-            return _success_payload(result=raw, app_name=app_name)
-        return _result_from_desktop_output(raw, code="DESKTOP_OPEN_FAILED")
+            title = await asyncio.to_thread(_wait_for_matching_window, app_name, 8.0)
+            focus_result = await asyncio.to_thread(focus_window, title or raw)
+            active_window = title or raw
+            was_existing = any(active_window.lower() in w.lower() for w in windows_before)
+            self.state.active_app = title or app_name
+            return _success_payload(
+                result=raw,
+                app_name=app_name,
+                active_window=active_window,
+                was_existing=was_existing,
+                focus_result=focus_result,
+                open_windows=await asyncio.to_thread(list_open_windows),
+            )
+
+        recovered = await asyncio.to_thread(_launch_wait_attach, app_name, str(kwargs.get("app_exe_path") or ""))
+        if recovered["success"]:
+            active_window = recovered.get("active_window") or app_name
+            was_existing = any(active_window.lower() in w.lower() for w in windows_before)
+            self.state.active_app = active_window
+            return _success_payload(app_name=app_name, was_existing=was_existing, **recovered)
+        return ToolResult(
+            status="error",
+            output=json.dumps({"success": False, "error_code": "DESKTOP_OPEN_FAILED", **recovered}),
+            error=recovered["message"],
+            error_code="DESKTOP_OPEN_FAILED",
+            retryable=True,
+            metadata=recovered,
+        )
 
 
 class DesktopClickTool(Tool):
@@ -333,6 +365,45 @@ class DesktopWaitForTextTool(Tool):
         return _error_payload(f"Timed out waiting for text '{text}'.", code="DESKTOP_TEXT_TIMEOUT", retryable=True)
 
 
+class DesktopListWindowsTool(Tool):
+    def name(self) -> str:
+        return "list_windows"
+
+    def description(self) -> str:
+        return "List all currently visible desktop window titles."
+
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    def annotations(self) -> dict:
+        return {"title": "List Windows", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        titles = await asyncio.to_thread(list_open_windows)
+        visible = [t for t in titles if t and t.strip()][:20]
+        return _success_payload(windows=visible)
+
+
+class DesktopGetFocusedWindowTool(Tool):
+    def name(self) -> str:
+        return "get_focused_window"
+
+    def description(self) -> str:
+        return "Return the title of the currently focused (foreground) window."
+
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}}
+
+    def annotations(self) -> dict:
+        return {"title": "Get Focused Window", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        raw = await asyncio.to_thread(get_focused_window)
+        if raw.startswith("ERROR:"):
+            return _error_payload(raw[7:].strip(), code="DESKTOP_FOCUS_READ_FAILED", retryable=False)
+        return _success_payload(title=raw)
+
+
 def build_desktop_tools() -> dict[str, Tool]:
     state = _DesktopState()
     tools: list[Tool] = [
@@ -344,5 +415,74 @@ def build_desktop_tools() -> dict[str, Tool]:
         DesktopWaitForWindowTool(),
         DesktopWaitForElementTool(state),
         DesktopWaitForTextTool(state),
+        DesktopListWindowsTool(),
+        DesktopGetFocusedWindowTool(),
     ]
     return {tool.name(): tool for tool in tools}
+
+
+def _launch_wait_attach(app_name: str, app_exe_path: str = "") -> dict[str, Any]:
+    exe = app_exe_path.strip() or _known_desktop_exe(app_name)
+    launch_error = ""
+    if exe:
+        try:
+            subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            launch_error = str(exc)
+
+    title = _wait_for_matching_window(app_name, timeout=12.0)
+    if title:
+        focus_result = focus_window(title)
+        return {
+            "success": True,
+            "result": f"Opened {app_name}",
+            "active_window": title,
+            "focus_result": focus_result,
+            "open_windows": list_open_windows(),
+        }
+
+    windows = list_open_windows()
+    return {
+        "success": False,
+        "message": (
+            f"Launched {app_name} but no matching window was attachable."
+            + (f" Launch error: {launch_error}" if launch_error else "")
+        ),
+        "active_window": "",
+        "open_windows": windows,
+        "process_running": check_app_running(app_name) or bool(exe and check_app_running(Path(exe).stem)),
+    }
+
+
+def _known_desktop_exe(app_name: str) -> str:
+    key = app_name.lower().replace(".exe", "").strip()
+    known = {
+        "notepad": "notepad.exe",
+        "calculator": "calc.exe",
+        "calc": "calc.exe",
+        "paint": "mspaint.exe",
+    }
+    return known.get(key, app_name)
+
+
+def _wait_for_matching_window(app_name: str, timeout: float) -> str:
+    aliases = _window_aliases(app_name)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        windows = list_open_windows()
+        for window in windows:
+            lowered = window.lower()
+            if any(alias in lowered for alias in aliases):
+                return window
+        time.sleep(0.5)
+    return ""
+
+
+def _window_aliases(app_name: str) -> list[str]:
+    key = app_name.lower().replace(".exe", "").strip()
+    aliases = {
+        "notepad": ["notepad", "untitled"],
+        "calculator": ["calculator", "calc"],
+        "calc": ["calculator", "calc"],
+    }
+    return aliases.get(key, [key])

@@ -50,6 +50,51 @@ FORBIDDEN:
 - Do not use raw coordinates without prior element verification
 - Do not use CLI tools to simulate desktop shortcuts in a desktop objective
 - Do not interact with a window that is not foreground/focused
+
+WINDOW TITLE MATCHING RULES:
+pywinauto matches window titles using Python regex (substring search, case-insensitive).
+
+Rules:
+- NEVER use a leading wildcard: "*Notepad" is invalid regex (asterisk needs a preceding char).
+  Use "Notepad" -- it will match "Untitled - Notepad" and "Notepad" automatically.
+- NEVER use glob syntax: "*.txt", "*Notepad*" -- these are not valid regex.
+- Date-prefixed titles like "2026-04-27 - Notepad": match on "Notepad" alone, not the date prefix.
+  The date changes every day and is irrelevant for matching.
+- Dots in titles are regex wildcards: "file.txt" matches "filextxt". Escape with "file\\.txt" if literal.
+- Parentheses and brackets need escaping if literal: use "\\(" not "(" in title patterns.
+- Prefer the shortest stable substring: "Notepad" over "Untitled - Notepad" (title changes with file).
+
+Valid examples:
+  focus_window("Notepad")          -- matches "Untitled - Notepad", "file.txt - Notepad"
+  focus_window("Calculator")       -- matches "Calculator"
+  focus_window("Chrome")           -- matches any Chrome window
+  wait_for_window("Notepad")       -- correct
+
+Invalid examples (will fail or match wrong window):
+  focus_window("*Notepad")         -- leading * breaks regex
+  focus_window("*Notepad*")        -- leading * breaks regex
+  focus_window("2026-04-27 - Notepad")  -- date prefix changes daily, fragile match
+
+ELEMENT PATTERNS:
+- Element names are matched case-insensitively as substring or exact strings.
+- Prefer short partial names: "Edit" not "Edit1", "OK" not "Button OK".
+- If a control has an auto-generated name like "Edit0", inspect siblings to find a stable label.
+
+OPEN_APP RULES:
+- If open_app returns was_existing: true, the app was already running. The active_window
+  shown is the correct target. Do NOT call open_app again. Do NOT call focus again if
+  focus already succeeded. Proceed with your next action immediately.
+- If open_app returns was_existing: false, a fresh window was opened. Use active_window
+  as your target for subsequent focus/click/type calls.
+- A Notepad window showing a dated filename (e.g. "2026-04-27 - Notepad") IS a valid
+  Notepad window. The task "open Notepad" is complete when any Notepad window is focused,
+  regardless of what document it shows.
+
+REORIENTATION:
+- If you are uncertain about what is on screen, call list_windows to see all open window
+  titles before retrying any action.
+- If get_focused_window returns a title matching your target app, the window is already
+  focused — do not call focus again.
 """
 
     def tool_guides(self) -> dict[str, str]:
