@@ -107,6 +107,24 @@ async def test_open_app_was_existing_true():
 
 
 @pytest.mark.asyncio
+async def test_open_app_focuses_existing_metacharacter_title_without_changing_was_existing():
+    tool = _make_open_app_tool()
+    title = "026-04-27Attendees- Agenda- Action * - Notepad"
+    with (
+        patch("trinity_core.tools.desktop_tools.list_open_windows", return_value=[title]),
+        patch("trinity_core.tools.desktop_tools.launch_app", return_value=title),
+        patch("trinity_core.tools.desktop_tools._wait_for_matching_window", return_value=title),
+        patch("trinity_core.tools.desktop_tools.focus_window", return_value="OK") as focus_mock,
+    ):
+        result = await tool.execute(app_name="notepad")
+    assert result.status == "success"
+    payload = json.loads(result.output)
+    assert payload["was_existing"] is True
+    assert payload["active_window"] == title
+    focus_mock.assert_called_once_with(title)
+
+
+@pytest.mark.asyncio
 async def test_open_app_was_existing_false():
     tool = _make_open_app_tool()
     call_count = 0

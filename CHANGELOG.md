@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-05-02 - window-focus-smoke-failures
+
+- fix(desktop): literal-safe window focus patterns - real titles with `*` no longer crash regex matching.
+- test(desktop): metacharacter title regressions - wrapper and win32 focus tests pin the behavior.
+
 ## 2026-05-02 — desktop-llm-loop
 
 - feat(desktop): `list_windows` and `get_focused_window` MCP tools — LLM can now inspect desktop state before acting
