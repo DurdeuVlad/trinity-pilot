@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Iterable
 
@@ -159,6 +160,15 @@ def _collect_evidence(
     metadata = backend_result.get("metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
+    execution_cwd = _first_non_empty(
+        metadata.get("cwd"),
+        metadata.get("working_directory"),
+        metadata.get("execution_cwd"),
+        backend_result.get("cwd"),
+        backend_result.get("working_directory"),
+        (task.context or {}).get("cwd"),
+        (task.context or {}).get("working_directory"),
+    )
     extracted_text = str(backend_result.get("extracted_text") or "")
     successful_actions = sum(1 for entry in entries if str(entry.get("result") or "").strip().lower() == "success")
     total_actions = len(entries)
@@ -196,6 +206,7 @@ def _collect_evidence(
         "execution_log_results": [str(entry.get("result") or "") for entry in entries],
         "elements": backend_result.get("elements") if isinstance(backend_result.get("elements"), dict) else {},
         "artifact_count": len(backend_result.get("artifacts") or []),
+        "execution_cwd": execution_cwd,
     }
     return evidence
 
@@ -209,16 +220,6 @@ def _build_fallback_checks(
     execution_log: Iterable[ExecutionLog | dict[str, Any]],
 ) -> list[VerificationCheck]:
     checks: list[VerificationCheck] = []
-    plan_state = evidence.get("plan_state") or {}
-    if isinstance(plan_state, dict) and plan_state.get("steps"):
-        checks.append(
-            VerificationCheck(
-                kind="plan_steps_completed",
-                target="plan_state",
-                expected=True,
-            )
-        )
-
     if module == "browser":
         extracted = str(backend_result.get("extracted_text") or "")
         if extracted and task.expected_outcome:
@@ -305,7 +306,7 @@ def _evaluate_check(check: VerificationCheck, evidence: dict[str, Any]) -> Verif
         actual = _is_process_running(target)
         status = "success" if actual is bool(expected) else "failure"
     elif kind == "file_exists":
-        actual = os.path.exists(target)
+        actual = os.path.exists(_resolve_file_target(target, evidence))
         status = "success" if actual is bool(expected) else "failure"
     elif kind == "command_exit_code":
         exit_codes = evidence.get("exit_codes") or []
@@ -315,10 +316,6 @@ def _evaluate_check(check: VerificationCheck, evidence: dict[str, Any]) -> Verif
     elif kind == "visible_tool_execution":
         actual = int(evidence.get("successful_actions") or 0)
         status = "success" if actual > 0 else "failure"
-    elif kind == "plan_steps_completed":
-        actual = _plan_steps_completed(evidence.get("plan_state") or {})
-        status = "success" if actual is bool(expected) else "failure" if actual is not None else "unknown"
-
     if not message:
         message = _default_check_message(kind=kind, status=status, target=target, expected=expected, actual=actual)
     return check.model_copy(update={"actual": actual, "status": status, "message": message})
@@ -335,7 +332,7 @@ def _decide_status(
 ) -> str:
     task_status = str(task_status or "").strip().lower()
     verification_status = str(evidence.get("verification_status") or "").strip().lower()
-    plan_complete = _plan_steps_completed(evidence.get("plan_state") or {})
+    plan_complete = None
     failed_checks = [check for check in checks if check.status == "failure"]
     unknown_checks = [check for check in checks if check.status == "unknown"]
     success_checks = [check for check in checks if check.status == "success"]
@@ -445,33 +442,13 @@ def _as_log_dict(entry: ExecutionLog | dict[str, Any]) -> dict[str, Any]:
     if isinstance(entry, dict):
         return dict(entry)
     return entry.model_dump() if hasattr(entry, "model_dump") else {
-        "step": getattr(entry, "step", None),
+        "turn": getattr(entry, "turn", None),
         "action": getattr(entry, "action", None),
         "result": getattr(entry, "result", None),
         "details": getattr(entry, "details", None),
         "timestamp": getattr(entry, "timestamp", None),
         "exit_code": getattr(entry, "exit_code", None),
     }
-
-
-def _plan_steps_completed(plan_state: dict[str, Any]) -> bool | None:
-    if not isinstance(plan_state, dict):
-        return None
-    steps = plan_state.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return None
-    saw_step = False
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        saw_step = True
-        status = str(step.get("status", "") or "").strip().lower()
-        if status not in _SUCCESS_STATUSES:
-            return False
-        verification = str(step.get("verification", "") or "").strip().lower()
-        if verification == "failed":
-            return False
-    return True if saw_step else None
 
 
 def _default_check_message(*, kind: str, status: str, target: str, expected: Any, actual: Any) -> str:
@@ -548,10 +525,28 @@ def _pick_text_probe(text: str) -> str:
 
 
 def _extract_file_target(text: str) -> str | None:
-    match = re.search(r"([A-Za-z]:\\\\[^\s]+|\.{0,2}[\\/][^\s]+)", text or "")
+    match = re.search(r"([A-Za-z]:\\\\[^\s]+|\.{0,2}[\\/][^\s]+|[A-Za-z0-9_.-]+[\\/][^\s]+)", text or "")
     if not match:
         return None
-    return match.group(1)
+    return match.group(1).strip("`'\".,;:")
+
+
+def _resolve_file_target(target: str, evidence: dict[str, Any]) -> str:
+    raw = str(target or "").strip().strip("`'\"")
+    if not raw or os.path.isabs(raw):
+        return raw
+    cwd = str(evidence.get("execution_cwd") or "").strip()
+    if not cwd:
+        return raw
+    return str(Path(cwd) / raw)
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _is_process_running(process_name: str) -> bool | None:

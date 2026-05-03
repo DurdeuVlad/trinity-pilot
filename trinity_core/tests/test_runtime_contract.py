@@ -279,11 +279,11 @@ class TestBackendProfile:
             description="Browser backend",
             prompt_config={
                 "system_prompt": "You are a browser automation assistant.",
-                "max_iterations": 50,
+                "max_turns": 50,
             },
         )
-        
-        assert profile.prompt_config["max_iterations"] == 50
+
+        assert profile.prompt_config["max_turns"] == 50
 
 
 class TestRuntimeSession:

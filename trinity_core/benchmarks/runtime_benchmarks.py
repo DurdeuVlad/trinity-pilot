@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..llm.llm_provider import LLMResponse, ToolCall
-from ..mcp_strategy_runtime import MCPStrategyRuntime
+from ..sub_objective_executor import SubObjectiveExecutor
 from ..models import TaskInput
 from ..strategy_registry import MCPStrategy
 from .benchmark_framework import Benchmark, BenchmarkResult
@@ -67,7 +67,7 @@ class _StrategyRuntimeBenchmark(Benchmark):
         assert self._llm is not None
         assert self._strategy is not None
         self._llm.calls = 0
-        runtime = MCPStrategyRuntime(strategy=self._strategy, llm_provider=self._llm)
+        runtime = SubObjectiveExecutor(strategy=self._strategy, llm_provider=self._llm)
         try:
             t0 = time.monotonic()
             result = await runtime.execute(

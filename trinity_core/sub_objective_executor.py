@@ -611,6 +611,10 @@ class SubObjectiveExecutor:
                                 pass
 
                         session.append_tool_result(call.id, call.name, tool_result)
+                        if tool_result.status != "success":
+                            guidance = self._recovery_guidance(call.name, call.arguments, tool_result)
+                            if guidance:
+                                session.append_user_message(guidance)
                         meta = tool_result.metadata if isinstance(tool_result.metadata, dict) else {}
                         tool_artifacts = meta.get("artifacts", [])
                         if isinstance(tool_artifacts, list):
@@ -673,6 +677,32 @@ class SubObjectiveExecutor:
 
             duration_ms = (time.monotonic() - t0) * 1000
             if not final_text.strip():
+                successful_entries = [entry for entry in execution_log if entry.get("result") == "success"]
+                if successful_entries:
+                    final_text = self._synthesize_final_text(successful_entries[-1])
+                    backend_result = self._build_backend_result(
+                        execution_log=execution_log,
+                        artifacts=artifacts,
+                        final_text=final_text,
+                    )
+                    verification = build_verification(
+                        task=verification_task,
+                        module=self._verification_module(task),
+                        backend_result=backend_result,
+                        task_status="success",
+                        execution_log=execution_log,
+                        output_text=final_text,
+                    )
+                    if verification.status == "success":
+                        return self._result_from_verification(
+                            task=task,
+                            execution_log=execution_log,
+                            artifacts=artifacts,
+                            final_text=final_text,
+                            verification=verification,
+                            duration_ms=duration_ms,
+                        )
+
                 verification = build_failure_verification(
                     module=self._verification_module(task),
                     error="Execution ended without a final answer.",
@@ -732,7 +762,7 @@ class SubObjectiveExecutor:
                 artifacts=artifacts,
                 final_text=final_text,
             )
-            task_status = "failure" if any(entry.get("result") == "failure" for entry in execution_log) else "success"
+            task_status = "success" if any(entry.get("result") == "success" for entry in execution_log) else "failure"
             verification = build_verification(
                 task=verification_task,
                 module=self._verification_module(task),
@@ -809,6 +839,32 @@ class SubObjectiveExecutor:
                     "verification_summary": verification.summary,
                 },
             )
+
+    def _recovery_guidance(self, tool_name: str, arguments: dict[str, Any], tool_result: ToolResult) -> str:
+        if tool_name != "run_command":
+            return ""
+        command = str((arguments or {}).get("command") or "")
+        failure_text = " ".join(
+            part
+            for part in (
+                str(tool_result.output or ""),
+                str(tool_result.error or ""),
+                str(tool_result.error_code or ""),
+            )
+            if part
+        )
+        lowered = failure_text.lower()
+        if "unknown or disallowed command" not in lowered and "command validation failed" not in lowered:
+            return ""
+        if "$" not in command:
+            return ""
+        return (
+            "The command validator rejected that PowerShell variable-assignment style. "
+            "Retry with a single validator-safe pipeline using literal paths and allowed cmdlets only. "
+            "Do not start the command with `$name = ...`; inline the path directly, or use `New-Item`, "
+            "`Set-Content`, `Get-Content`, `Get-ChildItem`, `Select-String`, `Group-Object`, "
+            "`Sort-Object`, and `Out-String` in one pipeline."
+        )
 
     def _synthesize_final_text(self, last_success: dict[str, Any]) -> str:
         """Stop runaway tool loops once visible successful evidence exists."""

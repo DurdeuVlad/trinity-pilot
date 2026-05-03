@@ -33,7 +33,7 @@ class RecordingHistoryManager:
     def start_task(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def add_step(self, *args: Any, **kwargs: Any) -> None:
+    def add_sub_objective(self, *args: Any, **kwargs: Any) -> None:
         return None
 
     def update_task_plan(self, *args: Any, **kwargs: Any) -> None:
@@ -86,6 +86,6 @@ def patch_orchestrator_runtime(monkeypatch: Any, core_module: Any) -> RecordingH
     history = RecordingHistoryManager()
     bus = EventBus()
     monkeypatch.setattr(core_module, "HistoryManager", lambda: history)
-    monkeypatch.setattr(core_module, "ScreenshotWatcher", FakeWatcher)
+    monkeypatch.setattr(core_module, "ScreenshotWatcher", FakeWatcher, raising=False)
     monkeypatch.setattr(core_module, "get_event_bus", lambda: bus)
     return history

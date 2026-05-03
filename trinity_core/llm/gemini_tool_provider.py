@@ -108,17 +108,47 @@ class GeminiToolCallingProvider(LLMProvider):
             tools=gemini_tools,
         )
 
+        # ── Prompt observability (fail-safe) ─────────────────────────────────
+        import importlib as _il, time as _time
+        _pl = None
+        try:
+            _pl = _il.import_module("audit_debugger.prompt_logger")
+        except ImportError:
+            pass
+        _call_id: str | None = None
+        _t0 = _time.perf_counter()
+        if _pl is not None:
+            try:
+                _prompt_text = "\n\n".join(
+                    f"{m['role'].upper()}: {m.get('content', '')}"
+                    for m in messages
+                    if m["role"] in ("system", "user", "assistant")
+                )
+                _call_id = _pl.log_prompt(
+                    prompt=_prompt_text,
+                    system_instructions=system_instruction or "",
+                    purpose="execution",
+                    model=self.model,
+                    temperature=temperature,
+                    provider=self.provider_name,
+                    prompt_preview=_prompt_text[:500],
+                    prompt_length=len(_prompt_text),
+                    context_tokens_estimate=max(1, len(_prompt_text) // 4),
+                )
+            except Exception:
+                pass
+
         try:
             response = await self._client.aio.models.generate_content(
                 model=self.model,
                 contents=contents,
                 config=config,
             )
-            
+
             # Parse response
             text_content = ""
             tool_calls = []
-            
+
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
                 
@@ -138,11 +168,27 @@ class GeminiToolCallingProvider(LLMProvider):
                             )
                         )
             
+            if _pl is not None:
+                try:
+                    _pl.log_response(
+                        response=text_content or "",
+                        raw_response=response,
+                        purpose="execution",
+                        model=self.model,
+                        provider=self.provider_name,
+                        call_id=_call_id,
+                        response_preview=(text_content or "")[:500],
+                        response_length=len(text_content or ""),
+                        latency_ms={"total": max(1, int((_time.perf_counter() - _t0) * 1000))},
+                    )
+                except Exception:
+                    pass
+
             return LLMResponse(
                 text=text_content or "",
                 tool_calls=tool_calls if tool_calls else [],
             )
-            
+
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
             raise

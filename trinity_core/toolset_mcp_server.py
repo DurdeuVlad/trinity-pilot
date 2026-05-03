@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import os
 import sys
 from pathlib import Path
 
 from typing import Any, Dict
 
 project_root = Path(__file__).resolve().parents[1]
+os.environ.setdefault("MCP_SERVER", "1")
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "browser-gui-automation"))
 sys.path.insert(0, str(project_root / "cli-automation-poc"))

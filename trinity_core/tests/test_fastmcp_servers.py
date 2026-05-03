@@ -5,7 +5,7 @@ Tests cover:
 - ResponseSizeGuardMiddleware: truncation and passthrough
 - TrinityRootServer: namespacing, tag-based domain switching, missing-dep skip
 - BrowserMCPServer: raw tool dispatch, annotation surfacing
-- mcp_strategy_runtime: _build_system_prompt with server context cache
+- sub_objective_executor: _build_system_prompt with server context cache
 """
 from __future__ import annotations
 
@@ -330,12 +330,12 @@ class TestDesktopMCPServer:
         assert server._max_output_chars() == 64_000
 
 
-# ── MCPStrategyRuntime system prompt tests ────────────────────────────────────
+# ── SubObjectiveExecutor system prompt tests ────────────────────────────────────
 
 
-class TestMCPStrategyRuntimeSystemPrompt:
+class TestSubObjectiveExecutorSystemPrompt:
     def _make_runtime(self):
-        from trinity_core.mcp_strategy_runtime import MCPStrategyRuntime
+        from trinity_core.sub_objective_executor import SubObjectiveExecutor
         from trinity_core.strategy_registry import MCPStrategy, PromptContribution
 
         strategy = MCPStrategy(
@@ -350,7 +350,7 @@ class TestMCPStrategyRuntimeSystemPrompt:
             ),
         )
         llm = MagicMock()
-        runtime = MCPStrategyRuntime(strategy=strategy, llm_provider=llm)
+        runtime = SubObjectiveExecutor(strategy=strategy, llm_provider=llm)
         return runtime
 
     def test_system_prompt_uses_server_cache_when_present(self):
@@ -358,7 +358,7 @@ class TestMCPStrategyRuntimeSystemPrompt:
         runtime._server_context_cache = "[SERVER BRIEFING]\nThis is the server briefing."
         prompt = runtime._build_system_prompt(MagicMock(
             domain="web",
-            objective_steps=[],
+            sub_objectives=[],
         ))
         assert "[SERVER BRIEFING]" in prompt
         # PromptContribution fallback should NOT appear
@@ -369,7 +369,7 @@ class TestMCPStrategyRuntimeSystemPrompt:
         runtime._server_context_cache = ""
         prompt = runtime._build_system_prompt(MagicMock(
             domain="web",
-            objective_steps=[],
+            sub_objectives=[],
         ))
         assert "Old guidance from PromptContribution" in prompt
         assert "[SERVER BRIEFING]" not in prompt
@@ -377,11 +377,11 @@ class TestMCPStrategyRuntimeSystemPrompt:
     def test_system_prompt_includes_tool_list(self):
         runtime = self._make_runtime()
         runtime._server_context_cache = ""
-        from trinity_core.mcp_strategy_runtime import MCPToolDescriptor
+        from trinity_core.sub_objective_executor import MCPToolDescriptor
         runtime._cached_descriptors = [
             MagicMock(name="test_tool", description="Does something", metadata={})
         ]
-        task = MagicMock(domain="web", objective_steps=[])
+        task = MagicMock(domain="web", sub_objectives=[])
         prompt = runtime._build_system_prompt(task)
         assert "test_tool" in prompt
 

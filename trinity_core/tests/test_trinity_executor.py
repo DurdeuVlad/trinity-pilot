@@ -1,18 +1,22 @@
-"""Tests for desktop-targeted TrinityExecutor."""
+"""Tests for desktop-targeted ObjectiveOrchestrator."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
 import pytest
 
+from trinity_core.action_store import ActionStore
 from trinity_core.config import TrinityConfig
 from trinity_core.llm.llm_provider import LLMResponse, ToolCall
+from trinity_core.mcp_client import MCPToolDescriptor
 from trinity_core.models import TaskInput
+from trinity_core.sub_objective_executor import SubObjectiveExecutor
 import trinity_core.trinity as trinity_module
 from trinity_core.strategy_registry import MCPStrategy, PromptContribution, StrategyRegistry
-from trinity_core.trinity import TrinityExecutor
+from trinity_core.trinity import ObjectiveOrchestrator
 
 
 class _FakeLLM:
@@ -81,7 +85,7 @@ def executor_factory(monkeypatch):
             gemini_api_key="test-gemini-key",
             openai_api_key="test-openai-key",
         )
-        return TrinityExecutor(config=config, llm_provider_factory=_FakeLLM)
+        return ObjectiveOrchestrator(config=config, llm_provider_factory=_FakeLLM)
 
     return _factory
 
@@ -127,7 +131,7 @@ async def test_trinity_executor_returns_failure_when_strategy_unhealthy(executor
             async def close(self) -> None:
                 return None
 
-        executor._build_runtime = lambda strategy_id: _UnhealthyRuntime()
+        executor._build_sub_objective_executor = lambda strategy_id: _UnhealthyRuntime()
         result = await executor.execute(
             TaskInput(task_id="task-unhealthy", description="list files", domain="cli", target_server="fake_cli")
         )
@@ -156,14 +160,14 @@ async def test_trinity_executor_executes_through_selected_strategy(executor_fact
 @pytest.mark.asyncio
 async def test_trinity_executor_builds_fresh_runtime_per_execution(executor_factory, monkeypatch):
     created = []
-    original_build_runtime = TrinityExecutor._build_runtime
+    original_build_sub_objective_executor = ObjectiveOrchestrator._build_sub_objective_executor
 
-    def _tracked_build_runtime(self, strategy_id):
-        runtime = original_build_runtime(self, strategy_id)
+    def _tracked_build_sub_objective_executor(self, strategy_id):
+        runtime = original_build_sub_objective_executor(self, strategy_id)
         created.append(runtime)
         return runtime
 
-    monkeypatch.setattr(TrinityExecutor, "_build_runtime", _tracked_build_runtime)
+    monkeypatch.setattr(ObjectiveOrchestrator, "_build_sub_objective_executor", _tracked_build_sub_objective_executor)
 
     async with executor_factory() as executor:
         first = await executor.execute(
@@ -179,3 +183,87 @@ async def test_trinity_executor_builds_fresh_runtime_per_execution(executor_fact
     execute_runtimes = [runtime for runtime in created if runtime.strategy.strategy_id == "fake_web"]
     assert len(execute_runtimes) >= 4  # health runtime + execution runtime for each objective
     assert execute_runtimes[1] is not execute_runtimes[3]
+
+
+def test_sub_objective_executor_injects_action_memory_before_visible_tools(tmp_path):
+    server_script = Path(__file__).with_name("fake_strategy_server.py")
+    strategy = _fake_strategy_registry(server_script).get("fake_cli")
+    store = ActionStore(db_path=tmp_path / "actions.db")
+    for ts in (1.0, 2.0):
+        store.write("cli", "list project files", "run_command", {"command": "Get-ChildItem"}, "success", ts=ts)
+    for ts in range(3, 8):
+        store.write(
+            "cli",
+            "list project files",
+            "bad_command",
+            {"command": "dir C:\\"},
+            "failure",
+            error_code="COMMAND_FAILED",
+            ts=float(ts),
+        )
+
+    executor = SubObjectiveExecutor(strategy=strategy, llm_provider=_FakeLLM())
+    executor._action_store = store
+    executor._cached_descriptors = [
+        MCPToolDescriptor(name="run_command", description="Run a shell command"),
+        MCPToolDescriptor(name="bad_command", description="Run a bad shell command"),
+    ]
+
+    prompt = executor._build_system_prompt(
+        TaskInput(task_id="task-memory", description="list project files", domain="cli")
+    )
+
+    assert "PROVEN PATTERNS" in prompt
+    assert "run_command" in prompt
+    assert "AVOID" in prompt
+    assert "bad_command" in prompt
+    assert "Last error: COMMAND_FAILED" in prompt
+    assert prompt.index("PROVEN PATTERNS") < prompt.index("Visible tools:")
+
+
+@pytest.mark.asyncio
+async def test_trinity_executor_action_memory_write_failure_is_nonfatal(executor_factory, monkeypatch):
+    class _BrokenStore:
+        def format_prompt_section(self, domain, objective_text):
+            return ""
+
+        def write(self, *args, **kwargs):
+            raise RuntimeError("store unavailable")
+
+    broken_store = _BrokenStore()
+    monkeypatch.setattr(SubObjectiveExecutor, "_get_action_store", lambda self: broken_store)
+
+    async with executor_factory() as executor:
+        result = await executor.execute(
+            TaskInput(task_id="task-memory-nonfatal", description="say hello", domain="web", target_server="fake_web")
+        )
+
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_trinity_executor_schedules_action_memory_write(executor_factory, monkeypatch):
+    class _RecordingStore:
+        def __init__(self):
+            self.writes = []
+
+        def format_prompt_section(self, domain, objective_text):
+            return ""
+
+        def write(self, *args, **kwargs):
+            self.writes.append((args, kwargs))
+
+    recording_store = _RecordingStore()
+    monkeypatch.setattr(SubObjectiveExecutor, "_get_action_store", lambda self: recording_store)
+
+    async with executor_factory() as executor:
+        result = await executor.execute(
+            TaskInput(task_id="task-memory-write", description="say hello", domain="web", target_server="fake_web")
+        )
+        await asyncio.sleep(0.1)
+
+    assert result.status == "success"
+    assert recording_store.writes
+    args, kwargs = recording_store.writes[0]
+    assert args[:5] == ("web", "say hello", "inspect_state", {}, "success")
+    assert kwargs == {}

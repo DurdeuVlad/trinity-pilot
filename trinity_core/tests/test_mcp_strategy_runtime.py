@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from trinity_core.llm.llm_provider import LLMResponse, ToolCall
-from trinity_core.mcp_strategy_runtime import MCPStrategyRuntime
+from trinity_core.sub_objective_executor import SubObjectiveExecutor
 from trinity_core.models import TaskInput
 from trinity_core.strategy_registry import MCPStrategy, PromptContribution
+from trinity_core.tools.base import ToolResult
 
 
 class _FakeLLM:
@@ -25,7 +26,7 @@ class _FakeLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_exposes_full_visible_tool_catalog():
+async def test_sub_objective_executor_exposes_full_visible_tool_catalog():
     strategy = MCPStrategy(
         strategy_id="fake",
         server_command=sys.executable,
@@ -39,7 +40,7 @@ async def test_mcp_strategy_runtime_exposes_full_visible_tool_catalog():
         ),
     )
     llm = _FakeLLM()
-    runtime = MCPStrategyRuntime(strategy, llm_provider=llm)
+    runtime = SubObjectiveExecutor(strategy, llm_provider=llm)
     try:
         result = await runtime.execute(TaskInput(task_id="rt1", description="inspect state", domain="web"))
     finally:
@@ -71,7 +72,7 @@ class _NoToolLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_fails_without_visible_tool_execution():
+async def test_sub_objective_executor_fails_without_visible_tool_execution():
     strategy = MCPStrategy(
         strategy_id="fake",
         server_command=sys.executable,
@@ -80,7 +81,7 @@ async def test_mcp_strategy_runtime_fails_without_visible_tool_execution():
         display_name="Fake",
         description="Fake strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_NoToolLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_NoToolLLM())
     try:
         result = await runtime.execute(TaskInput(task_id="rt2", description="inspect state", domain="web"))
     finally:
@@ -104,7 +105,7 @@ class _SilentToolLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_fails_when_tool_output_is_not_verifiable_for_cli():
+async def test_sub_objective_executor_fails_when_tool_output_is_not_verifiable_for_cli():
     strategy = MCPStrategy(
         strategy_id="fake-cli",
         server_command=sys.executable,
@@ -113,7 +114,7 @@ async def test_mcp_strategy_runtime_fails_when_tool_output_is_not_verifiable_for
         display_name="Fake CLI",
         description="Fake CLI strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_SilentToolLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_SilentToolLLM())
     try:
         result = await runtime.execute(TaskInput(task_id="rt3", description="run command", domain="cli"))
     finally:
@@ -137,7 +138,7 @@ class _ExplicitCheckLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_uses_explicit_verification_checks():
+async def test_sub_objective_executor_uses_explicit_verification_checks():
     target = Path(__file__).with_name("runtime-proof.txt")
     target.write_text("ok", encoding="utf-8")
     strategy = MCPStrategy(
@@ -148,7 +149,7 @@ async def test_mcp_strategy_runtime_uses_explicit_verification_checks():
         display_name="Fake CLI",
         description="Fake CLI strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_ExplicitCheckLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_ExplicitCheckLLM())
     try:
         result = await runtime.execute(
             TaskInput(
@@ -168,6 +169,32 @@ async def test_mcp_strategy_runtime_uses_explicit_verification_checks():
     assert any(check.kind == "file_exists" and check.status == "success" for check in result.verification.checks)
 
 
+def test_sub_objective_executor_guides_recovery_after_rejected_powershell_variables():
+    strategy = MCPStrategy(
+        strategy_id="fake-cli",
+        server_command=sys.executable,
+        server_args=[str(Path(__file__).with_name("fake_strategy_server.py"))],
+        domain="cli",
+        display_name="Fake CLI",
+        description="Fake CLI strategy",
+    )
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_ExplicitCheckLLM())
+
+    guidance = runtime._recovery_guidance(
+        "run_command",
+        {"command": '$logPath = "logs"; Get-ChildItem -Path $logPath'},
+        ToolResult(
+            status="error",
+            output='{"success": false, "message": "Command validation failed: Unknown or disallowed command: $logPath"}',
+            error_code="CLI_COMMAND_FAILED",
+        ),
+    )
+
+    assert "variable-assignment style" in guidance
+    assert "literal paths" in guidance
+    assert "Do not start the command" in guidance
+
+
 class _EchoThenDoneLLM:
     def __init__(self) -> None:
         self.calls = 0
@@ -180,7 +207,7 @@ class _EchoThenDoneLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_web_requires_browser_side_evidence_not_model_text():
+async def test_sub_objective_executor_web_requires_browser_side_evidence_not_model_text():
     strategy = MCPStrategy(
         strategy_id="fake-web",
         server_command=sys.executable,
@@ -189,7 +216,7 @@ async def test_mcp_strategy_runtime_web_requires_browser_side_evidence_not_model
         display_name="Fake Web",
         description="Fake web strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_EchoThenDoneLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_EchoThenDoneLLM())
     try:
         result = await runtime.execute(TaskInput(task_id="rt-web-proof", description="open page", domain="web"))
     finally:
@@ -201,7 +228,7 @@ async def test_mcp_strategy_runtime_web_requires_browser_side_evidence_not_model
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_desktop_requires_postcondition_evidence_not_generic_tool_success():
+async def test_sub_objective_executor_desktop_requires_postcondition_evidence_not_generic_tool_success():
     strategy = MCPStrategy(
         strategy_id="fake-desktop",
         server_command=sys.executable,
@@ -210,7 +237,7 @@ async def test_mcp_strategy_runtime_desktop_requires_postcondition_evidence_not_
         display_name="Fake Desktop",
         description="Fake desktop strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_EchoThenDoneLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_EchoThenDoneLLM())
     try:
         result = await runtime.execute(TaskInput(task_id="rt-desktop-proof", description="open window", domain="desktop"))
     finally:
@@ -233,7 +260,7 @@ class _TransientFailureLLM:
 
 
 @pytest.mark.asyncio
-async def test_mcp_strategy_runtime_marks_transient_failure_as_unknown_verification():
+async def test_sub_objective_executor_marks_transient_failure_as_unknown_verification():
     strategy = MCPStrategy(
         strategy_id="fake-desktop",
         server_command=sys.executable,
@@ -242,7 +269,7 @@ async def test_mcp_strategy_runtime_marks_transient_failure_as_unknown_verificat
         display_name="Fake Desktop",
         description="Fake desktop strategy",
     )
-    runtime = MCPStrategyRuntime(strategy, llm_provider=_TransientFailureLLM())
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_TransientFailureLLM())
     try:
         result = await runtime.execute(TaskInput(task_id="rt5", description="open window", domain="desktop"))
     finally:

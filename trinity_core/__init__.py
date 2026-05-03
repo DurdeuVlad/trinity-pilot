@@ -10,17 +10,23 @@ from .models import (
     RuntimeResult,
     RuntimeSession,
     RuntimeStatus,
+    ObjectiveEvidence,
+    ObjectivePlan,
+    ObjectivePreflightResult,
+    SubObjective,
+    SubObjectiveResult,
     TaskInput,
     TaskResult,
     VerificationCheck,
     VerificationEnvelope,
 )
-from .mcp_strategy_runtime import MCPStrategyRuntime
+from .sub_objective_executor import SubObjectiveExecutor
 from .strategy_registry import (
     MCPStrategy,
     PromptContribution,
     StrategyRegistry,
 )
+from .trinity import ObjectiveOrchestrator
 
 __all__ = [
     "BackendProfile",
@@ -32,12 +38,18 @@ __all__ = [
     "RuntimeResult",
     "RuntimeSession",
     "RuntimeStatus",
+    "ObjectiveEvidence",
+    "ObjectiveOrchestrator",
+    "ObjectivePlan",
+    "ObjectivePreflightResult",
+    "SubObjective",
+    "SubObjectiveExecutor",
+    "SubObjectiveResult",
     "TaskInput",
     "TaskResult",
     "VerificationCheck",
     "VerificationEnvelope",
     "MCPStrategy",
-    "MCPStrategyRuntime",
     "PromptContribution",
     "StrategyRegistry",
 ]

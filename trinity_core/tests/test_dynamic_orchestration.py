@@ -14,7 +14,7 @@ from trinity_core.config import TrinityConfig
 from trinity_core.llm.llm_provider import LLMResponse, ToolCall
 from trinity_core.models import TaskInput
 from trinity_core.strategy_registry import MCPStrategy, StrategyRegistry
-from trinity_core.trinity import TrinityExecutor
+from trinity_core.trinity import ObjectiveOrchestrator
 
 
 class _FakeLLM:
@@ -71,7 +71,7 @@ async def test_scenario_1_dynamic_domain_discovery(dynamic_registry, server_scri
     # Mock the registry creation to use our dynamic one
     monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, root: dynamic_registry))
     
-    async with TrinityExecutor(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
         # Task with NO target_server, only domain="excel"
         task = TaskInput(
             task_id="t1",
@@ -103,7 +103,7 @@ async def test_scenario_2_explicit_strategy_override(dynamic_registry, server_sc
     
     monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, root: dynamic_registry))
     
-    async with TrinityExecutor(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
         # Explicitly request the second one
         task = TaskInput(
             task_id="t2",
@@ -125,7 +125,7 @@ async def test_scenario_3_unified_capability_discovery(dynamic_registry, server_
     
     monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, root: dynamic_registry))
     
-    async with TrinityExecutor(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
         caps = await executor.get_capabilities_all()
         
         assert "s1" in caps
@@ -141,7 +141,7 @@ async def test_scenario_5_default_timeout_resolution(dynamic_registry, server_sc
     
     monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, root: dynamic_registry))
     
-    async with TrinityExecutor(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
         task = TaskInput(task_id="t5", description="test", domain="custom_domain")
         
         # We check the internal resolution of timeout
@@ -165,7 +165,7 @@ async def test_scenario_6_fault_isolation_for_new_domains(dynamic_registry, trin
     
     monkeypatch.setattr(StrategyRegistry, "create_default", classmethod(lambda cls, root: dynamic_registry))
     
-    async with TrinityExecutor(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=trinity_config, llm_provider_factory=_FakeLLM) as executor:
         task = TaskInput(task_id="t6", description="test", domain="broken_domain")
         
         result = await executor.execute(task)

@@ -9,7 +9,7 @@ from trinity_core.config import TrinityConfig
 from trinity_core.llm.llm_provider import LLMResponse, ToolCall
 from trinity_core.models import TaskInput
 from trinity_core.strategy_registry import MCPStrategy, StrategyRegistry
-from trinity_core.trinity import TrinityExecutor
+from trinity_core.trinity import ObjectiveOrchestrator
 
 
 class _FakeLLM:
@@ -57,7 +57,7 @@ async def test_executor_routes_browser_task_through_desktop_selected_target(monk
         openai_api_key="test-openai-key",
     )
 
-    async with TrinityExecutor(config=config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=config, llm_provider_factory=_FakeLLM) as executor:
         result = await executor.execute(
             TaskInput(task_id="x2", description="navigate", domain="web", target_server="fake_web")
         )
@@ -76,7 +76,7 @@ async def test_executor_strategy_swap_changes_execution_path_without_code_change
         openai_api_key="test-openai-key",
     )
 
-    async with TrinityExecutor(config=config, llm_provider_factory=_FakeLLM) as executor:
+    async with ObjectiveOrchestrator(config=config, llm_provider_factory=_FakeLLM) as executor:
         result = await executor.execute(
             TaskInput(task_id="x3", description="navigate", domain="web", target_server="fake_web_alt")
         )

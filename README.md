@@ -130,6 +130,21 @@ Those areas should be documented honestly and extended cautiously.
   - Symptom: duplicated orchestration or new hidden routing path
   - First check: verify the change belongs to desktop, Core, or a tool provider before coding
 
+## Terminology
+
+Use these terms consistently across code, docs, prompts, and any AI-generated output:
+
+| Concept | Correct term | Banned terms |
+|---|---|---|
+| The top-level goal given to the executor | **objective** | task goal, prompt goal, command |
+| A discrete piece of the objective the executor must achieve | **sub-objective** | step, step item, action item, subtask |
+| A single LLM request-response cycle | **turn** | iteration, round, step, response cycle |
+
+Rules:
+- Never use "steps" or "step list" to describe what the executor should do. Use "sub-objectives".
+- Never use "iteration" or "round" for an LLM exchange. Use "turn".
+- Code field names follow the same convention where possible (`objective_steps` is legacy; prefer `sub_objectives` in new fields).
+
 ## Change Rules
 - Do not reintroduce desktop-side execution loops.
 - Do not move domain selection back into Core.

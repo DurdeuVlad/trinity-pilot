@@ -45,7 +45,7 @@ GUIDANCE:
 FORBIDDEN:
 - Do not write to cells without first reading the current structure
 - Do not assume an active/default sheet exists -- always name it explicitly
-- Do not skip the save step after writes
+- Do not skip saving after writes
 """
 
     def tool_guides(self) -> dict[str, str]:

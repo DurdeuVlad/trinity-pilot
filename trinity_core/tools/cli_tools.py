@@ -87,6 +87,7 @@ class CLIRunCommandTool(Tool):
             stderr=result.stderr,
             exit_code=result.exit_code,
             duration_ms=result.duration_ms,
+            cwd=os.getcwd(),
         )
 
 

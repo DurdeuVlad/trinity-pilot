@@ -9,7 +9,7 @@ from typing import Optional
 # Add trinity-pilot to path
 sys.path.append(str(Path(__file__).parent))
 
-from trinity_core.trinity import TrinityExecutor
+from trinity_core.trinity import ObjectiveOrchestrator
 from trinity_core.config import TrinityConfig
 from trinity_core.models import TaskInput
 
@@ -36,7 +36,7 @@ async def main():
     config = TrinityConfig.from_env()
     # Ensure we have keys (they should be in env already, but we can override if needed)
     
-    executor = TrinityExecutor(config=config)
+    executor = ObjectiveOrchestrator(config=config)
     
     task_input = TaskInput(
         task_id="bench-" + Path(args.output).stem,

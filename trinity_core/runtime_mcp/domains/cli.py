@@ -25,7 +25,8 @@ class CLIMCPServer(TrinityMCPServer):
         return "Trinity CLI Toolset"
 
     def instructions(self) -> str:
-        return """\
+        from trinity_core.runtime_mcp.domains._cli_reference import CLI_REFERENCE
+        return f"""\
 Trinity CLI Toolset -- Windows subprocess execution.
 
 CAPABILITIES: Run shell commands (PowerShell, cmd, executables), read files,
@@ -46,6 +47,8 @@ FORBIDDEN:
 - Do not use interactive stdin commands (they will hang)
 - Do not use CLI tools to recover browser or desktop objectives
 - Do not blindly repeat a failed command without inspecting state first
+
+{CLI_REFERENCE}
 """
 
     def tool_guides(self) -> dict[str, str]:

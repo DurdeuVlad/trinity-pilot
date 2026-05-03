@@ -42,7 +42,7 @@ class TrinityRootServer:
     Tag filtering is ANY match — components tagged {"meta", "web"} ARE shown.
     Tag filtering propagates recursively to all mounted children.
 
-    NOT used by MCPStrategyRuntime (which spawns individual stdio subprocesses).
+    NOT used by SubObjectiveExecutor (which spawns individual stdio subprocesses).
     Used by: orchestrator AI discovery, supervisor layer, external clients.
     """
 

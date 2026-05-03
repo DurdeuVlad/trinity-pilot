@@ -14,10 +14,22 @@ _FAILURE_CODE_MAP: dict[str, str] = {
     "backend_error": "BACKEND_ERROR",
     "user_error": "USER_ERROR",
     "health_check_failed": "HEALTH_CHECK_FAILED",
+    "planning_failed": "PLANNING_FAILED",
+    "preflight_failed": "PREFLIGHT_FAILED",
+    "prerequisite_missing": "PREREQUISITE_MISSING",
+    "capability_mismatch": "CAPABILITY_MISMATCH",
+    "sub_objective_failed": "SUB_OBJECTIVE_FAILED",
+    "verification_failed": "VERIFICATION_FAILED",
+    "blocked": "BLOCKED",
 }
 
 # Categories for which a retry is plausible.
-_RETRIABLE_CATEGORIES: frozenset[str] = frozenset({"timeout", "backend_error", "health_check_failed"})
+_RETRIABLE_CATEGORIES: frozenset[str] = frozenset({
+    "timeout",
+    "backend_error",
+    "health_check_failed",
+    "sub_objective_failed",
+})
 
 
 def failure_code(category: str) -> str:
@@ -139,9 +151,9 @@ class TaskInput(BaseModel):
     task_id: str = Field(..., description="Unique task identifier")
     description: str = Field(..., description="Task description in natural language")
     expected_outcome: Optional[str] = Field(None, description="Expected result")
-    objective_steps: List[str] = Field(
+    sub_objectives: List[str] = Field(
         default_factory=list,
-        description="Desktop-approved objective steps supplied as execution guidance.",
+        description="Sub-objectives the executor must achieve, in any order that fits the environment.",
     )
     verification_checks: List["VerificationCheck"] = Field(
         default_factory=list,
@@ -160,7 +172,7 @@ class TaskInput(BaseModel):
 
 class ExecutionLog(BaseModel):
     """Unified execution log entry."""
-    step: int
+    turn: int
     action: str
     result: Literal["success", "failure", "skipped"]
     details: Optional[str] = None
@@ -191,11 +203,67 @@ class VerificationEnvelope(BaseModel):
     review_required: bool = False
     source: Literal["executor", "fallback", "mixed", "none"] = "none"
 
+
+class SubObjective(BaseModel):
+    """A domain-scoped outcome required to complete an objective."""
+
+    sub_objective_id: str
+    objective: str
+    domain: str
+    target_server: str
+    preconditions: List[str] = Field(default_factory=list)
+    postconditions: List[str] = Field(default_factory=list)
+    timeout: Optional[int] = None
+    depends_on: List[str] = Field(default_factory=list)
+
+
+class ObjectivePlan(BaseModel):
+    """Structured plan for finishing one objective."""
+
+    objective_id: str
+    objective: str
+    sub_objectives: List[SubObjective] = Field(default_factory=list)
+    strategy: str = "finish_objective"
+
+
+class ObjectivePreflightResult(BaseModel):
+    """Preflight result for an objective or sub-objective."""
+
+    status: Literal["success", "failure"] = "success"
+    category: Optional[str] = None
+    message: str = ""
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SubObjectiveResult(BaseModel):
+    """Result of one sub-objective execution."""
+
+    sub_objective_id: str
+    status: Literal["success", "failure", "skipped"]
+    category: Optional[str] = None
+    output: str = ""
+    error: Optional[str] = None
+    target_server: str
+    domain: str
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: List[str] = Field(default_factory=list)
+    verification: Optional[VerificationEnvelope] = None
+
+
+class ObjectiveEvidence(BaseModel):
+    """Accumulated evidence proving objective progress and completion."""
+
+    successful_sub_objectives: int = 0
+    failed_sub_objectives: int = 0
+    outputs: List[str] = Field(default_factory=list)
+    artifacts: List[str] = Field(default_factory=list)
+    data: Dict[str, Any] = Field(default_factory=dict)
+
 class TaskResult(BaseModel):
     """Unified output model for all Trinity modules."""
     task_id: str
     status: Literal["success", "failure", "need_assistance"]
-    category: Optional[str] = Field(None, description="Normalized contract category")
+    category: Optional[str] = Field(None, description="Normalized objective outcome category")
     code: Optional[str] = Field(None, description="Machine-readable error code")
     retriable: Optional[bool] = Field(None, description="Whether the operation is retriable")
     error: Optional[str] = Field(None, description="Human-readable error message (legacy compatible)")

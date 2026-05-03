@@ -146,7 +146,7 @@ async def test_execute_task_context_defaults_to_empty_dict():
 @pytest.mark.asyncio
 async def test_initialize_surfaces_missing_dependency_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     bridge = TrinityBridge()
-    monkeypatch.setattr(trinity_bridge, "TrinityExecutor", None)
+    monkeypatch.setattr(trinity_bridge, "ObjectiveOrchestrator", None)
     monkeypatch.setattr(
         trinity_bridge,
         "_TRINITY_IMPORT_ERROR",
@@ -184,7 +184,7 @@ async def test_initialize_uses_saved_openai_key_when_env_missing(monkeypatch: py
         return executor
 
     monkeypatch.setattr(trinity_bridge, "SettingsManager", _FakeSettingsManager)
-    monkeypatch.setattr(trinity_bridge, "TrinityExecutor", _build_executor)
+    monkeypatch.setattr(trinity_bridge, "ObjectiveOrchestrator", _build_executor)
 
     await bridge.initialize()
 

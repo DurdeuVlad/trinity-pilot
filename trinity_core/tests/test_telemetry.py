@@ -103,7 +103,7 @@ class TestInMemoryCollector:
 class TestExecutorTelemetry:
     @pytest.mark.asyncio
     async def test_successful_dispatch_emits_started_and_succeeded(self):
-        from trinity_core.trinity import TrinityExecutor
+        from trinity_core.trinity import ObjectiveOrchestrator
         from trinity_core.models import TaskResult
 
         class _Runtime:
@@ -120,9 +120,9 @@ class TestExecutorTelemetry:
         register_collector(collector)
         try:
             config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
-            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
+            async with ObjectiveOrchestrator(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-ok", description="list files", domain="cli")
-                executor._build_runtime = lambda _strategy_id: _Runtime()
+                executor._build_sub_objective_executor = lambda _strategy_id: _Runtime()
                 result = await executor.execute(task)
         finally:
             unregister_collector(collector)
@@ -134,7 +134,7 @@ class TestExecutorTelemetry:
 
     @pytest.mark.asyncio
     async def test_unhealthy_adapter_emits_started_and_failed(self):
-        from trinity_core.trinity import TrinityExecutor
+        from trinity_core.trinity import ObjectiveOrchestrator
         from trinity_core.models import TaskResult, StructuredError
 
         class _Runtime:
@@ -154,9 +154,9 @@ class TestExecutorTelemetry:
         register_collector(collector)
         try:
             config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
-            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
+            async with ObjectiveOrchestrator(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-bad", description="list files", domain="cli")
-                executor._build_runtime = lambda _strategy_id: _Runtime()
+                executor._build_sub_objective_executor = lambda _strategy_id: _Runtime()
                 await executor.execute(task)
         finally:
             unregister_collector(collector)
@@ -167,7 +167,7 @@ class TestExecutorTelemetry:
 
     @pytest.mark.asyncio
     async def test_event_payload_has_required_fields(self):
-        from trinity_core.trinity import TrinityExecutor
+        from trinity_core.trinity import ObjectiveOrchestrator
         from trinity_core.models import TaskResult
 
         class _Runtime:
@@ -184,9 +184,9 @@ class TestExecutorTelemetry:
         register_collector(collector)
         try:
             config = TrinityConfig(openai_api_key="mock-openai-key", ai_provider="openai")
-            async with TrinityExecutor(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
+            async with ObjectiveOrchestrator(config=config, llm_provider_factory=lambda: SimpleNamespace()) as executor:
                 task = TaskInput(task_id="tel-fields", description="test", domain="cli")
-                executor._build_runtime = lambda _strategy_id: _Runtime()
+                executor._build_sub_objective_executor = lambda _strategy_id: _Runtime()
                 await executor.execute(task)
         finally:
             unregister_collector(collector)

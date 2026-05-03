@@ -7,7 +7,7 @@ import orchestrator.orchestrator_core as core_module
 import pytest
 from orchestrator.database import TaskStatus
 from orchestrator.event_bus import EventBus
-from orchestrator.orchestrator_core import OrchestratorWorker
+from orchestrator.orchestrator_core import UnifiedAppObjectiveRunner
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -24,7 +24,7 @@ class RecordingHistoryManager:
     def start_task(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def add_step(self, *args: Any, **kwargs: Any) -> None:
+    def add_sub_objective(self, *args: Any, **kwargs: Any) -> None:
         return None
 
     def update_step_status(
@@ -115,7 +115,7 @@ async def test_worker_hands_finalized_objective_to_core_with_selected_target(
     monkeypatch.setattr(core_module, "get_event_bus", lambda: bus)
     monkeypatch.setattr(core_module, "TrinityBridge", RecordingBridge)
 
-    worker = OrchestratorWorker(
+    worker = UnifiedAppObjectiveRunner(
         "List files in the current directory",
         "cli",
         approved_plan=["Inspect the current directory", "Summarize the result"],
@@ -127,7 +127,7 @@ async def test_worker_hands_finalized_objective_to_core_with_selected_target(
     handoff = bridge.execute_calls[-1]
     assert handoff["domain"] == "cli"
     assert handoff["target_server"] == "cli_mcp"
-    assert handoff["objective_steps"] == ["Inspect the current directory", "Summarize the result"]
+    assert handoff["sub_objectives"] == ["Inspect the current directory", "Summarize the result"]
     assert "expected_outcome" not in handoff
 
     assert history.completed_calls[-1]["status"] == TaskStatus.COMPLETED
@@ -145,7 +145,7 @@ async def test_worker_reduces_mixed_request_to_one_selected_target(
     monkeypatch.setattr(core_module, "get_event_bus", lambda: bus)
     monkeypatch.setattr(core_module, "TrinityBridge", RecordingBridge)
 
-    worker = OrchestratorWorker("Open GitHub and inspect the issue page", "mixed")
+    worker = UnifiedAppObjectiveRunner("Open GitHub and inspect the issue page", "mixed")
     await worker._execute()
 
     bridge = RecordingBridge.instances[-1]

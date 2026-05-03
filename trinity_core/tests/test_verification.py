@@ -33,6 +33,33 @@ def test_build_verification_uses_explicit_checks_to_override_weak_fallbacks(tmp_
     assert verification.checks[0].status == "success"
 
 
+def test_build_verification_resolves_relative_file_targets_against_execution_cwd(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    target = logs_dir / "error_summary.txt"
+    target.write_text("ERROR 2\n", encoding="utf-8")
+    task = TaskInput(
+        task_id="verify-relative-file",
+        description="Write the aggregated counts to logs/error_summary.txt",
+        domain="cli",
+    )
+
+    verification = build_verification(
+        task=task,
+        module="cli",
+        backend_result={"status": "success", "metadata": {"cwd": str(tmp_path)}},
+        task_status="success",
+        execution_log=[],
+        output_text="created logs/error_summary.txt",
+    )
+
+    assert verification.status == "success"
+    file_checks = [check for check in verification.checks if check.kind == "file_exists"]
+    assert file_checks
+    assert file_checks[0].target == "logs/error_summary.txt"
+    assert file_checks[0].status == "success"
+
+
 def test_build_verification_marks_transient_failure_unknown() -> None:
     task = TaskInput(
         task_id="verify-transient",
@@ -61,7 +88,7 @@ def test_build_verification_cli_uses_command_exit_code_evidence() -> None:
     )
     execution_log = [
         {
-            "step": 1,
+            "turn": 1,
             "action": "dir",
             "result": "success",
             "details": "listed files",
@@ -139,7 +166,7 @@ def test_browser_verification_does_not_treat_model_text_as_browser_evidence() ->
         module="browser",
         backend_result={"status": "success", "metadata": {}},
         task_status="success",
-        execution_log=[{"step": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
+        execution_log=[{"turn": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
         output_text="done",
     )
 
@@ -161,7 +188,7 @@ def test_desktop_verification_does_not_treat_generic_tool_success_as_completion(
         module="desktop",
         backend_result={"status": "success", "metadata": {}},
         task_status="success",
-        execution_log=[{"step": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
+        execution_log=[{"turn": 1, "action": "echo", "result": "success", "details": "hello", "timestamp": "2026-04-17T00:00:00"}],
         output_text="done",
     )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -62,8 +63,20 @@ def read_window_content(app: str) -> str:
     return _load_uia_tools().read_window_content(app)
 
 
-def type_text(text: str) -> str:
-    return _load_uia_tools().type_text(text)
+def list_interactive_elements(app: str) -> str:
+    return _load_uia_tools().list_interactive_elements(app)
+
+
+def paste_clipboard(app: str = "") -> str:
+    return _load_uia_tools().paste_clipboard(app or None)
+
+
+def send_hotkey(keys: str, app: str = "") -> str:
+    return _load_uia_tools().send_hotkey(keys, app or None)
+
+
+def type_text(text: str, app: str = "") -> str:
+    return _load_uia_tools().type_text(text, app or None)
 
 
 from .base import Tool, ToolResult
@@ -72,6 +85,21 @@ from .base import Tool, ToolResult
 class _DesktopState:
     def __init__(self) -> None:
         self.active_app = ""
+        self.observed_text_by_app: dict[str, str] = {}
+
+    def remember_text(self, app: str, text: str) -> None:
+        key = (app or self.active_app or "").lower()
+        if not key:
+            return
+        literal = text.replace("{ENTER}", "\n").replace("{RETURN}", "\n").replace("{TAB}", "\t")
+        self.observed_text_by_app[key] = self.observed_text_by_app.get(key, "") + literal
+
+    def has_observed_text(self, app: str, text: str) -> bool:
+        wanted = text.replace("{ENTER}", "\n").replace("{RETURN}", "\n").replace("{TAB}", "\t")
+        for key, observed in self.observed_text_by_app.items():
+            if (not app or app.lower() in key or key in app.lower()) and wanted in observed:
+                return True
+        return False
 
 
 def _success_payload(**payload: Any) -> ToolResult:
@@ -92,6 +120,19 @@ def _result_from_desktop_output(raw: str, *, code: str = "DESKTOP_TOOL_FAILED") 
     if raw.startswith("ERROR:"):
         return _error_payload(raw[7:].strip(), code=code, retryable=True)
     return _success_payload(result=raw)
+
+
+def _target_app(kwargs: dict[str, Any], state: _DesktopState) -> str:
+    return str(kwargs.get("app") or state.active_app or "").strip()
+
+
+def _looks_like_hotkey(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if re.fullmatch(r"(?:\^|%|\+|\{[A-Za-z0-9_]+\})[A-Za-z0-9_%+{} ]+", stripped):
+        return True
+    return bool(re.fullmatch(r"(?i)(?:ctrl|control|alt|shift|win|cmd)(?:\s*\+\s*[A-Za-z0-9_{}]+)+", stripped))
 
 
 class DesktopOpenAppTool(Tool):
@@ -186,24 +227,98 @@ class DesktopClickTool(Tool):
 
 
 class DesktopTypeTool(Tool):
+    def __init__(self, state: _DesktopState) -> None:
+        self.state = state
+
     def name(self) -> str:
         return "type"
 
     def description(self) -> str:
-        return "Type text into the currently focused desktop control."
+        return "Type literal text into the active or specified desktop app. Use hotkey for shortcuts."
 
     def parameters(self) -> dict[str, Any]:
-        return {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+        return {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "app": {"type": "string"},
+            },
+            "required": ["text"],
+        }
 
     def annotations(self) -> dict:
         return {"title": "Type Text", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         text = str(kwargs["text"])
-        raw = await asyncio.to_thread(type_text, text)
+        app = _target_app(kwargs, self.state)
+        if _looks_like_hotkey(text):
+            raw = await asyncio.to_thread(send_hotkey, text, app)
+            if not raw.startswith("ERROR:"):
+                return _success_payload(result=raw, keys=text, app=app, routed_to_hotkey=True)
+            return _result_from_desktop_output(raw, code="DESKTOP_HOTKEY_FAILED")
+
+        raw = await asyncio.to_thread(type_text, text, app)
         if not raw.startswith("ERROR:"):
-            return _success_payload(result=raw, text=text)
+            self.state.remember_text(app, text)
+            return _success_payload(result=raw, text=text, app=app)
         return _result_from_desktop_output(raw, code="DESKTOP_TYPE_FAILED")
+
+
+class DesktopHotkeyTool(Tool):
+    def __init__(self, state: _DesktopState) -> None:
+        self.state = state
+
+    def name(self) -> str:
+        return "hotkey"
+
+    def description(self) -> str:
+        return "Send a keyboard shortcut to the active or specified desktop app."
+
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "keys": {"type": "string"},
+                "app": {"type": "string"},
+            },
+            "required": ["keys"],
+        }
+
+    def annotations(self) -> dict:
+        return {"title": "Send Hotkey", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        keys = str(kwargs["keys"])
+        app = _target_app(kwargs, self.state)
+        raw = await asyncio.to_thread(send_hotkey, keys, app)
+        if not raw.startswith("ERROR:"):
+            return _success_payload(result=raw, keys=keys, app=app)
+        return _result_from_desktop_output(raw, code="DESKTOP_HOTKEY_FAILED")
+
+
+class DesktopPasteTool(Tool):
+    def __init__(self, state: _DesktopState) -> None:
+        self.state = state
+
+    def name(self) -> str:
+        return "paste"
+
+    def description(self) -> str:
+        return "Paste current clipboard text into the active or specified desktop app."
+
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {"app": {"type": "string"}}}
+
+    def annotations(self) -> dict:
+        return {"title": "Paste Clipboard", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        app = _target_app(kwargs, self.state)
+        raw = await asyncio.to_thread(paste_clipboard, app)
+        if not raw.startswith("ERROR:"):
+            return _success_payload(result=raw, app=app)
+        return _result_from_desktop_output(raw, code="DESKTOP_PASTE_FAILED")
 
 
 class DesktopFocusTool(Tool):
@@ -356,6 +471,8 @@ class DesktopWaitForTextTool(Tool):
         if not app:
             return _error_payload("No active desktop app is selected.", code="NO_ACTIVE_APP", retryable=False)
         text = str(kwargs["text"])
+        if self.state.has_observed_text(app, text):
+            return _success_payload(app=app, text=text, evidence="typed_text_cache")
         deadline = time.time() + float(kwargs.get("timeout", 10))
         while time.time() < deadline:
             content = await asyncio.to_thread(read_window_content, app)
@@ -404,12 +521,44 @@ class DesktopGetFocusedWindowTool(Tool):
         return _success_payload(title=raw)
 
 
+class DesktopListControlsTool(Tool):
+    def __init__(self, state: _DesktopState) -> None:
+        self.state = state
+
+    def name(self) -> str:
+        return "list_controls"
+
+    def description(self) -> str:
+        return "List visible enabled controls in the active or specified desktop app."
+
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {"app": {"type": "string"}}}
+
+    def annotations(self) -> dict:
+        return {"title": "List Controls", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        app = _target_app(kwargs, self.state)
+        if not app:
+            return _error_payload("No active desktop app is selected.", code="NO_ACTIVE_APP", retryable=False)
+        raw = await asyncio.to_thread(list_interactive_elements, app)
+        if raw.startswith("ERROR:"):
+            return _result_from_desktop_output(raw, code="DESKTOP_LIST_CONTROLS_FAILED")
+        try:
+            elements = json.loads(raw)
+        except json.JSONDecodeError:
+            elements = []
+        return _success_payload(app=app, elements=elements)
+
+
 def build_desktop_tools() -> dict[str, Tool]:
     state = _DesktopState()
     tools: list[Tool] = [
         DesktopOpenAppTool(state),
         DesktopClickTool(state),
-        DesktopTypeTool(),
+        DesktopTypeTool(state),
+        DesktopHotkeyTool(state),
+        DesktopPasteTool(state),
         DesktopFocusTool(state),
         DesktopWaitForAppTool(),
         DesktopWaitForWindowTool(),
@@ -417,6 +566,7 @@ def build_desktop_tools() -> dict[str, Tool]:
         DesktopWaitForTextTool(state),
         DesktopListWindowsTool(),
         DesktopGetFocusedWindowTool(),
+        DesktopListControlsTool(state),
     ]
     return {tool.name(): tool for tool in tools}
 

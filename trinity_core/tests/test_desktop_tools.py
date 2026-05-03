@@ -12,8 +12,11 @@ import pytest
 
 from trinity_core.tools.desktop_tools import (
     DesktopGetFocusedWindowTool,
+    DesktopHotkeyTool,
     DesktopListWindowsTool,
     DesktopOpenAppTool,
+    DesktopTypeTool,
+    DesktopWaitForTextTool,
     _DesktopState,
     build_desktop_tools,
 )
@@ -154,7 +157,7 @@ async def test_open_app_was_existing_false():
 
 def test_build_desktop_tools_count():
     tools = build_desktop_tools()
-    assert len(tools) == 10
+    assert len(tools) == 13
 
 
 def test_build_desktop_tools_keys():
@@ -165,3 +168,56 @@ def test_build_desktop_tools_keys():
     assert "focus" in tools
     assert "click" in tools
     assert "type" in tools
+    assert "hotkey" in tools
+    assert "paste" in tools
+    assert "list_controls" in tools
+
+
+@pytest.mark.asyncio
+async def test_type_targets_active_app():
+    state = _DesktopState()
+    state.active_app = "Notepad"
+    tool = DesktopTypeTool(state)
+    with patch("trinity_core.tools.desktop_tools.type_text", return_value="OK") as type_mock:
+        result = await tool.execute(text="hello")
+    assert result.status == "success"
+    type_mock.assert_called_once_with("hello", "Notepad")
+
+
+@pytest.mark.asyncio
+async def test_type_routes_shortcut_syntax_to_hotkey():
+    state = _DesktopState()
+    state.active_app = "Notepad"
+    tool = DesktopTypeTool(state)
+    with patch("trinity_core.tools.desktop_tools.send_hotkey", return_value="OK") as hotkey_mock:
+        result = await tool.execute(text="^s")
+    assert result.status == "success"
+    payload = json.loads(result.output)
+    assert payload["routed_to_hotkey"] is True
+    hotkey_mock.assert_called_once_with("^s", "Notepad")
+
+
+@pytest.mark.asyncio
+async def test_hotkey_targets_active_app():
+    state = _DesktopState()
+    state.active_app = "Notepad"
+    tool = DesktopHotkeyTool(state)
+    with patch("trinity_core.tools.desktop_tools.send_hotkey", return_value="OK") as hotkey_mock:
+        result = await tool.execute(keys="Ctrl+S")
+    assert result.status == "success"
+    hotkey_mock.assert_called_once_with("Ctrl+S", "Notepad")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_text_uses_successful_type_evidence():
+    state = _DesktopState()
+    state.active_app = "Notepad"
+    type_tool = DesktopTypeTool(state)
+    wait_tool = DesktopWaitForTextTool(state)
+    with patch("trinity_core.tools.desktop_tools.type_text", return_value="OK"):
+        type_result = await type_tool.execute(app="Notepad", text="Meeting Notes - 2026-04-27\n")
+    wait_result = await wait_tool.execute(app="Notepad", text="Meeting Notes - 2026-04-27", timeout=0.01)
+    assert type_result.status == "success"
+    assert wait_result.status == "success"
+    payload = json.loads(wait_result.output)
+    assert payload["evidence"] == "typed_text_cache"

@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from mcp_server.run_monitor import RunEventRecorder
-from orchestrator.database import HistoryManager, TaskStatus
+from orchestrator.database import TaskStatus
+from orchestrator.orchestrator_core import HistoryManager
 
 
 def test_build_artifact_bundle_collects_prompt_response_and_screenshot_paths(tmp_path: Path) -> None:
@@ -25,9 +26,9 @@ def test_build_artifact_bundle_collects_prompt_response_and_screenshot_paths(tmp
 
     db_path = runtime_dir / "orchestrator_history.db"
     history = HistoryManager(db_path)
-    history.create_task("run_1", "example", "web", plan_steps=["step"])
+    history.create_task("run_1", "example", "web", sub_objectives=["check health"])
     history.start_task("run_1")
-    history.add_step("run_1", 1, "first step")
+    history.add_sub_objective("run_1", 1, "first step")
     history.update_step_status(
         "run_1",
         1,
@@ -55,9 +56,9 @@ def test_run_monitor_tracks_drift_state_and_terminal_sessions(tmp_path: Path) ->
 
     db_path = runtime_dir / "orchestrator_history.db"
     history = HistoryManager(db_path)
-    history.create_task("run_2", "example", "web", plan_steps=["step"])
+    history.create_task("run_2", "example", "web", sub_objectives=["check health"])
     history.start_task("run_2")
-    history.add_step("run_2", 1, "first step")
+    history.add_sub_objective("run_2", 1, "first step")
     history.update_step_status("run_2", 1, TaskStatus.FAILED, error_message="selector not found")
     history.complete_task(
         "run_2",

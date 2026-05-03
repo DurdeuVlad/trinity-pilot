@@ -3,6 +3,7 @@ PyQt6>=6.6.0
 
 # MCP
 fastmcp>=3.0.0,<4.0.0
+mcp>=1.0.0
 
 # Planning integration
 google-genai>=0.8.0

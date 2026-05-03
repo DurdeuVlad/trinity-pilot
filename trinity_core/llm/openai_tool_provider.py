@@ -25,6 +25,35 @@ class OpenAIToolCallingProvider(LLMProvider):
         self.model = model
 
     async def call(self, messages: list[dict], tools: dict[str, Any]) -> LLMResponse:
+        import importlib as _il, time as _time
+        _pl = None
+        try:
+            _pl = _il.import_module("audit_debugger.prompt_logger")
+        except ImportError:
+            pass
+        _call_id: str | None = None
+        _t0 = _time.perf_counter()
+        if _pl is not None:
+            try:
+                _prompt_text = "\n\n".join(
+                    f"{m['role'].upper()}: {m.get('content', '')}"
+                    for m in messages
+                    if m["role"] in ("system", "user", "assistant")
+                )
+                _system = next((m.get("content", "") for m in messages if m["role"] == "system"), "")
+                _call_id = _pl.log_prompt(
+                    prompt=_prompt_text,
+                    system_instructions=_system,
+                    purpose="execution",
+                    model=self.model,
+                    provider=self.provider_name,
+                    prompt_preview=_prompt_text[:500],
+                    prompt_length=len(_prompt_text),
+                    context_tokens_estimate=max(1, len(_prompt_text) // 4),
+                )
+            except Exception:
+                pass
+
         response = await self._client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -55,6 +84,23 @@ class OpenAIToolCallingProvider(LLMProvider):
                     arguments=arguments,
                 )
             )
+        if _pl is not None:
+            try:
+                _text = message.content or ""
+                _pl.log_response(
+                    response=_text,
+                    raw_response=response,
+                    purpose="execution",
+                    model=self.model,
+                    provider=self.provider_name,
+                    call_id=_call_id,
+                    response_preview=_text[:500],
+                    response_length=len(_text),
+                    latency_ms={"total": max(1, int((_time.perf_counter() - _t0) * 1000))},
+                )
+            except Exception:
+                pass
+
         return LLMResponse(text=message.content or "", tool_calls=tool_calls)
 
     @property
