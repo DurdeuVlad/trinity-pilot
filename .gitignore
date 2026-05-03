@@ -42,10 +42,14 @@ sessions/
 .logs/
 .metrics/
 .scratch/
+trinity_core/_data/
+unified-app/logs/
 screenshot_*_end.jpg
 screenshot_*
 
 # Generated artifacts
+/*.png
+unified-app/*.png
 coverage.json
 coverage.xml
 htmlcov/
