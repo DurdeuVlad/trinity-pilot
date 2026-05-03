@@ -1,5 +1,5 @@
 """
-Live runner for the 9 domain scenarios.
+Live runner for the 10 domain scenarios.
 
 Executes each scenario directly through TrinityBridge (no Qt, no mocks).
 Prints a per-scenario result line and a final summary table.
@@ -213,6 +213,23 @@ SCENARIOS: list[Scenario] = [
             "Create a file requests_summary.txt with: GitHub stars, latest release tag, "
             "locally installed version, and whether the import succeeded",
             "Confirm the file exists and print its full contents",
+        ],
+    ),
+    Scenario(
+        name="TestCrossDomainThreeDomainChain",
+        difficulty="complex",
+        category="cross",
+        description=(
+            "Look up the top trending Python repository on GitHub, "
+            "check the local Python version via terminal, "
+            "then open Notepad and save a brief summary note to the Desktop"
+        ),
+        domain="mixed",
+        target_server=None,
+        approved_plan=[
+            "Navigate to github.com/trending/python and extract the name and one-line description of the top trending repository",
+            "Run 'python --version' in the terminal to capture the installed Python version",
+            "Open Notepad, type a 3-line summary containing the repository name, its description, and the local Python version, then save the file as trending_summary.txt on the Desktop",
         ],
     ),
 ]
@@ -456,7 +473,7 @@ async def main() -> None:
     results: list[Result] = []
 
     for i, scenario in enumerate(SCENARIOS, start=1):
-        label = f"[{i:02d}/09] {scenario.category.upper():8s} {scenario.difficulty:8s}  {scenario.name}"
+        label = f"[{i:02d}/{len(SCENARIOS):02d}] {scenario.category.upper():8s} {scenario.difficulty:8s}  {scenario.name}"
         print(f"\n{label}")
         print("-" * len(label))
         print(f"  Task:    {scenario.description[:80]}")

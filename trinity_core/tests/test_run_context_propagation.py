@@ -217,6 +217,77 @@ def test_build_system_prompt_renders_web_prior_result_in_cli_executor():
 
 
 @pytest.mark.asyncio
+async def test_unique_marker_propagates_from_web_step_to_cli_step(monkeypatch):
+    """Unique UUID marker from step 1 output must appear verbatim in step 2's system prompt.
+
+    This proves causation: step 2 can only know the marker if it received
+    it through prior_results. Hallucination or training data cannot produce
+    a runtime-generated UUID.
+    """
+    import uuid
+    marker = f"XMARKER-{uuid.uuid4().hex[:12].upper()}"
+
+    captured_prompts: list[str] = []
+
+    class _MarkerLLM:
+        async def call(self, messages, tools):
+            sys_prompt = next(
+                (m["content"] for m in messages if m.get("role") == "system"), ""
+            )
+            # Planning calls have no system message — force fallback plan
+            if not sys_prompt or not tools:
+                return LLMResponse(text="null")
+
+            captured_prompts.append(sys_prompt)
+            has_prior = "PRIOR RESULTS" in sys_prompt
+            has_tool_result = any(m.get("role") == "tool" for m in messages)
+
+            if not has_prior:
+                # Step 1 (web): call inspect_state to produce browser-verifiable
+                # evidence (current_url + page_title), then return final text
+                # containing the marker so it enters run_context.
+                if not has_tool_result:
+                    return LLMResponse(
+                        tool_calls=[ToolCall(id="m1", name="inspect_state", arguments={})]
+                    )
+                return LLMResponse(text=f"Page inspection complete. Key finding: {marker}")
+
+            # Step 2+: complete normally (prior_results already captured above)
+            if not has_tool_result:
+                return LLMResponse(
+                    tool_calls=[ToolCall(id="m2", name="echo", arguments={"text": "step-2-done"})]
+                )
+            return LLMResponse(text="Step 2 done")
+
+    monkeypatch.setattr(
+        StrategyRegistry, "create_default", classmethod(lambda cls, root: _registry())
+    )
+
+    async with ObjectiveOrchestrator(
+        config=TrinityConfig(gemini_api_key="test", openai_api_key="test"),
+        llm_provider_factory=_MarkerLLM,
+    ) as orch:
+        await orch.execute(
+            TaskInput(
+                task_id="marker-prop-1",
+                description="Web research then CLI write",
+                domain="mixed",
+                sub_objectives=[
+                    "Open http://example.com in the browser and extract the page title",
+                    "Run echo in the terminal with the extracted title",
+                ],
+            )
+        )
+
+    prompts_with_prior = [p for p in captured_prompts if "PRIOR RESULTS" in p]
+    assert prompts_with_prior, "step 2 must receive a PRIOR RESULTS section"
+    assert any(marker in p for p in prompts_with_prior), (
+        f"unique marker {marker!r} must appear verbatim in step 2's system prompt — "
+        "proves data flowed through prior_results, not hallucinated"
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_sub_objective_injects_run_context_across_domains(monkeypatch):
     """Integration: run_context from a web step is present in sub_task.context for a cli step."""
     captured_contexts: list[dict] = []
