@@ -152,11 +152,13 @@ class ObjectivePlanner:
     def _fallback_plan(self, task: Any) -> ObjectivePlan:
         items = list(task.sub_objectives or []) or [task.description]
         sub_objectives: list[SubObjective] = []
+        task_domain = (getattr(task, "domain", "") or "").lower()
+        task_server = None if task_domain in {"mixed", "cross"} else getattr(task, "target_server", None)
         for index, objective in enumerate(items, start=1):
             domain, target_server = self._route_objective(
                 str(objective),
                 task_domain=task.domain,
-                target_server=getattr(task, "target_server", None),
+                target_server=task_server,
             )
             sub_objectives.append(
                 SubObjective(
@@ -178,13 +180,20 @@ class ObjectivePlanner:
 
     def _normalize_plan(self, task: Any, plan: ObjectivePlan) -> ObjectivePlan:
         normalized: list[SubObjective] = []
-        source_steps = plan.sub_objectives or self._fallback_plan(task).sub_objectives
+        approved_steps = list(getattr(task, "sub_objectives", []) or [])
+        source_steps = (
+            self._approved_plan_steps(task, plan)
+            if approved_steps
+            else plan.sub_objectives or self._fallback_plan(task).sub_objectives
+        )
+        task_domain = (getattr(task, "domain", "") or "").lower()
+        task_server = None if task_domain in {"mixed", "cross"} else getattr(task, "target_server", None)
         for index, sub in enumerate(source_steps, start=1):
             objective = sub.objective or task.description
             domain, target_server = self._route_objective(
                 objective,
                 task_domain=sub.domain or task.domain,
-                target_server=sub.target_server or getattr(task, "target_server", None),
+                target_server=sub.target_server or task_server,
             )
             normalized.append(
                 sub.model_copy(
@@ -206,6 +215,39 @@ class ObjectivePlanner:
             strategy=plan.strategy or "finish_objective",
             sub_objectives=normalized,
         )
+
+    def _approved_plan_steps(self, task: Any, plan: ObjectivePlan) -> list[SubObjective]:
+        """Return one normalized source step for every caller-approved sub-objective.
+
+        The approved list is the execution contract. An LLM plan can improve routing
+        and postconditions, but it must not drop, merge, or reorder caller-supplied
+        objectives. If it does, fall back for the missing entries.
+        """
+        fallback_steps = self._fallback_plan(task).sub_objectives
+        planned_by_objective = {
+            _normalize_objective_key(sub.objective): sub
+            for sub in (plan.sub_objectives or [])
+            if str(sub.objective or "").strip()
+        }
+        source_steps: list[SubObjective] = []
+        for index, fallback in enumerate(fallback_steps, start=1):
+            planned = planned_by_objective.get(_normalize_objective_key(fallback.objective))
+            if planned is None:
+                source_steps.append(fallback)
+                continue
+            source_steps.append(
+                planned.model_copy(
+                    update={
+                        "sub_objective_id": fallback.sub_objective_id or f"sub-{index}",
+                        "objective": fallback.objective,
+                        "postconditions": list(planned.postconditions or fallback.postconditions),
+                        "preconditions": list(planned.preconditions or fallback.preconditions),
+                        "depends_on": list(planned.depends_on or []),
+                        "timeout": planned.timeout if planned.timeout is not None else fallback.timeout,
+                    }
+                )
+            )
+        return source_steps
 
     def _route_objective(
         self,
@@ -262,6 +304,10 @@ class ObjectivePlanner:
 
 def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
     return any(needle in value for needle in needles)
+
+
+def _normalize_objective_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:

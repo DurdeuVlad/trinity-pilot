@@ -13,13 +13,16 @@ Timeout: 120 s per scenario.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import shutil
 import sys
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from urllib.request import Request, urlopen
+from typing import Any, Optional
 
 # Path setup — mirrors conftest.py logic
 # __file__ = trinity-pilot/unified-app/tests/run_live_domain_scenarios.py
@@ -45,6 +48,8 @@ load_dotenv(_REPO_ROOT / ".env", override=False)
 from orchestrator.trinity_bridge import TrinityBridge  # noqa: E402
 
 TIMEOUT_S = 120
+RUN_ID = time.strftime("%Y%m%d-%H%M%S")
+RESULTS_DIR = _UNIFIED_APP / "_runtime" / "live_domain_scenarios" / RUN_ID
 
 # ---------------------------------------------------------------------------
 # Scenario registry (mirrors test_domain_scenarios.py, no ABC dependency)
@@ -55,7 +60,7 @@ class Scenario:
     name: str
     description: str
     domain: str
-    target_server: str
+    target_server: Optional[str]
     approved_plan: list[str]
     difficulty: str   # easy | moderate | complex
     category: str     # cli | web | desktop | cross
@@ -157,58 +162,57 @@ SCENARIOS: list[Scenario] = [
         difficulty="easy",
         category="cross",
         description=(
-            "Look up the current Python release notes on python.org "
-            "and save the key points to a local file"
+            "Look up the latest Python version on python.org "
+            "and save the version number to a local text file"
         ),
-        domain="web",
-        target_server="browser_mcp",
+        domain="mixed",
+        target_server=None,
         approved_plan=[
-            "Navigate to python.org/downloads and locate the latest release section",
-            "Extract the version number and the top 5 highlighted changes",
-            "Open a terminal and create the file python_release_notes.txt",
-            "Write the extracted version number and change list into the file",
-            "Confirm the file exists and contains the expected version string",
-            "Print the file path and line count as the final result",
+            "Navigate to python.org/downloads and find the latest stable release version number",
+            "Create a file latest_python_version.txt in the current working directory",
+            "Write the version number into the file",
+            "Confirm the file exists and print its contents",
         ],
     ),
     Scenario(
-        name="TestCrossDomainModerateSystemStatusReport",
+        name="TestCrossDomainModerateResearchAndDraft",
         difficulty="moderate",
         category="cross",
         description=(
-            "Collect CPU, memory, and disk metrics from the terminal, "
-            "verify them against the local monitoring dashboard, "
-            "and create a status report in Notepad"
+            "Look up the top 3 Python web frameworks on a reputable site, "
+            "then collect the local Python version via terminal, "
+            "and save a compatibility summary as a text file"
         ),
         domain="mixed",
-        target_server="browser_mcp",
+        target_server=None,
         approved_plan=[
-            "Run 'wmic cpu get loadpercentage' and 'systeminfo' to capture CPU and memory usage",
-            "Run 'dir C:\\ /s' to measure disk usage and summarise free space on each drive",
-            "Open the monitoring dashboard at http://localhost:3000 in the browser",
-            "Locate the CPU, memory, and disk panels and compare values with the CLI output",
-            "Open Notepad and paste the CLI metrics alongside the dashboard readings",
-            "Save the file as system_status_report.txt with today's date in the filename",
+            "Navigate to python.org or a well-known Python resource and identify the top 3 web frameworks",
+            "Extract the name and one-line description for each framework",
+            "Run 'python --version' in the terminal to capture the local Python version",
+            "Create a file framework_summary.txt with the local Python version at the top, "
+            "followed by the 3 framework names and descriptions",
+            "Confirm the file exists and print its contents",
         ],
     ),
     Scenario(
-        name="TestCrossDomainComplexDeploymentVerification",
+        name="TestCrossDomainComplexRepoSummary",
         difficulty="complex",
         category="cross",
         description=(
-            "After a deployment: verify the service process is running via CLI, "
-            "confirm the UI responds correctly in the browser, "
-            "then append a success entry to the deployment log and save a summary note"
+            "Find the GitHub repository for the 'requests' Python library, "
+            "collect its star count and latest release tag, "
+            "check if 'requests' is installed locally via pip, "
+            "and save a full summary note to a file"
         ),
         domain="mixed",
-        target_server="browser_mcp",
+        target_server=None,
         approved_plan=[
-            "Run 'tasklist | findstr app.exe' to confirm the service process is running",
-            "Run 'curl -s http://localhost:8080/health' and verify the JSON response contains status=ok",
-            "Navigate to http://localhost:8080 in the browser and confirm the homepage loads",
-            "Submit the test credentials on the login form and verify the dashboard page appears",
-            "Open logs/deployment.log in a text editor and append a timestamped success entry",
-            "Save a deployment summary as deploy_done.txt on the Desktop with version and timestamp",
+            "Navigate to github.com/psf/requests and extract the star count and latest release tag",
+            "Run 'pip show requests' in the terminal to get the locally installed version",
+            "Run 'python -c \"import requests; print(requests.__version__)\"' to confirm the import works",
+            "Create a file requests_summary.txt with: GitHub stars, latest release tag, "
+            "locally installed version, and whether the import succeeded",
+            "Confirm the file exists and print its full contents",
         ],
     ),
 ]
@@ -304,7 +308,58 @@ def validate_scenario_result(scenario: Scenario) -> str:
     return ""
 
 
+def persist_result(index: int, result: Result) -> None:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = RESULTS_DIR / f"{index:02d}_{result.scenario.name}.json"
+    payload = {
+        "scenario": {
+            "name": result.scenario.name,
+            "description": result.scenario.description,
+            "domain": result.scenario.domain,
+            "target_server": result.scenario.target_server,
+            "difficulty": result.scenario.difficulty,
+            "category": result.scenario.category,
+        },
+        "status": result.status,
+        "elapsed_s": result.elapsed_s,
+        "output": result.output,
+        "error": result.error,
+        "steps_completed": result.steps_completed,
+        "verification_status": result.verification_status,
+        "raw": result.raw,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _localhost_urls_in_plan(plan: list[str]) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+    for step in plan:
+        for url in re.findall(r"https?://localhost:\d+(?:/[^\s,)]*)?", step, flags=re.IGNORECASE):
+            cleaned = url.rstrip(".,;")
+            if cleaned not in seen:
+                seen.add(cleaned)
+                urls.append(cleaned)
+    return urls
+
+
+def _url_reachable(url: str) -> bool:
+    try:
+        with urlopen(Request(url, method="GET"), timeout=3) as resp:
+            return 200 <= resp.status < 500
+    except Exception:
+        return False
+
+
 async def run_one(bridge: TrinityBridge, scenario: Scenario) -> Result:
+    for url in _localhost_urls_in_plan(scenario.approved_plan):
+        if not await asyncio.to_thread(_url_reachable, url):
+            return Result(
+                scenario=scenario,
+                status="skipped",
+                elapsed_s=0.0,
+                error=f"Required service not reachable: {url}",
+            )
     prepare_scenario(scenario)
     task_id = f"live-{uuid.uuid4().hex[:8]}"
     t0 = time.perf_counter()
@@ -325,7 +380,7 @@ async def run_one(bridge: TrinityBridge, scenario: Scenario) -> Result:
         elapsed = time.perf_counter() - t0
 
         payload: dict[str, Any] = (
-            result.model_dump() if hasattr(result, "model_dump") else dict(result)
+            result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
         )
         status = payload.get("status", "unknown")
         meta = payload.get("metadata") or {}
@@ -377,7 +432,7 @@ async def run_one(bridge: TrinityBridge, scenario: Scenario) -> Result:
 
 
 def _status_icon(status: str) -> str:
-    return {"success": "PASS", "failure": "FAIL", "error": "ERR!", "timeout": "TIME"}.get(
+    return {"success": "PASS", "failure": "FAIL", "error": "ERR!", "timeout": "TIME", "skipped": "SKIP"}.get(
         status, "????"
     )
 
@@ -410,6 +465,7 @@ async def main() -> None:
 
         result = await run_one(bridge, scenario)
         results.append(result)
+        persist_result(i, result)
 
         icon = _status_icon(result.status)
         print(f"\r  [{icon}] {result.elapsed_s:.1f}s   status={result.status}")
@@ -441,9 +497,11 @@ async def main() -> None:
     failed = sum(1 for r in results if r.status == "failure")
     errors = sum(1 for r in results if r.status == "error")
     timeouts = sum(1 for r in results if r.status == "timeout")
+    skipped = sum(1 for r in results if r.status == "skipped")
 
     print("-" * 72)
-    print(f"Total: {len(results)}  PASS={passed}  FAIL={failed}  ERR={errors}  TIMEOUT={timeouts}")
+    print(f"Total: {len(results)}  PASS={passed}  FAIL={failed}  ERR={errors}  TIMEOUT={timeouts}  SKIP={skipped}")
+    print(f"Result JSON: {RESULTS_DIR}")
     print("=" * 72)
 
 
