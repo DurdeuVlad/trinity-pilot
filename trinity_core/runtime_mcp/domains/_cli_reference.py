@@ -43,6 +43,7 @@ COMMAND CHEAT SHEET (translate shorthand to validator-safe PowerShell):
   Count matches              -> (Get-ChildItem -Path <dir> -Recurse -File | Select-String -Pattern 'text').Count
   Create directory           -> New-Item -Path <dir> -ItemType Directory -Force
   Create/overwrite text file -> 'content' | Out-File -FilePath <file> -Encoding utf8
+  Preferred text file writes -> use write_text_file with file_path and content
   Append to file             -> 'content' | Add-Content -Path <file>
   Check path exists          -> Test-Path <path>
   Rename file/folder         -> Rename-Item -Path <path> -NewName <name>
@@ -79,4 +80,7 @@ FORBIDDEN PATTERNS (these are rejected by the validator, do not emit them):
   Restart-Computer           (CL-POL-009) -- system restart
   Stop-Computer              (CL-POL-010) -- system shutdown
   cmd /c, powershell -Command -- shell wrappers (not needed; use cmdlets directly)
+
+When a task asks you to create, overwrite, append, or save multiline text, prefer
+the `write_text_file` tool. Do not send raw file contents as a shell command.
 """

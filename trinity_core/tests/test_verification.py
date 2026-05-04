@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trinity_core.models import TaskInput
-from trinity_core.verification import build_verification
+from trinity_core.verification import _extract_desktop_file_target, build_verification
 
 
 def test_build_verification_uses_explicit_checks_to_override_weak_fallbacks(tmp_path: Path) -> None:
@@ -58,6 +58,45 @@ def test_build_verification_resolves_relative_file_targets_against_execution_cwd
     assert file_checks
     assert file_checks[0].target == "logs/error_summary.txt"
     assert file_checks[0].status == "success"
+
+
+def test_build_verification_cli_uses_write_text_file_metadata(tmp_path: Path) -> None:
+    target = tmp_path / "reports" / "manifest.txt"
+    target.parent.mkdir()
+    target.write_text("Total moved: 8", encoding="utf-8")
+    task = TaskInput(
+        task_id="verify-write-text-file",
+        description="Write reports/manifest.txt with Total moved: 8",
+        domain="cli",
+        expected_outcome="manifest.txt created with correct content",
+        verification_checks=[
+            {"kind": "visible_tool_execution", "target": "mcp_visible_tools", "expected": True},
+        ],
+    )
+
+    verification = build_verification(
+        task=task,
+        module="cli",
+        backend_result={
+            "status": "success",
+            "successful_actions": 1,
+            "total_actions": 1,
+            "metadata": {"file_path": str(target)},
+        },
+        task_status="success",
+        execution_log=[
+            {
+                "turn": 1,
+                "action": "write_text_file",
+                "result": "success",
+                "metadata": {"file_path": str(target)},
+            }
+        ],
+        output_text="manifest written",
+    )
+
+    assert verification.status == "success"
+    assert any(check.kind == "file_exists" and check.status == "success" for check in verification.checks)
 
 
 def test_build_verification_marks_transient_failure_unknown() -> None:
@@ -193,3 +232,45 @@ def test_desktop_verification_does_not_treat_generic_tool_success_as_completion(
     )
 
     assert verification.status == "unknown"
+
+
+def test_desktop_verification_requires_named_desktop_file_to_exist() -> None:
+    target = Path.home() / "Desktop" / "meeting_notes_template.txt"
+    target.unlink(missing_ok=True)
+    task = TaskInput(
+        task_id="verify-desktop-save",
+        description="Save the file as meeting_notes_template.txt on the Desktop",
+        domain="desktop",
+        verification_checks=[{"kind": "visible_tool_execution", "target": "mcp_visible_tools", "expected": True}],
+    )
+
+    verification = build_verification(
+        task=task,
+        module="desktop",
+        backend_result={"status": "success", "metadata": {"active_window": "Notepad"}},
+        task_status="success",
+        execution_log=[
+            {
+                "turn": 1,
+                "action": "hotkey",
+                "result": "success",
+                "details": "save dialog accepted",
+                "timestamp": "2026-04-17T00:00:00",
+            }
+        ],
+        output_text="saved",
+    )
+
+    file_checks = [check for check in verification.checks if check.kind == "file_exists"]
+    assert file_checks
+    assert file_checks[0].target.endswith("Desktop\\meeting_notes_template.txt") or file_checks[0].target.endswith("Desktop/meeting_notes_template.txt")
+    assert file_checks[0].status == "failure"
+    assert verification.status == "failure"
+
+
+def test_desktop_target_extraction_resolves_userprofile_fragment_to_home_desktop() -> None:
+    target = _extract_desktop_file_target(
+        r"File exists at %USERPROFILE%\Desktop\meeting_notes_template.txt"
+    )
+
+    assert target == str(Path.home() / "Desktop" / "meeting_notes_template.txt")

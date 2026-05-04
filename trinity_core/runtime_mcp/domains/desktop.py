@@ -32,7 +32,7 @@ class DesktopMCPServer(TrinityMCPServer):
 Trinity Desktop Toolset -- pywinauto-based Windows UI automation.
 
 CAPABILITIES: Window management, control interaction (click, type, paste),
-control inspection, screenshot, focus/unfocus, keyboard shortcuts.
+control inspection, screenshot, focus/unfocus, keyboard shortcuts, text file saving.
 
 CONSTRAINTS:
 - Serial execution; UI state is globally shared
@@ -48,6 +48,9 @@ GUIDANCE:
   should be inserted as one action.
 - Use wait tools to confirm apps, windows, and UI elements before acting
 - Verify visible window titles or elements after meaningful desktop actions
+- For objectives that explicitly ask to save a text file to Desktop or another local path,
+  use save_text_file with the full literal path and content. Do not drive Notepad's Save As
+  dialog through repeated Ctrl+S/hotkey attempts.
 
 FORBIDDEN:
 - Do not use raw coordinates without prior element verification
@@ -141,6 +144,7 @@ REORIENTATION:
         return [
             "Open Notepad and type text into the editor",
             "Save a desktop document with hotkey Ctrl+S",
+            "Save a desktop text file directly with save_text_file",
             "Click a button in a running desktop application",
             "Read the text content of a window's control",
             "Close an application via its window controls",

@@ -198,10 +198,74 @@ class CLIWaitForFileTool(Tool):
         )
 
 
+class CLIWriteTextFileTool(Tool):
+    """Write text files without forcing the model to handcraft multiline PowerShell."""
+
+    def name(self) -> str:
+        return "write_text_file"
+
+    def description(self) -> str:
+        return "Create, overwrite, or append UTF-8 text to a file path."
+
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "content": {"type": "string"},
+                "append": {"type": "boolean", "default": False},
+                "create_parent_dirs": {"type": "boolean", "default": True},
+            },
+            "required": ["file_path", "content"],
+        }
+
+    def annotations(self) -> dict:
+        return {
+            "title": "Write Text File",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        raw_path = str(kwargs["file_path"]).strip().strip('"')
+        content = str(kwargs["content"])
+        append = bool(kwargs.get("append", False))
+        create_parent_dirs = bool(kwargs.get("create_parent_dirs", True))
+        if not raw_path:
+            return _error_payload("file_path cannot be empty.", code="CLI_FILE_PATH_EMPTY", retryable=False)
+
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if create_parent_dirs:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _write() -> None:
+            mode = "a" if append else "w"
+            with path.open(mode, encoding="utf-8", newline="") as handle:
+                handle.write(content)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as exc:
+            return _error_payload(str(exc), code="CLI_FILE_WRITE_FAILED", retryable=True)
+
+        return _success_payload(
+            file_path=str(path),
+            bytes_written=len(content.encode("utf-8")),
+            append=append,
+            cwd=os.getcwd(),
+            stdout=content,
+        )
+
+
 def build_cli_tools() -> dict[str, Tool]:
     session = _CLISession()
     tools: list[Tool] = [
         CLIRunCommandTool(session),
+        CLIWriteTextFileTool(),
         CLIReadOutputTool(session),
         CLIWaitForOutputTool(session),
         CLIWaitForFileTool(),

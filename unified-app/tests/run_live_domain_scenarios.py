@@ -523,4 +523,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--filter", dest="filter", default="", help="Run only scenarios whose name or category contains this substring (case-insensitive)")
+    args = parser.parse_args()
+    if args.filter:
+        needle = args.filter.lower()
+        SCENARIOS[:] = [s for s in SCENARIOS if needle in s.name.lower() or needle in s.category.lower()]
     asyncio.run(main())

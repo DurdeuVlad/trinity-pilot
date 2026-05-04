@@ -321,6 +321,43 @@ class DesktopPasteTool(Tool):
         return _result_from_desktop_output(raw, code="DESKTOP_PASTE_FAILED")
 
 
+class DesktopSaveTextFileTool(Tool):
+    def name(self) -> str:
+        return "save_text_file"
+
+    def description(self) -> str:
+        return "Save literal text to a local text file from the desktop domain."
+
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["file_path", "content"],
+        }
+
+    def annotations(self) -> dict:
+        return {
+            "title": "Save Text File",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        file_path = Path(str(kwargs["file_path"])).expanduser()
+        content = str(kwargs["content"])
+        try:
+            await asyncio.to_thread(file_path.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(file_path.write_text, content, "utf-8")
+        except Exception as exc:
+            return _error_payload(str(exc), code="DESKTOP_SAVE_TEXT_FILE_FAILED", retryable=True)
+        return _success_payload(file_path=str(file_path), bytes=len(content.encode("utf-8")))
+
+
 class DesktopFocusTool(Tool):
     def __init__(self, state: _DesktopState) -> None:
         self.state = state
@@ -559,6 +596,7 @@ def build_desktop_tools() -> dict[str, Tool]:
         DesktopTypeTool(state),
         DesktopHotkeyTool(state),
         DesktopPasteTool(state),
+        DesktopSaveTextFileTool(),
         DesktopFocusTool(state),
         DesktopWaitForAppTool(),
         DesktopWaitForWindowTool(),

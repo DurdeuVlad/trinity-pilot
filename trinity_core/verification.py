@@ -221,15 +221,7 @@ def _build_fallback_checks(
 ) -> list[VerificationCheck]:
     checks: list[VerificationCheck] = []
     if module == "browser":
-        extracted = str(backend_result.get("extracted_text") or "")
-        if extracted and task.expected_outcome:
-            checks.append(
-                VerificationCheck(
-                    kind="text_contains",
-                    target="combined_text",
-                    expected=_pick_text_probe(task.expected_outcome),
-                )
-            )
+        pass  # browser success determined by _has_browser_evidence; no text_contains fallback
     elif module == "cli":
         entries = [_as_log_dict(entry) for entry in execution_log]
         exit_codes = [entry.get("exit_code") for entry in entries if entry.get("exit_code") is not None]
@@ -241,7 +233,31 @@ def _build_fallback_checks(
                     expected=0,
                 )
             )
-        file_target = _extract_file_target(task.expected_outcome or task.description)
+        metadata = backend_result.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        file_target = (
+            str(metadata.get("file_path") or "").strip()
+            or _extract_file_target(task.expected_outcome or "")
+            or _extract_file_target(task.description)
+        )
+        if file_target:
+            checks.append(
+                VerificationCheck(
+                    kind="file_exists",
+                    target=file_target,
+                    expected=True,
+                )
+            )
+    elif module == "desktop":
+        metadata = backend_result.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        file_target = (
+            str(metadata.get("file_path") or "").strip()
+            or _extract_desktop_file_target(task.expected_outcome or "")
+            or _extract_desktop_file_target(task.description)
+        )
         if file_target:
             checks.append(
                 VerificationCheck(
@@ -529,6 +545,26 @@ def _extract_file_target(text: str) -> str | None:
     if not match:
         return None
     return match.group(1).strip("`'\".,;:")
+
+
+def _extract_desktop_file_target(text: str) -> str | None:
+    explicit = _extract_file_target(text)
+    if explicit:
+        explicit_text = str(explicit)
+        if not re.match(r"^[\\/]", explicit_text):
+            return explicit_text
+        filename_match = re.search(r"\b([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,12})\b", explicit_text)
+        if filename_match and re.search(r"[\\/]desktop[\\/]", explicit_text, re.IGNORECASE):
+            return str(Path.home() / "Desktop" / filename_match.group(1))
+    if not re.search(r"\bdesktop\b", text or "", re.IGNORECASE):
+        return None
+    match = re.search(r"\b([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,12})\b", text or "")
+    if not match:
+        return None
+    filename = match.group(1).strip("`'\".,;: ")
+    if not filename:
+        return None
+    return str(Path.home() / "Desktop" / filename)
 
 
 def _resolve_file_target(target: str, evidence: dict[str, Any]) -> str:

@@ -10,6 +10,7 @@ from trinity_core.sub_objective_executor import SubObjectiveExecutor
 from trinity_core.models import TaskInput
 from trinity_core.strategy_registry import MCPStrategy, PromptContribution
 from trinity_core.tools.base import ToolResult
+from trinity_core.tools.base import Tool
 
 
 class _FakeLLM:
@@ -23,6 +24,23 @@ class _FakeLLM:
         if self.calls == 1:
             return LLMResponse(tool_calls=[ToolCall(id="1", name="inspect_state", arguments={})])
         return LLMResponse(text="done")
+
+
+class _FakeMutatingTool(Tool):
+    def name(self) -> str:
+        return "hotkey"
+
+    def description(self) -> str:
+        return "Fake mutating hotkey."
+
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def annotations(self) -> dict:
+        return {"readOnlyHint": False}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(status="success", output="ok")
 
 
 @pytest.mark.asyncio
@@ -206,6 +224,11 @@ class _EchoThenDoneLLM:
         return LLMResponse(text="done")
 
 
+class _RepeatHotkeyLLM:
+    async def call(self, messages, tools):
+        return LLMResponse(tool_calls=[ToolCall(id="1", name="hotkey", arguments={"app": "Notepad", "keys": "^s"})])
+
+
 @pytest.mark.asyncio
 async def test_sub_objective_executor_web_requires_browser_side_evidence_not_model_text():
     strategy = MCPStrategy(
@@ -279,3 +302,114 @@ async def test_sub_objective_executor_marks_transient_failure_as_unknown_verific
     assert result.verification is not None
     assert result.verification.status == "unknown"
     assert result.verification.review_required is True
+
+
+@pytest.mark.asyncio
+async def test_sub_objective_executor_records_tool_success_as_failure_when_objective_verification_fails(monkeypatch):
+    strategy = MCPStrategy(
+        strategy_id="fake-desktop",
+        server_command=sys.executable,
+        server_args=[str(Path(__file__).with_name("fake_strategy_server.py"))],
+        domain="desktop",
+        display_name="Fake Desktop",
+        description="Fake desktop strategy",
+    )
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_EchoThenDoneLLM())
+    writes = []
+
+    async def _capture_write(**kwargs):
+        writes.append(kwargs)
+
+    monkeypatch.setattr(runtime, "_write_action_memory", _capture_write)
+    try:
+        result = await runtime.execute(TaskInput(task_id="rt-memory-fail", description="open window", domain="desktop"))
+    finally:
+        await runtime.close()
+
+    assert result.status == "failure"
+    assert writes
+    assert writes[0]["action_name"] == "echo"
+    assert writes[0]["outcome"] == "failure"
+    assert writes[0]["error_code"] == "OBJECTIVE_UNKNOWN"
+
+
+def test_sub_objective_executor_blocks_repeated_mutating_action_after_two_successes():
+    strategy = MCPStrategy(
+        strategy_id="fake-desktop",
+        server_command=sys.executable,
+        server_args=[str(Path(__file__).with_name("fake_strategy_server.py"))],
+        domain="desktop",
+        display_name="Fake Desktop",
+        description="Fake desktop strategy",
+    )
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_EchoThenDoneLLM())
+    execution_log = [
+        {"action": "hotkey", "arguments": {"app": "Notepad", "keys": "^s"}, "result": "success"},
+        {"action": "hotkey", "arguments": {"app": "Notepad", "keys": "^s"}, "result": "success"},
+    ]
+
+    guidance = runtime._repeated_action_guidance(
+        tool=_FakeMutatingTool(),
+        action_name="hotkey",
+        action_args={"app": "Notepad", "keys": "^s"},
+        execution_log=execution_log,
+    )
+
+    assert "Repeated action blocked" in guidance
+    assert "materially different next step" in guidance
+
+
+def test_sub_objective_executor_blocks_repeated_mutating_action_after_failure():
+    strategy = MCPStrategy(
+        strategy_id="fake-desktop",
+        server_command=sys.executable,
+        server_args=[str(Path(__file__).with_name("fake_strategy_server.py"))],
+        domain="desktop",
+        display_name="Fake Desktop",
+        description="Fake desktop strategy",
+    )
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_EchoThenDoneLLM())
+    execution_log = [
+        {
+            "action": "hotkey",
+            "arguments": {"app": "Notepad", "keys": "^s"},
+            "result": "failure",
+            "error_code": "WINDOW_NOT_FOUND",
+        },
+    ]
+
+    guidance = runtime._repeated_action_guidance(
+        tool=_FakeMutatingTool(),
+        action_name="hotkey",
+        action_args={"app": "Notepad", "keys": "^s"},
+        execution_log=execution_log,
+    )
+
+    assert "already failed" in guidance
+    assert "materially different next step" in guidance
+
+
+@pytest.mark.asyncio
+async def test_sub_objective_executor_stops_after_repeated_blocked_mutating_action(monkeypatch):
+    strategy = MCPStrategy(
+        strategy_id="fake-desktop",
+        server_command=sys.executable,
+        server_args=[str(Path(__file__).with_name("fake_strategy_server.py"))],
+        domain="desktop",
+        display_name="Fake Desktop",
+        description="Fake desktop strategy",
+    )
+    runtime = SubObjectiveExecutor(strategy, llm_provider=_RepeatHotkeyLLM(), max_turns=8)
+
+    async def _discover_tools():
+        return {"hotkey": _FakeMutatingTool()}
+
+    monkeypatch.setattr(runtime, "_discover_tools", _discover_tools)
+
+    result = await runtime.execute(TaskInput(task_id="rt-repeat-stop", description="save the file", domain="desktop"))
+
+    assert result.status == "failure"
+    assert len(result.execution_log) == 4
+    assert result.execution_log[-1].result == "failure"
+    assert "Repeated action blocked" in (result.execution_log[-1].details or "")
+    assert "Repeated action blocked" in (result.error or "")

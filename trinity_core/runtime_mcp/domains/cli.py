@@ -29,8 +29,8 @@ class CLIMCPServer(TrinityMCPServer):
         return f"""\
 Trinity CLI Toolset -- Windows subprocess execution.
 
-CAPABILITIES: Run shell commands (PowerShell, cmd, executables), read files,
-list directories, inspect process state, execute scripts.
+CAPABILITIES: Run shell commands (PowerShell, cmd, executables), write text files,
+read files, list directories, inspect process state, execute scripts.
 
 CONSTRAINTS:
 - Serial execution; each command is independent (no persistent shell state)
@@ -39,6 +39,7 @@ CONSTRAINTS:
 
 GUIDANCE:
 - Prefer read-only commands first when filesystem or process state is unknown
+- Use write_text_file for multiline file creation instead of hand-rolled PowerShell
 - Use wait tools instead of polling manually in repeated command calls
 - Quote paths containing spaces; use absolute paths when possible
 - Prefer idempotent commands; avoid destructive operations unless required
@@ -55,7 +56,7 @@ FORBIDDEN:
         return {
             "general": "Start with a read-only command to inspect state before mutating.",
             "inspect": "Use dir, type, Get-Content, Get-ChildItem to read without side effects.",
-            "mutate": "Use write/move/delete commands -- verify with a follow-up read after.",
+            "mutate": "Use write_text_file for text files, Move-Item for moves, and verify with a follow-up read.",
             "wait": "Use timeout or sleep sparingly; prefer polling with condition checks.",
             "verify": "Re-run the read command after mutation to confirm state change.",
             "recover": "Inspect error output, change command or params, retry once.",
@@ -65,6 +66,7 @@ FORBIDDEN:
         return {
             "default": "Read error output, adjust command or params, retry once.",
             "COMMAND_FAILED": "Inspect stderr, check command spelling and args, retry with fix.",
+            "CLI_COMMAND_FAILED": "If a file write failed or raw text was rejected as a command, retry with write_text_file.",
             "TIMEOUT": "Command timed out. Check if process hung; consider background execution.",
             "PERMISSION_DENIED": "Insufficient privileges. Check path, user context, or use elevated shell.",
             "FILE_NOT_FOUND": "Path does not exist. Verify with dir/Get-ChildItem before retrying.",
@@ -91,6 +93,7 @@ FORBIDDEN:
             "List files in a directory",
             "Read the contents of a configuration file",
             "Run a Python script and capture its output",
+            "Create a text manifest or report file",
             "Check if a process is running",
         ]
 

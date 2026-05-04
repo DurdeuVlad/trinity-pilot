@@ -36,6 +36,7 @@ from .telemetry import (
     emit_event,
     make_event_payload,
 )
+from .verification import _extract_desktop_file_target
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,28 @@ class ObjectiveOrchestrator:
                 )
 
         output = "\n\n".join(final_outputs).strip() or "Objective completed."
+        expected_sub_objectives = len(objective_plan.sub_objectives)
+        if objective_evidence.successful_sub_objectives != expected_sub_objectives:
+            missing = [
+                sub.sub_objective_id
+                for sub in objective_plan.sub_objectives
+                if sub.sub_objective_id not in {result.sub_objective_id for result in sub_results}
+            ]
+            return self._failure_result(
+                task=task,
+                category="verification_failed",
+                error=(
+                    "Objective completed only "
+                    f"{objective_evidence.successful_sub_objectives}/{expected_sub_objectives} "
+                    f"sub-objectives. Missing: {', '.join(missing) if missing else 'none'}."
+                ),
+                objective_plan=objective_plan,
+                sub_objective_results=sub_results,
+                evidence=objective_evidence,
+                duration_ms=(time.monotonic() - started_at) * 1000,
+                execution_log=all_logs,
+                artifacts=all_artifacts,
+            )
         metadata = self._objective_metadata(
             objective_plan=objective_plan,
             sub_objective_results=sub_results,
@@ -309,8 +332,21 @@ class ObjectiveOrchestrator:
             )
 
         merged_context = dict(task.context or {})
+        merged_context.setdefault("parent_description", task.description)
+        if task.sub_objectives:
+            merged_context.setdefault("approved_plan", list(task.sub_objectives))
         if run_context:
             merged_context["prior_results"] = run_context
+        expected_outcome = "\n".join(sub_objective.postconditions)
+        if sub_objective.domain == "desktop":
+            file_target = _extract_desktop_file_target(expected_outcome or sub_objective.objective)
+            if file_target:
+                expected_outcome = (
+                    f"{expected_outcome}\n"
+                    f"The file must exist at this exact absolute path: {file_target}\n"
+                    "When typing a save path in a desktop dialog, type the absolute path literally. "
+                    "Do not type environment variables such as %USERPROFILE%."
+                )
         sub_task = task.model_copy(
             update={
                 "task_id": f"{task.task_id}-{sub_objective.sub_objective_id}",
@@ -318,7 +354,7 @@ class ObjectiveOrchestrator:
                 "domain": sub_objective.domain,
                 "target_server": sub_objective.target_server,
                 "sub_objectives": [],
-                "expected_outcome": "\n".join(sub_objective.postconditions),
+                "expected_outcome": expected_outcome,
                 "timeout": sub_objective.timeout,
                 "context": merged_context,
             }
@@ -384,13 +420,25 @@ class ObjectiveOrchestrator:
     ) -> dict:
         total = len(sub_objective_results)
         successful = sum(1 for result in sub_objective_results if result.status == "success")
+        planned = len(objective_plan.sub_objectives) if objective_plan else total
+        completed_ids = {result.sub_objective_id for result in sub_objective_results}
+        missing = [
+            sub.sub_objective_id
+            for sub in (objective_plan.sub_objectives if objective_plan else [])
+            if sub.sub_objective_id not in completed_ids
+        ]
         return {
             "objective_plan": objective_plan.model_dump() if objective_plan else None,
             "sub_objective_results": [result.model_dump() for result in sub_objective_results],
             "objective_evidence": evidence.model_dump(),
+            "planned_sub_objectives": planned,
+            "completed_sub_objectives": total,
+            "successful_sub_objectives": successful,
+            "failed_sub_objectives": sum(1 for result in sub_objective_results if result.status == "failure"),
+            "missing_sub_objective_ids": missing,
             "failed_sub_objective_id": failed_sub_objective_id,
             "failure_reason": failure_reason,
-            "completion_confidence": successful / total if total else 0.0,
+            "completion_confidence": successful / planned if planned else 0.0,
             "duration_ms": duration_ms,
         }
 

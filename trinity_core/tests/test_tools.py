@@ -36,6 +36,7 @@ async def test_desktop_toolset_has_expected_tools_and_executes(monkeypatch):
     tools = build_desktop_tools()
     assert "open_app" in tools
     assert "wait_for_text" in tools
+    assert "save_text_file" in tools
     result = await tools["open_app"].execute(app_name="notepad")
     assert result.status == "success"
 
@@ -55,12 +56,27 @@ async def test_cli_toolset_has_expected_tools_and_executes(monkeypatch):
     tools = build_cli_tools()
     assert set(tools.keys()) == {
         "run_command",
+        "write_text_file",
         "read_output",
         "wait_for_output",
         "wait_for_file",
     }
     result = await tools["run_command"].execute(command="echo hi", async_mode=False)
     assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_cli_write_text_file_creates_parent_dirs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tools = build_cli_tools()
+    result = await tools["write_text_file"].execute(
+        file_path="reports/manifest.txt",
+        content="Archives: archive_export.zip\nTotal moved: 8",
+    )
+    assert result.status == "success"
+    assert (tmp_path / "reports" / "manifest.txt").read_text(encoding="utf-8") == (
+        "Archives: archive_export.zip\nTotal moved: 8"
+    )
 
 
 @pytest.mark.asyncio
@@ -90,6 +106,20 @@ async def test_desktop_wait_app_timeout_returns_error(monkeypatch):
     result = await tools["wait_for_app"].execute(app_name="ghost_app", timeout=1)
     assert result.status == "error"
     assert "ghost_app" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_desktop_save_text_file_writes_content(tmp_path):
+    tools = build_desktop_tools()
+    target = tmp_path / "meeting_notes_template.txt"
+
+    result = await tools["save_text_file"].execute(
+        file_path=str(target),
+        content="Meeting Notes\n\nAttendees:\n-",
+    )
+
+    assert result.status == "success"
+    assert target.read_text(encoding="utf-8") == "Meeting Notes\n\nAttendees:\n-"
 
 
 @pytest.mark.asyncio
