@@ -63,6 +63,22 @@ class Session:
         self.messages.append(message)
         self._persist(message)
 
+    def get_context_window(self, max_messages: int = 20) -> list[dict]:
+        """Return a pruned view of messages for LLM calls.
+
+        Failures are always included regardless of age. Non-failure messages
+        are capped to the most recent (max_messages - failure_count) entries.
+        If failures alone exceed max_messages, all failures are returned.
+        """
+        failures = [m for m in self.messages if m.get("role") == "tool" and m.get("status") != "success"]
+        non_failures = [m for m in self.messages if m not in failures]
+
+        slots_for_recent = max(0, max_messages - len(failures))
+        recent_non_failures = non_failures[-slots_for_recent:] if slots_for_recent > 0 else []
+
+        kept = set(id(m) for m in failures) | set(id(m) for m in recent_non_failures)
+        return [m for m in self.messages if id(m) in kept]
+
     def _persist(self, message: dict) -> None:
         with self.session_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message) + "\n")

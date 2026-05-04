@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -18,7 +21,7 @@ from .models import TaskInput, TaskResult, failure_code, is_retriable, create_st
 from .session import Session
 from .strategy_registry import MCPStrategy
 from .tools.base import Tool, ToolResult
-from .verification import build_failure_verification, build_verification
+from .verification import build_failure_verification, build_verification, _extract_desktop_file_target
 
 
 class _MCPVisibleTool(Tool):
@@ -110,6 +113,33 @@ class SubObjectiveExecutor:
             )
         except Exception:
             logger.warning("Action memory write failed for %s", action_name, exc_info=True)
+
+    async def _write_verified_action_memory(
+        self,
+        *,
+        task: TaskInput,
+        execution_log: list[dict[str, Any]],
+        verification: VerificationEnvelope,
+    ) -> None:
+        objective_succeeded = verification.status == "success"
+        verification_error = (
+            None if objective_succeeded else f"OBJECTIVE_{str(verification.status or 'failure').upper()}"
+        )
+        for entry in execution_log:
+            action_name = str(entry.get("action") or "")
+            if not action_name:
+                continue
+            action_args = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
+            tool_failed = entry.get("result") != "success"
+            outcome = "success" if objective_succeeded and not tool_failed else "failure"
+            error_code = str(entry.get("error_code") or verification_error or "") or None
+            await self._write_action_memory(
+                task=task,
+                action_name=action_name,
+                action_args=action_args,
+                outcome=outcome,
+                error_code=error_code,
+            )
 
     async def _ensure_server_context(self) -> None:
         """Fetch server self-documentation once at connect time. Idempotent."""
@@ -234,6 +264,45 @@ class SubObjectiveExecutor:
                 summary += f" [annotations: {metadata_bits}]"
         return summary
 
+    def _repeated_action_guidance(
+        self,
+        *,
+        tool: Tool,
+        action_name: str,
+        action_args: dict[str, Any],
+        execution_log: list[dict[str, Any]],
+    ) -> str:
+        annotations = tool.annotations() if callable(getattr(tool, "annotations", None)) else {}
+        if bool(annotations.get("readOnlyHint")):
+            return ""
+        args_key = self._action_args_key(action_args)
+        matching_entries = [
+            entry
+            for entry in execution_log
+            if entry.get("action") == action_name
+            and self._action_args_key(entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}) == args_key
+        ]
+        if any(entry.get("result") == "failure" for entry in matching_entries):
+            return (
+                f"Repeated action blocked: `{action_name}` with the same arguments has already failed "
+                "in this sub-objective. Do not retry the same action. Inspect current state and choose "
+                "a materially different next step."
+            )
+        successes = sum(1 for entry in matching_entries if entry.get("result") == "success")
+        if successes < 2:
+            return ""
+        return (
+            f"Repeated action blocked: `{action_name}` with the same arguments has already "
+            "succeeded twice in this sub-objective without satisfying the definition of done. "
+            "Do not retry the same action. Inspect current state and choose a materially different next step."
+        )
+
+    def _action_args_key(self, action_args: dict[str, Any]) -> str:
+        try:
+            return json.dumps(action_args or {}, sort_keys=True, separators=(",", ":"), default=str)
+        except TypeError:
+            return str(action_args or {})
+
     async def health_check(self) -> Tuple[bool, Optional[StructuredError]]:
         """Check if MCP server is healthy.
 
@@ -308,6 +377,111 @@ class SubObjectiveExecutor:
             }
         )
         return task.model_copy(update={"verification_checks": checks})
+
+    async def _maybe_execute_desktop_text_save(
+        self,
+        *,
+        task: TaskInput,
+        tools: dict[str, Tool],
+        verification_task: TaskInput,
+        started_at: float,
+        recorder=None,
+    ) -> TaskResult | None:
+        if task.domain != "desktop" or "save_text_file" not in tools:
+            return None
+        target = _extract_desktop_file_target(
+            "\n".join(part for part in (task.description, task.expected_outcome or "") if part)
+        )
+        if not target:
+            return None
+        lowered = f"{task.description} {task.expected_outcome or ''}".lower()
+        if "save" not in lowered or ".txt" not in lowered:
+            return None
+
+        content = self._desktop_text_content_from_context(task)
+        if not content.strip():
+            return None
+
+        if recorder is not None:
+            try:
+                recorder.event(
+                    phase="execution",
+                    message="Using desktop save_text_file shortcut",
+                    level="info",
+                    data={"file_path": str(target)},
+                    importance=4,
+                )
+            except Exception:
+                pass
+
+        action_args = {"file_path": str(target), "content": content}
+        tool_result = await tools["save_text_file"].execute(**action_args)
+        meta = tool_result.metadata if isinstance(tool_result.metadata, dict) else {}
+        execution_log = [
+            {
+                "turn": 1,
+                "action": "save_text_file",
+                "arguments": action_args,
+                "result": "success" if tool_result.status == "success" else "failure",
+                "details": tool_result.output or tool_result.error,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": meta,
+                "error_code": tool_result.error_code,
+            }
+        ]
+        final_text = f"Saved text file to {target}" if tool_result.status == "success" else str(tool_result.error or "")
+        backend_result = self._build_backend_result(
+            execution_log=execution_log,
+            artifacts=[str(target)] if tool_result.status == "success" else [],
+            final_text=final_text,
+        )
+        verification = build_verification(
+            task=verification_task,
+            module=self._verification_module(task),
+            backend_result=backend_result,
+            task_status="success" if tool_result.status == "success" else "failure",
+            execution_log=execution_log,
+            output_text=final_text,
+        )
+        await self._write_verified_action_memory(
+            task=task,
+            execution_log=execution_log,
+            verification=verification,
+        )
+        return self._result_from_verification(
+            task=task,
+            execution_log=execution_log,
+            artifacts=[str(target)] if tool_result.status == "success" else [],
+            final_text=final_text,
+            verification=verification,
+            duration_ms=(time.monotonic() - started_at) * 1000,
+        )
+
+    def _desktop_text_content_from_context(self, task: TaskInput) -> str:
+        context_text = ""
+        if isinstance(task.context, dict):
+            context_text = " ".join(
+                [
+                    str(task.context.get("parent_description") or ""),
+                    " ".join(str(item) for item in task.context.get("approved_plan") or []),
+                    task.description,
+                ]
+            )
+        if "meeting notes" in context_text.lower():
+            return "Meeting Notes - [Date]\n\nAttendees:\n-\n\nAgenda:\n-\n\nAction Items:\n-\n"
+
+        prior_results = task.context.get("prior_results") if isinstance(task.context, dict) else None
+        parts: list[str] = []
+        if isinstance(prior_results, list):
+            for entry in prior_results:
+                if not isinstance(entry, dict):
+                    continue
+                output = str(entry.get("output") or "").strip()
+                if output:
+                    parts.append(output)
+        if parts:
+            return "\n\n".join(parts).strip() + "\n"
+        return ""
 
     def _build_backend_result(
         self,
@@ -501,6 +675,16 @@ class SubObjectiveExecutor:
                     pass
 
             verification_task = self._task_with_runtime_verification(task)
+            desktop_save_result = await self._maybe_execute_desktop_text_save(
+                task=task,
+                tools=tools,
+                verification_task=verification_task,
+                started_at=t0,
+                recorder=recorder,
+            )
+            if desktop_save_result is not None:
+                return desktop_save_result
+
             session = Session(session_id=task.task_id)
             if task.sub_objectives:
                 sub_obj = "\n".join(f"  - {s}" for s in task.sub_objectives)
@@ -518,6 +702,8 @@ class SubObjectiveExecutor:
             execution_log: list[dict[str, Any]] = []
             artifacts: list[str] = []
             final_text = ""
+            fatal_error = ""
+            blocked_repeated_actions: dict[str, int] = {}
             for turn in range(self.max_turns):
                 if recorder is not None:
                     try:
@@ -531,7 +717,7 @@ class SubObjectiveExecutor:
                     except Exception:
                         pass
 
-                messages = [{"role": "system", "content": self._build_system_prompt(task)}] + session.messages
+                messages = [{"role": "system", "content": self._build_system_prompt(task)}] + session.get_context_window()
                 try:
                     response = await asyncio.wait_for(
                         self.llm.call(messages=messages, tools=tools),
@@ -554,6 +740,7 @@ class SubObjectiveExecutor:
 
                 if response.tool_calls:
                     session.append_assistant_tool_calls(response.tool_calls, response.text or "")
+                    abort_execution = False
                     for call in response.tool_calls:
                         tool = tools.get(call.name)
                         if tool is None:
@@ -562,12 +749,64 @@ class SubObjectiveExecutor:
                                 {
                                     "turn": turn + 1,
                                     "action": call.name,
+                                    "arguments": call.arguments,
                                     "result": "failure",
                                     "details": "Unknown tool requested by model.",
                                     "timestamp": datetime.now().isoformat(),
                                     "metadata": {},
+                                    "error_code": "UNKNOWN_TOOL",
                                 }
                             )
+                            continue
+
+                        repeated_guidance = self._repeated_action_guidance(
+                            tool=tool,
+                            action_name=call.name,
+                            action_args=call.arguments,
+                            execution_log=execution_log,
+                        )
+                        if repeated_guidance:
+                            block_key = f"{call.name}:{self._action_args_key(call.arguments)}"
+                            blocked_repeated_actions[block_key] = blocked_repeated_actions.get(block_key, 0) + 1
+                            session.append_tool_result(
+                                call.id,
+                                call.name,
+                                ToolResult(
+                                    status="error",
+                                    output=repeated_guidance,
+                                    error=repeated_guidance,
+                                    error_code="REPEATED_ACTION_BLOCKED",
+                                    retryable=False,
+                                ),
+                            )
+                            session.append_user_message(repeated_guidance)
+                            execution_log.append(
+                                {
+                                    "turn": turn + 1,
+                                    "action": call.name,
+                                    "arguments": call.arguments,
+                                    "result": "failure",
+                                    "details": repeated_guidance,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "metadata": {},
+                                    "error_code": "REPEATED_ACTION_BLOCKED",
+                                }
+                            )
+                            if blocked_repeated_actions[block_key] >= 2:
+                                fatal_error = repeated_guidance
+                                abort_execution = True
+                                if recorder is not None:
+                                    try:
+                                        recorder.event(
+                                            phase="execution",
+                                            message="Execution stopped after repeated blocked action",
+                                            level="warning",
+                                            data={"tool": call.name, "args": call.arguments, "turn": turn + 1},
+                                            importance=5,
+                                        )
+                                    except Exception:
+                                        pass
+                                break
                             continue
 
                         if recorder is not None:
@@ -583,15 +822,6 @@ class SubObjectiveExecutor:
                                 pass
 
                         tool_result = await tool.execute(**call.arguments)
-                        asyncio.create_task(
-                            self._write_action_memory(
-                                task=task,
-                                action_name=call.name,
-                                action_args=call.arguments,
-                                outcome="success" if tool_result.status == "success" else "failure",
-                                error_code=tool_result.error_code,
-                            )
-                        )
 
                         if recorder is not None:
                             try:
@@ -626,13 +856,17 @@ class SubObjectiveExecutor:
                             {
                                 "turn": turn + 1,
                                 "action": call.name,
+                                "arguments": call.arguments,
                                 "result": "success" if tool_result.status == "success" else "failure",
                                 "details": tool_result.output or tool_result.error,
                                 "timestamp": datetime.now().isoformat(),
                                 "metadata": meta,
                                 "exit_code": meta.get("exit_code"),
+                                "error_code": tool_result.error_code,
                             }
                         )
+                    if abort_execution:
+                        break
                     # Early-stop heuristic: only fires for free-form tasks (no sub_objectives).
                     # For structured tasks the LLM must explicitly return a text answer —
                     # tool-call successes alone do not prove objectives were met.
@@ -694,6 +928,11 @@ class SubObjectiveExecutor:
                         output_text=final_text,
                     )
                     if verification.status == "success":
+                        await self._write_verified_action_memory(
+                            task=task,
+                            execution_log=execution_log,
+                            verification=verification,
+                        )
                         return self._result_from_verification(
                             task=task,
                             execution_log=execution_log,
@@ -703,9 +942,10 @@ class SubObjectiveExecutor:
                             duration_ms=duration_ms,
                         )
 
+                failure_message = fatal_error or "Execution ended without a final answer."
                 verification = build_failure_verification(
                     module=self._verification_module(task),
-                    error="Execution ended without a final answer.",
+                    error=failure_message,
                     evidence={
                         "strategy_id": self.strategy.strategy_id,
                         "visible_tools": [descriptor.name for descriptor in self._cached_descriptors],
@@ -737,13 +977,18 @@ class SubObjectiveExecutor:
                         ))
                     except Exception:
                         pass
+                await self._write_verified_action_memory(
+                    task=task,
+                    execution_log=execution_log,
+                    verification=verification,
+                )
                 return TaskResult(
                     task_id=task.task_id,
                     status="failure",
                     category="backend_error",
                     code=failure_code("backend_error"),
                     retriable=is_retriable("backend_error"),
-                    error="Execution ended without a final answer.",
+                    error=failure_message,
                     execution_log=execution_log,
                     artifacts=artifacts,
                     verification=verification,
@@ -798,6 +1043,11 @@ class SubObjectiveExecutor:
                 except Exception:
                     pass
 
+            await self._write_verified_action_memory(
+                task=task,
+                execution_log=execution_log,
+                verification=verification,
+            )
             return self._result_from_verification(
                 task=task,
                 execution_log=execution_log,
@@ -856,11 +1106,23 @@ class SubObjectiveExecutor:
         lowered = failure_text.lower()
         if "unknown or disallowed command" not in lowered and "command validation failed" not in lowered:
             return ""
-        if "$" not in command:
+        raw_text_command = (
+            "\n" in command
+            or command.strip().startswith(("'", '"'))
+            or re.match(r"^[A-Za-z][A-Za-z ]+:", command.strip()) is not None
+        )
+        if "$" not in command and not raw_text_command:
             return ""
+        if raw_text_command:
+            return (
+                "The command validator rejected raw text as a shell command. "
+                "If the objective is to create or append a text file, call `write_text_file` "
+                "with `file_path` and the exact `content`; then use `Get-Content` only to verify."
+            )
         return (
             "The command validator rejected that PowerShell variable-assignment style. "
-            "Retry with a single validator-safe pipeline using literal paths and allowed cmdlets only. "
+            "For text file creation, prefer `write_text_file` with `file_path` and `content`. "
+            "Otherwise retry with a single validator-safe pipeline using literal paths and allowed cmdlets only. "
             "Do not start the command with `$name = ...`; inline the path directly, or use `New-Item`, "
             "`Set-Content`, `Get-Content`, `Get-ChildItem`, `Select-String`, `Group-Object`, "
             "`Sort-Object`, and `Out-String` in one pipeline."
