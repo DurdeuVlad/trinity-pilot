@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
@@ -16,6 +18,10 @@ from event_bus import get_event_bus
 from settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+_TRINITY_ROOT = Path(__file__).resolve().parents[2]
+if str(_TRINITY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TRINITY_ROOT))
 
 _PLAN_PROMPT = """\
 You are a desktop automation planner.
@@ -91,6 +97,49 @@ class _PlanWorker(QObject):
                 await close()
 
 
+def _apply_saved_api_keys() -> None:
+    """Load API keys from settings into env (same pattern as TrinityBridge)."""
+    try:
+        from orchestrator.settings_manager import SettingsManager
+        settings = SettingsManager().load()
+        for env_name, setting_name in (
+            ("OPENAI_API_KEY", "openai_api_key"),
+            ("GEMINI_API_KEY", "gemini_api_key"),
+        ):
+            if os.getenv(env_name):
+                continue
+            value = str(settings.get(setting_name) or "").strip()
+            if value:
+                os.environ[env_name] = value
+    except Exception as exc:
+        logger.warning("Could not load saved API keys: %s", exc)
+
+
+def _build_agent():
+    """Create a SingleExecutorAgent bound to the current event loop.
+
+    Must be called inside asyncio.run() so that all async resources
+    (MCPStrategyClient, AsyncExitStack) belong to the correct event loop.
+    Returns a SingleExecutorAgent ready to execute objectives.
+    """
+    _apply_saved_api_keys()
+    try:
+        from trinity_core.config import TrinityConfig
+        from trinity_core.llm import build_runtime_llm_provider
+        from trinity_core.strategy_registry import StrategyRegistry
+        from trinity_core.single_executor_agent import SingleExecutorAgent
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"Trinity Core is not available: {exc}. "
+            "Ensure trinity_core is on sys.path and dependencies are installed."
+        ) from exc
+
+    config = TrinityConfig.from_env()
+    registry = StrategyRegistry.create_default(_TRINITY_ROOT)
+    llm = build_runtime_llm_provider(config)
+    return SingleExecutorAgent(registry, llm)
+
+
 class _ExecWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
@@ -121,16 +170,12 @@ class _ExecWorker(QObject):
             self.finished.emit()
 
     async def _execute(self) -> None:
-        from orchestrator.trinity_bridge import TrinityBridge
-
         bus = get_event_bus()
-        bus.status_message.emit("Initializing backend…", "info")
+        bus.status_message.emit("Starting executor…", "info")
 
-        bridge = TrinityBridge(use_subprocess=False)
+        agent = None
         try:
-            await bridge.initialize()
-            target_server = bridge.suggest_server_for_objective(self.task)
-
+            agent = _build_agent()
             bus.execution_started.emit()
             for i, obj in enumerate(self.objectives, start=1):
                 bus.step_started.emit(i, obj)
@@ -141,13 +186,11 @@ class _ExecWorker(QObject):
                 return
 
             bus.status_message.emit("Running… (this may take up to 2 minutes)", "info")
-            result = await bridge.execute_task(
+            result = await agent.run_objectives(
                 task_id=self.run_id,
-                description=self.task,
+                task_description=self.task,
+                objectives=self.objectives,
                 domain=self.domain,
-                target_server=target_server,
-                sub_objectives=self.objectives,
-                cancel_event=self._cancel_event,
             )
 
             payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
@@ -175,7 +218,8 @@ class _ExecWorker(QObject):
             bus.execution_done.emit(False, msg)
             raise
         finally:
-            await bridge.shutdown()
+            if agent is not None:
+                await agent.close()
 
 
 class OrchestratorCore(QObject):
