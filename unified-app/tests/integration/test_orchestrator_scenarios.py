@@ -55,14 +55,14 @@ class TestDesktopHandoffWithPlan(BaseHandoffScenario):
     bridge_result_status = "success"
 
 
-class TestMixedDomainResolvesToWeb(BaseHandoffScenario):
-    """domain='mixed' must resolve to web/browser_mcp per _DOMAIN_TARGETS."""
+class TestMixedDomainPreservedForCoreRouting(BaseHandoffScenario):
+    """domain='mixed' stays mixed so Core can route sub-objectives."""
 
     task_description = "Open GitHub repo page and check the latest commit"
     domain = "mixed"
     approved_plan = ["Open the GitHub repo page", "Read the latest commit message"]
-    expected_domain = "web"
-    expected_target_server = "browser_mcp"
+    expected_domain = "mixed"
+    expected_target_server = ""
     expected_final_status = "success"
     bridge_result_status = "success"
 

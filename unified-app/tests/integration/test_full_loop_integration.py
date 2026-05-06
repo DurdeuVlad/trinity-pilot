@@ -135,7 +135,7 @@ async def test_worker_hands_finalized_objective_to_core_with_selected_target(
     assert completions[-1]["target_server"] == "cli_mcp"
 
 
-async def test_worker_reduces_mixed_request_to_one_selected_target(
+async def test_worker_preserves_mixed_domain_for_core_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     history = RecordingHistoryManager()
@@ -150,6 +150,6 @@ async def test_worker_reduces_mixed_request_to_one_selected_target(
 
     bridge = RecordingBridge.instances[-1]
     handoff = bridge.execute_calls[-1]
-    assert handoff["domain"] == "web"
-    assert handoff["target_server"] == "browser_mcp"
+    assert handoff["domain"] == "mixed"
+    assert handoff["target_server"] is None
     assert history.completed_calls[-1]["status"] == TaskStatus.COMPLETED

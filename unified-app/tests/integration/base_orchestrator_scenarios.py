@@ -251,7 +251,7 @@ class BaseHandoffScenario(ContractMixin):
         assert self.handoff["domain"] == self.expected_domain
 
     def test_correct_server_in_handoff(self) -> None:
-        assert self.handoff["target_server"] == self.expected_target_server
+        assert (self.handoff["target_server"] or "") == self.expected_target_server
 
     def test_sub_objectives_forwarded(self) -> None:
         assert self.handoff["sub_objectives"] == self.approved_plan

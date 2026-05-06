@@ -207,8 +207,7 @@ class TestCrossDomainModerateSystemStatusReport(BaseHandoffScenario):
       2. Cross-check metrics against web dashboard (sub-objectives 3-4)
       3. Write the validated report via desktop GUI (sub-objectives 5-6)
 
-    domain='mixed' resolves to browser_mcp, which coordinates sub-agents
-    for CLI and desktop sub-objectives.
+    domain='mixed' stays mixed so Core coordinates sub-objective routing.
     """
 
     task_description = (
@@ -228,8 +227,8 @@ class TestCrossDomainModerateSystemStatusReport(BaseHandoffScenario):
         "Open Notepad and paste the CLI metrics alongside the dashboard readings",
         "Save the file as system_status_report.txt with today's date in the filename",
     ]
-    expected_domain = "web"
-    expected_target_server = "browser_mcp"
+    expected_domain = "mixed"
+    expected_target_server = ""
     expected_final_status = "success"
     bridge_result_status = "success"
 
@@ -243,7 +242,7 @@ class TestCrossDomainComplexDeploymentVerification(BaseHandoffScenario):
       2. Web - smoke test the deployed UI and authenticated flow     (sub-objectives 3-4)
       3. Desktop - append deployment log entry and save summary      (sub-objectives 5-6)
 
-    domain='mixed' resolves to browser_mcp as coordinating backend.
+    domain='mixed' stays mixed so Core coordinates sub-objective routing.
     This is the most complex scenario: it exercises CLI, browser, and desktop
     capabilities in a single approved plan with a hard dependency chain.
     """
@@ -265,7 +264,7 @@ class TestCrossDomainComplexDeploymentVerification(BaseHandoffScenario):
         "Open logs/deployment.log in a text editor and append a timestamped success entry",
         "Save a deployment summary as deploy_done.txt on the Desktop with version and timestamp",
     ]
-    expected_domain = "web"
-    expected_target_server = "browser_mcp"
+    expected_domain = "mixed"
+    expected_target_server = ""
     expected_final_status = "success"
     bridge_result_status = "success"

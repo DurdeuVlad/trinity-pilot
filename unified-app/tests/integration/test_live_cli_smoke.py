@@ -23,8 +23,9 @@ def live_runtime(monkeypatch: pytest.MonkeyPatch) -> RecordingHistoryManager:
 
 
 @pytest.mark.skipif(
-    not (os.getenv("OPENAI_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()),
-    reason="OPENAI_API_KEY or GEMINI_API_KEY is required for the active Trinity Core CLI smoke test.",
+    os.getenv("LIVE_GEMINI_SMOKE", "0") != "1"
+    or not (os.getenv("OPENAI_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()),
+    reason="Set LIVE_GEMINI_SMOKE=1 with OPENAI_API_KEY or GEMINI_API_KEY to run the active Trinity Core CLI smoke test.",
 )
 async def test_live_cli_directory_inspection_reaches_completed(
     live_runtime: RecordingHistoryManager,
