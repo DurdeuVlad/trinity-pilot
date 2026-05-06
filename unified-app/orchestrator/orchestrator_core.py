@@ -102,7 +102,7 @@ class UnifiedAppObjectiveRunner:
 
             history.complete_task(
                 self.task_id,
-                result_data=output if success else None,
+                result_data=output or ("Task completed." if success else "Task failed."),
                 error_message=None if success else output,
                 status=TaskStatus.COMPLETED,
             )

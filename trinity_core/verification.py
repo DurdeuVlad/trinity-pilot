@@ -207,6 +207,7 @@ def _collect_evidence(
         "elements": backend_result.get("elements") if isinstance(backend_result.get("elements"), dict) else {},
         "artifact_count": len(backend_result.get("artifacts") or []),
         "execution_cwd": execution_cwd,
+        "process_running": bool(metadata.get("process_running")),
     }
     return evidence
 
@@ -510,6 +511,7 @@ def _has_desktop_evidence(evidence: dict[str, Any]) -> bool:
             str(evidence.get("app_context") or "").strip(),
             str(evidence.get("observed_text") or "").strip(),
             bool(evidence.get("elements") or {}),
+            bool(evidence.get("process_running")),
         ]
     )
 

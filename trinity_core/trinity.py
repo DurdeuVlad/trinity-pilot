@@ -242,6 +242,31 @@ class ObjectiveOrchestrator:
             if sub_result.status == "success":
                 objective_evidence.successful_sub_objectives += 1
             else:
+                if is_retriable(sub_result.category or ""):
+                    try:
+                        failure_hint = sub_result.error or "Previous attempt did not meet verification criteria."
+                        retry_objective = (
+                            f"{sub_objective.objective}\n\n"
+                            f"NOTE: Previous attempt failed — {failure_hint}. "
+                            f"Try a different approach or tool sequence."
+                        )
+                        retry_sub_objective = sub_objective.model_copy(update={"objective": retry_objective})
+                        retry_result, retry_logs, retry_artifacts = await self._execute_sub_objective(
+                            task, retry_sub_objective, run_context=run_context
+                        )
+                        all_logs.extend(retry_logs)
+                        all_artifacts.extend(retry_artifacts)
+                        if retry_result.status == "success":
+                            sub_result = retry_result
+                            if retry_result.output:
+                                final_outputs.append(retry_result.output)
+                                objective_evidence.outputs.append(retry_result.output)
+                            objective_evidence.artifacts.extend(retry_result.artifacts)
+                            objective_evidence.successful_sub_objectives += 1
+                            continue
+                        sub_result = retry_result
+                    except Exception as retry_exc:
+                        logger.warning("Sub-objective retry raised: %s", retry_exc)
                 objective_evidence.failed_sub_objectives += 1
                 return self._failure_result(
                     task=task,

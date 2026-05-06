@@ -78,22 +78,6 @@
         "Right-click the desktop and open properties"
       ],
       "serial_execution": true
-    },
-    {
-      "strategy_id": "puppeteer_mcp",
-      "command": "{python}",
-      "args": ["{project_root}/puppeteer-mcp-wrapper/proxy_server.py"],
-      "domain": "web",
-      "display_name": "Puppeteer MCP Wrapper",
-      "description": "Thin Trinity wrapper around an upstream Puppeteer-compatible MCP server.",
-      "env": {},
-      "tags": ["browser", "puppeteer", "web"],
-      "objective_keywords": [
-        "puppeteer", "playwright", "scraping", "automation", "headless"
-      ],
-      "example_tasks": [],
-      "serial_execution": false,
-      "metadata": {"wrapper": "thin"}
     }
   ]
 }
