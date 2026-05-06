@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-06 - architecture-truth-cleanup
+
+- docs: added root architecture truth and ledger so current product flow, test authority, and dead surfaces are explicit.
+- test: deleted archived legacy unified-app tests instead of preserving a stale quarantine.
+- chore: removed generated root runtime captures and obsolete prompt-history documentation.
+
 ## 2026-05-06 - test-architecture-smoke-cleanup
 
 - test: quarantined stale unified-app tests for removed architecture from active collection.

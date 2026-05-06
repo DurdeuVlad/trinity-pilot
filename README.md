@@ -4,10 +4,14 @@ Does Not Own: Detailed implementation rules for any one silo; those belong in ea
 
 # Trinity Pilot
 
+Authoritative architecture truth:
+- [ARCHITECTURE_TRUTH.md](./ARCHITECTURE_TRUTH.md)
+- [ARCHITECTURE_LEDGER.md](./ARCHITECTURE_LEDGER.md)
+
 ## What This Is
 Trinity Pilot is the real product repository inside this workspace. Its active product flow is:
 
-`User -> Trinity Unified Desktop -> finalized objective + selected MCP target -> Trinity Core -> visible MCP tools`
+`User -> Trinity Unified Desktop -> approved sub-objectives + selected target -> Trinity Core -> visible MCP/domain tools`
 
 This README is the honest map of that split. It should help a new developer or AI find the right silo without reviving old architecture by accident.
 
@@ -36,20 +40,16 @@ This repository contains the full product runtime and its adjacent support tooli
 - `api-accessibility-poc/` - Windows desktop automation primitives and support surfaces
 - `browser-gui-automation/` - browser automation primitives and support surfaces
 - `cli-automation-poc/` - CLI and PowerShell automation primitives and support surfaces
-- `audit-debugger/` - internal tooling for audit capture and inspection
-- `scripts/` - operational helper scripts for setup, service checks, and local validation
-- `puppeteer-mcp-wrapper/` - non-default Puppeteer MCP wrapper retained as an alternate browser strategy
+- `_runtime/`, `.trinity/`, `.cache/`, `.logs/` - generated local state, not source
 
 ## Entry Points
 Real product entrypoints:
 - `cd unified-app && python main.py`
-- `pytest trinity_core/tests -q`
-- `pytest unified-app/tests -q`
+- `cd trinity_core && python -m pytest -q tests`
+- `cd unified-app && python -m pytest -q tests`
 
 Support and debug entrypoints:
 - `python verify_installation.py`
-- `.\scripts\start_services.ps1` - compatibility-heavy support script that launches the older module-service stack for local diagnostics
-- `.\scripts\test_services.ps1` - companion health check for that support stack
 
 Not all runnable folders are equal. Some backend wrappers are still useful for support and live diagnostics, but they are not the authority for global orchestration.
 
@@ -97,11 +97,11 @@ If you cannot say which silo owns the change, the change is probably crossing an
 
 ## Testing
 Authoritative repo-level checks:
-- `pytest trinity_core/tests -q` - Core execution runtime and tool-contract coverage
-- `pytest unified-app/tests -q` - desktop handoff, UI orchestration boundaries, and integration coverage
-- `pytest api-accessibility-poc/tests -q` - desktop automation support/runtime coverage
-- `pytest browser-gui-automation/tests -q` - browser tool and support/runtime coverage
-- `pytest cli-automation-poc/tests -q` - CLI tool and support/runtime coverage
+- `cd trinity_core && python -m pytest -q tests` - Core execution runtime and tool-contract coverage
+- `cd unified-app && python -m pytest -q tests` - desktop handoff, UI orchestration boundaries, and integration coverage
+- `cd api-accessibility-poc && python -m pytest -q tests` - desktop automation support/runtime coverage
+- `cd browser-gui-automation && python -m pytest -q tests` - browser tool and support/runtime coverage
+- `cd cli-automation-poc && python -m pytest -q tests` - CLI tool and support/runtime coverage
 
 Use targeted live checks only when the change actually touches a live runtime surface.
 
@@ -109,15 +109,21 @@ Use targeted live checks only when the change actually touches a live runtime su
 - `unified-app/` owns user interaction, objective generation, confirmation, and target selection.
 - `trinity_core/` owns execution orchestration, tool usage, retries, and verification.
 - Backend silos own tool primitives and support runtimes, not the global execution loop.
-- `audit-debugger/` and `scripts/` support the product but do not define product architecture.
+- Root diagnostics and provider support wrappers support the product but do not define product architecture.
 
 ## Legacy / Compatibility Debt
 The codebase is cleaner than before, but it still contains support-heavy and compatibility-heavy areas:
 - backend wrapper services still exist for some silos
-- `unified-app/mcp_server/` contains desktop-side control and session utilities, not the main runtime path
-- `puppeteer-mcp-wrapper/` is an alternate strategy surface, not the default browser path
+- unified-app runner/live diagnostics still exist below the GUI boundary
+- some Core/provider code still references optional or historical support paths
 
 Those areas should be documented honestly and extended cautiously.
+
+## What Not To Trust
+- `unified-app/tests/_archived_legacy/` - removed; archived stale tests were not authoritative.
+- Root screenshots/logs/runtime captures - generated artifacts, not product source.
+- Bridge-only live checks as proof that the GUI prompt/review/Run path works.
+- Old module-service integration instructions as the current product path.
 
 ## Common Failure Modes
 - Missing `OPENAI_API_KEY`
@@ -158,4 +164,4 @@ Rules:
 - [api-accessibility-poc/README.md](./api-accessibility-poc/README.md)
 - [browser-gui-automation/README.md](./browser-gui-automation/README.md)
 - [cli-automation-poc/README.md](./cli-automation-poc/README.md)
-- [audit-debugger/README.md](./audit-debugger/README.md)
+- [INTEGRATION_TESTING.md](./INTEGRATION_TESTING.md)

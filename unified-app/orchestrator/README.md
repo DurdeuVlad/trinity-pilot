@@ -88,7 +88,7 @@ Use live tests only when the change touches a real provider or support wrapper.
 - This folder owns task shaping, not execution.
 - `TrinityBridge` owns handoff, not UI.
 - `ServiceManager` reports Core-side readiness, not backend subprocess lifecycle.
-- Support tooling under `../mcp_server/` is adjacent but not authoritative for the product path.
+- Live/domain diagnostics under `../tests/` are adjacent but not authoritative for the GUI path.
 
 ## Legacy / Compatibility Debt
 This folder still contains historical names like `macro_planner` and compatibility-focused status plumbing. Keep them only if they still serve the cleaned desktop role. Do not use them as a reason to reintroduce old execution-runner behavior.
@@ -113,4 +113,3 @@ This folder still contains historical names like `macro_planner` and compatibili
 ## Related Docs
 - [../README.md](../README.md)
 - [../../trinity_core/README.md](../../trinity_core/README.md)
-- [../mcp_server/README.md](../mcp_server/README.md)

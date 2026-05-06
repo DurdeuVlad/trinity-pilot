@@ -4,6 +4,10 @@ Does Not Own: Execution orchestration, backend-local planning loops, or hidden t
 
 # Trinity Unified Desktop
 
+Authoritative product architecture:
+- [../ARCHITECTURE_TRUTH.md](../ARCHITECTURE_TRUTH.md)
+- [../ARCHITECTURE_LEDGER.md](../ARCHITECTURE_LEDGER.md)
+
 ## What This Is
 `unified-app/` is the desktop product shell for Trinity Pilot. It is the only user-facing runtime in the active path.
 
@@ -36,7 +40,6 @@ Active product flow:
 - `main.py` - desktop entrypoint
 - `orchestrator/` - clarification, objective shaping, target selection, and Core handoff
 - `ui/` - tabs, widgets, overlays, and presentation logic
-- `mcp_server/` - internal tooling and desktop-side control surfaces, not the main product runtime
 - `tests/` - unit, integration, and live-marked coverage for the desktop app
 
 ## Entry Points
@@ -48,14 +51,14 @@ Authoritative checks:
 - `pytest tests -q -m integration`
 
 Support-only entrypoints:
-- MCP and command-pipe utilities under `mcp_server/`
+- live/domain diagnostics under `tests/`
 
 ## Contracts
 This silo is responsible for producing a valid handoff to Core:
 - normalized domain
 - selected target server
 - finalized objective text
-- approved objective steps
+- approved sub-objectives
 - runtime settings and cancellation context as needed
 
 If the desktop cannot confirm those things, it should keep working with the user instead of guessing.
@@ -101,8 +104,8 @@ Authoritative areas after the cleanup:
 
 ## Legacy / Compatibility Debt
 Some desktop-adjacent support surfaces still exist:
-- `mcp_server/` contains tooling for desktop control and session-style utilities
-- support wrappers and live utilities still exist for diagnostics
+- runner and live-domain diagnostics under `tests/`
+- compatibility-focused status and history utilities
 
 They are useful, but they should not redefine the active architecture.
 
@@ -126,5 +129,4 @@ They are useful, but they should not redefine the active architecture.
 ## Related Docs
 - [../README.md](../README.md)
 - [orchestrator/README.md](./orchestrator/README.md)
-- [mcp_server/README.md](./mcp_server/README.md)
 - [../trinity_core/README.md](../trinity_core/README.md)

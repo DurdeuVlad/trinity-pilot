@@ -1,6 +1,17 @@
 # TrinityPilot Test Architecture Audit - 2026-05-06
 
-Status: audit complete, no deletions performed.
+Status: superseded by cleanup.
+
+Current authority:
+- `../../ARCHITECTURE_TRUTH.md`
+- `../../ARCHITECTURE_LEDGER.md`
+
+Cleanup follow-up:
+- `unified-app/tests/_archived_legacy/` was deleted after salvage scan.
+- Root generated screenshots/logs were deleted.
+- `INTEGRATION_TESTING.md` now describes the current test taxonomy.
+
+Original audit follows for historical context.
 
 Scope:
 - Product repo only: `C:\Users\User\Documents\Github\trinity-pilot-wrapper\trinity-pilot`
@@ -227,7 +238,7 @@ That is nine. If the product owner wants eight, explicitly cut one scenario and 
 
 ## Follow-up Implemented
 
-- Collection-broken unified-app legacy tests were moved to `tests/_archived_legacy/`.
+- Collection-broken unified-app legacy tests were first moved to `tests/_archived_legacy/`, then deleted by the follow-up cleanup.
 - `pytest.ini` now excludes that archive from active collection.
 - A first GUI-driven smoke test was added under `tests/smoke/`.
 
