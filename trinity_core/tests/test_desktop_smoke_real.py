@@ -16,6 +16,7 @@ pytestmark = [
         reason="Real desktop tests require Windows",
     ),
     pytest.mark.smoke,
+    pytest.mark.live_desktop,
 ]
 
 

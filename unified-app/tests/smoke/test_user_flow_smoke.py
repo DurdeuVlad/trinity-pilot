@@ -15,9 +15,10 @@ pytestmark = pytest.mark.e2e
 
 
 class _ArtifactOrchestrator:
-    def __init__(self, artifact: Path, objectives: list[str]) -> None:
+    def __init__(self, artifact: Path, objectives: list[str], domain: str) -> None:
         self.artifact = artifact
         self.objectives = objectives
+        self.domain = domain
         self.planned_task = ""
         self.executed_task = ""
 
@@ -40,6 +41,7 @@ class _ArtifactOrchestrator:
             "\n".join(
                 [
                     "domain=cli",
+                    f"expected_domain={self.domain}",
                     f"task={task}",
                     "objectives=" + " | ".join(objectives),
                 ]
@@ -62,17 +64,29 @@ class _ArtifactOrchestrator:
         return True
 
 
+@pytest.mark.parametrize(
+    ("domain", "prompt"),
+    [
+        ("cli", "Create a CLI smoke artifact from the real unified app user flow"),
+        ("web", "Open a documentation page and summarize it through the unified app flow"),
+        ("desktop", "Open a desktop app after the user accepts the plan"),
+        ("mixed", "Research a page and save a local summary after plan acceptance"),
+    ],
+)
 def test_user_prompt_plan_acceptance_and_run_create_artifact(
     qtbot: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    domain: str,
+    prompt: str,
 ) -> None:
-    artifact = tmp_path / "user_flow_smoke_artifact.txt"
+    artifact = tmp_path / f"user_flow_smoke_{domain}.txt"
     generated_objectives = [
         f"Create the smoke artifact at {artifact}",
+        f"Handle the request as domain {domain}",
         "Report the artifact path",
     ]
-    orchestrator = _ArtifactOrchestrator(artifact, generated_objectives)
+    orchestrator = _ArtifactOrchestrator(artifact, generated_objectives, domain)
     monkeypatch.setattr(app_module, "OrchestratorCore", lambda: orchestrator)
 
     window = app_module.MainWindow()
@@ -80,7 +94,6 @@ def test_user_prompt_plan_acceptance_and_run_create_artifact(
     window.show()
     qtbot.waitExposed(window)
 
-    prompt = "Create a smoke artifact from the real unified app user flow"
     input_box = window.findChild(QPlainTextEdit)
     assert input_box is not None
 
@@ -103,6 +116,7 @@ def test_user_prompt_plan_acceptance_and_run_create_artifact(
 
     text = artifact.read_text(encoding="utf-8")
     assert "domain=cli" in text
+    assert f"expected_domain={domain}" in text
     assert prompt in text
     assert generated_objectives[0] in text
     assert orchestrator.planned_task == prompt

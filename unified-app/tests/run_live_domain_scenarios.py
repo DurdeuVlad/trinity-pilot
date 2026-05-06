@@ -1,5 +1,5 @@
 """
-Live runner for the 10 domain scenarios.
+Live runner for the 9 canonical domain scenarios.
 
 Executes each scenario directly through TrinityBridge (no Qt, no mocks).
 Prints a per-scenario result line and a final summary table.
@@ -215,6 +215,9 @@ SCENARIOS: list[Scenario] = [
             "Confirm the file exists and print its full contents",
         ],
     ),
+]
+
+EXTRA_SCENARIOS: list[Scenario] = [
     Scenario(
         name="TestCrossDomainThreeDomainChain",
         difficulty="complex",
@@ -526,7 +529,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--filter", dest="filter", default="", help="Run only scenarios whose name or category contains this substring (case-insensitive)")
+    parser.add_argument("--include-extra", action="store_true", help="Include non-canonical exploratory scenarios.")
     args = parser.parse_args()
+    if args.include_extra:
+        SCENARIOS.extend(EXTRA_SCENARIOS)
     if args.filter:
         needle = args.filter.lower()
         SCENARIOS[:] = [s for s in SCENARIOS if needle in s.name.lower() or needle in s.category.lower()]

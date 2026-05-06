@@ -33,6 +33,12 @@ async def test_browser_toolset_has_expected_tools_and_executes(monkeypatch):
 @pytest.mark.asyncio
 async def test_desktop_toolset_has_expected_tools_and_executes(monkeypatch):
     monkeypatch.setattr("trinity_core.tools.desktop_tools.launch_app", lambda name: f"Launched {name}")
+    monkeypatch.setattr("trinity_core.tools.desktop_tools.list_open_windows", lambda: [])
+    monkeypatch.setattr(
+        "trinity_core.tools.desktop_tools._wait_for_matching_window",
+        lambda app_name, timeout=10.0: "Untitled - Notepad",
+    )
+    monkeypatch.setattr("trinity_core.tools.desktop_tools.focus_window", lambda title: "OK")
     tools = build_desktop_tools()
     assert "open_app" in tools
     assert "wait_for_text" in tools

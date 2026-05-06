@@ -33,6 +33,35 @@ Run commands from the named folder.
 | `trinity_core/tests/` | Core runtime health. |
 | Provider silo tests | Primitive/support health for the touched domain provider. |
 
+## Fast / Live Split
+
+Core:
+
+```powershell
+cd trinity_core
+python -m pytest -q tests -m "not live_desktop"
+python -m pytest -q tests -m live_desktop
+```
+
+`live_desktop` tests require an interactive Windows desktop and real UI
+automation. They are not part of the fast Core health gate.
+
+Unified app:
+
+```powershell
+cd unified-app
+python -m pytest -q tests
+python tests/run_live_domain_scenarios.py
+```
+
+The live domain runner now defaults to the nine canonical scenarios. Use
+`--include-extra` for exploratory scenarios outside that canonical set.
+
+Current measured live result on 2026-05-06: 5/9 pass. Failing scenarios are
+CLI easy health check, desktop easy open Notepad, desktop moderate create note,
+and cross-domain complex repo summary. Treat these as live product failures,
+not test harness failures.
+
 ## Live Domain Scenarios
 
 The target product-health suite is nine live domain scenarios:

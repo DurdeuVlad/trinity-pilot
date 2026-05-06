@@ -157,7 +157,7 @@ async def test_open_app_was_existing_false():
 
 def test_build_desktop_tools_count():
     tools = build_desktop_tools()
-    assert len(tools) == 13
+    assert len(tools) == 14
 
 
 def test_build_desktop_tools_keys():
