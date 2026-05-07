@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -54,9 +55,12 @@ class TerminalWorker(DomainWorker):
                 f"No runnable command found in goal: '{spec.goal}'"
             )
 
+        shell_raw = "shell_raw" in spec.required_capabilities
         stdout, stderr, exit_code = await self._run_command(
-            command, cwd=workspace
+            command, cwd=workspace, allow_shell=shell_raw
         )
+        if shell_raw:
+            evidence["shell_raw_used"] = True
         evidence["stdout"] = stdout[-_MAX_OUTPUT_CHARS:]
         evidence["stderr"] = stderr[-_MAX_OUTPUT_CHARS:]
         evidence["exit_code"] = exit_code
@@ -77,14 +81,26 @@ class TerminalWorker(DomainWorker):
 
     @staticmethod
     async def _run_command(
-        command: str, cwd: str
+        command: str, cwd: str, allow_shell: bool = False
     ) -> tuple[str, str, int]:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
+        if allow_shell:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+        else:
+            try:
+                args = shlex.split(command)
+            except ValueError as exc:
+                raise WorkerError(f"Command parse failed: {exc}") from exc
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=_READ_TIMEOUT

@@ -22,7 +22,8 @@ Schema:
 {
   "passed": true | false,
   "failure_reason": null | "missing_artifact | failed_assertion | ui_state_mismatch | wrong_output | environment_divergence",
-  "notes": "brief explanation of the decision"
+  "notes": "brief explanation of the decision",
+  "recovery_hint": "concrete suggestion for what the next attempt should do differently (empty string if passed)"
 }
 """
 

@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from trinity_pilot.core.types import AttemptLog
+from trinity_pilot.memory.store import AttemptStore
+
+_EVIDENCE_ROOT = Path.home() / ".trinity-pilot" / "evidence"
+
+
+def _evidence_dir(task_id: str, objective_id: str, attempt_number: int) -> Path:
+    return _EVIDENCE_ROOT / task_id / objective_id / f"attempt_{attempt_number}"
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+class EvidenceStore:
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        self._attempt_store = AttemptStore(db_path)
+
+    def save(self, log: AttemptLog) -> None:
+        self._attempt_store.log_attempt(log)
+        self._persist_files(log)
+
+    def _persist_files(self, log: AttemptLog) -> None:
+        evidence_dir = _evidence_dir(log.task_id, log.objective_id, log.attempt_number)
+        # Persist full evidence JSON
+        evidence_json = json.dumps(log.evidence, ensure_ascii=False, indent=2)
+        _atomic_write(evidence_dir / "evidence.json", evidence_json.encode())
+
+        # Extract and write large binary fields to dedicated files
+        for key in ("screenshot", "dom_snapshot", "trace_path"):
+            value = log.evidence.get(key)
+            if value and isinstance(value, str) and len(value) > 256:
+                _atomic_write(evidence_dir / f"{key}.bin", value.encode())
+
+    def load_attempt_evidence(self, task_id: str, objective_id: str, attempt_number: int) -> dict[str, Any]:
+        evidence_file = _evidence_dir(task_id, objective_id, attempt_number) / "evidence.json"
+        if not evidence_file.exists():
+            return {}
+        return json.loads(evidence_file.read_text(encoding="utf-8"))

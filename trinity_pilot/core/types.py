@@ -142,3 +142,4 @@ class ReviewResult:
     passed: bool
     failure_reason: FailureReason | None = None
     notes: str = ""
+    recovery_hint: str = ""

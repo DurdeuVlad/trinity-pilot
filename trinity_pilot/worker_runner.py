@@ -9,8 +9,10 @@ from temporalio.worker import Worker
 from trinity_pilot.config import Settings
 from trinity_pilot.workflow.activities import (
     execute_objective,
+    persist_attempt,
     plan_objectives,
     review_objective,
+    save_reflection_activity,
 )
 from trinity_pilot.workflow.task_workflow import TaskWorkflow
 
@@ -23,7 +25,13 @@ async def run_worker(settings: Settings) -> None:
         client,
         task_queue=_TASK_QUEUE,
         workflows=[TaskWorkflow],
-        activities=[plan_objectives, execute_objective, review_objective],
+        activities=[
+            plan_objectives,
+            execute_objective,
+            review_objective,
+            persist_attempt,
+            save_reflection_activity,
+        ],
     )
     print(f"Worker started on queue '{_TASK_QUEUE}' → {settings.temporal_host}")
     await worker.run()

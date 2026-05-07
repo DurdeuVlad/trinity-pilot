@@ -26,6 +26,17 @@ CREATE TABLE IF NOT EXISTS attempt_logs (
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS reflections (
+    reflection_id  TEXT PRIMARY KEY,
+    objective_id   TEXT NOT NULL,
+    task_id        TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    failure_reason TEXT,
+    notes          TEXT NOT NULL DEFAULT '',
+    recovery_hint  TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS task_fts USING fts5(
     task_id,
     user_request,

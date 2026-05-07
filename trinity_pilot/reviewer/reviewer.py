@@ -64,4 +64,10 @@ class ObjectiveReviewer:
                     # Unrecognised reason — default to failed_assertion
                     failure_reason = FailureReason.FAILED_ASSERTION
 
-        return ReviewResult(passed=passed, failure_reason=failure_reason, notes=notes)
+        recovery_hint = str(data.get("recovery_hint", ""))
+        return ReviewResult(
+            passed=passed,
+            failure_reason=failure_reason,
+            notes=notes,
+            recovery_hint=recovery_hint,
+        )

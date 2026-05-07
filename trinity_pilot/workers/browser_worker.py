@@ -78,14 +78,29 @@ class BrowserWorker(DomainWorker):
         evidence: dict[str, Any],
     ) -> None:
         import base64
+        import json as _json
+        import re
 
-        # Parse goal for structured actions (simple keyword dispatch)
-        goal_lower = spec.goal.lower()
+        # Try structured JSON action list first: {"actions": [...]}
+        actions_executed = False
+        json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
+        if json_match:
+            try:
+                action_data = _json.loads(json_match.group(0))
+                actions = action_data.get("actions", [])
+                for action in actions:
+                    await self._dispatch_action(page, action)
+                actions_executed = True
+            except Exception:
+                pass  # fall through to keyword dispatch
 
-        if "navigate" in goal_lower or "open" in goal_lower or "go to" in goal_lower:
-            url = self._extract_url(spec.goal)
-            if url:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        # Keyword dispatch fallback
+        if not actions_executed:
+            goal_lower = spec.goal.lower()
+            if "navigate" in goal_lower or "open" in goal_lower or "go to" in goal_lower:
+                url = self._extract_url(spec.goal)
+                if url:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
         # Collect evidence
         screenshot_bytes = await page.screenshot()
@@ -93,6 +108,20 @@ class BrowserWorker(DomainWorker):
         evidence["dom_snapshot"] = await page.content()
         evidence["page_title"] = await page.title()
         evidence["page_url"] = page.url
+
+    @staticmethod
+    async def _dispatch_action(page: Any, action: dict[str, Any]) -> None:
+        kind = action.get("type", "")
+        if kind == "navigate":
+            await page.goto(action["url"], wait_until="domcontentloaded", timeout=30_000)
+        elif kind == "click":
+            await page.click(action["selector"], timeout=10_000)
+        elif kind == "fill":
+            await page.fill(action["selector"], action["value"], timeout=10_000)
+        elif kind == "wait_for":
+            await page.wait_for_selector(action["selector"], timeout=10_000)
+        elif kind == "read_text":
+            pass  # evidence collected separately via dom_snapshot
 
     @staticmethod
     def _extract_url(text: str) -> str | None:
