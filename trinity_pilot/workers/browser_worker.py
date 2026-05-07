@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import tempfile
 from pathlib import Path
@@ -15,12 +16,7 @@ class BrowserWorker(DomainWorker):
     """Playwright-backed browser worker. One context per attempt, closed in finally."""
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as exc:
-            raise WorkerError("playwright not installed") from exc
-
-        _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
         evidence: dict[str, Any] = {
             "domain": "browser",
             "objective_id": spec.objective_id,
@@ -31,7 +27,24 @@ class BrowserWorker(DomainWorker):
             "trace_path": None,
             "error": None,
         }
+        try:
+            await asyncio.wait_for(
+                self._execute_inner(spec, evidence),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise WorkerError(
+                f"Browser timeout after {timeout_seconds}s for '{spec.objective_id}'"
+            )
+        return evidence
 
+    async def _execute_inner(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> None:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise WorkerError("playwright not installed") from exc
+
+        _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         trace_dir = Path(tempfile.mkdtemp(prefix="trinity-trace-"))
         trace_path = str(trace_dir / "trace.zip")
 
@@ -47,6 +60,8 @@ class BrowserWorker(DomainWorker):
 
                 await self._run_objective(page, spec, evidence)
 
+            except WorkerError:
+                raise
             except Exception as exc:
                 evidence["error"] = str(exc)
                 # Capture failure evidence
@@ -68,8 +83,6 @@ class BrowserWorker(DomainWorker):
                 except Exception:
                     pass
                 await browser.close()
-
-        return evidence
 
     async def _run_objective(
         self,

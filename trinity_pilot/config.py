@@ -28,7 +28,8 @@ class Settings:
             raise ConfigError("TEMPORAL_HOST must not be empty.")
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls, dotenv_path: str | None = None) -> "Settings":
+        load_dotenv(dotenv_path=dotenv_path, override=True)
         settings = cls(
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-1.5-pro"),

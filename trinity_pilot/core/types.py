@@ -62,6 +62,7 @@ class ObjectiveSpec:
     evidence_bundle: list[str]
     max_attempts: int
     rollback_or_abort_rule: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         # String fields must be non-empty
@@ -99,6 +100,7 @@ class ObjectiveSpec:
             "evidence_bundle": self.evidence_bundle,
             "max_attempts": self.max_attempts,
             "rollback_or_abort_rule": self.rollback_or_abort_rule,
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -115,6 +117,7 @@ class ObjectiveSpec:
             evidence_bundle=data["evidence_bundle"],
             max_attempts=data["max_attempts"],
             rollback_or_abort_rule=data["rollback_or_abort_rule"],
+            metadata=data.get("metadata", {}),
         )
 
 

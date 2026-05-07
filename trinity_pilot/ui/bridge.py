@@ -38,6 +38,7 @@ class _WorkerThread(QThread):
 
     async def _run_workflow(self) -> dict:
         from temporalio.client import Client
+
         from trinity_pilot.workflow.task_workflow import TaskWorkflow
 
         client = await Client.connect(self._settings.temporal_host)
@@ -65,6 +66,7 @@ class _WorkerThread(QThread):
 
     def request_cancel(self) -> None:
         if self._workflow_handle and self._loop:
+            from trinity_pilot.workflow.task_workflow import TaskWorkflow
             asyncio.run_coroutine_threadsafe(
                 self._workflow_handle.signal(TaskWorkflow.cancel),
                 self._loop,

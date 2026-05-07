@@ -5,10 +5,10 @@ from typing import Any
 
 import google.generativeai as genai
 
-from trinity_pilot.llm.base import LLMProvider, LLMMessage, LLMResponse
+from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 
 
-def _to_genai_history(messages: list[LLMMessage]) -> list[dict[str, Any]]:
+def _to_genai_history(messages: list[LLMMessage]) -> Any:
     history = []
     for msg in messages:
         role = "model" if msg.role == "model" else "user"

@@ -14,12 +14,14 @@ class PlanningError(Exception):
 
 
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences if present, return raw JSON string."""
+    """Strip markdown code fences and fix common LLM JSON artifacts."""
     text = text.strip()
-    # Remove ```json ... ``` or ``` ... ```
-    match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
+    # Remove ```json ... ``` or ``` ... ``` (including partial closing fence)
+    match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*(?:```|$)", text)
     if match:
-        return match.group(1).strip()
+        text = match.group(1).strip()
+    # Remove trailing commas before ] or } (common LLM mistake)
+    text = re.sub(r",\s*([}\]])", r"\1", text)
     return text
 
 

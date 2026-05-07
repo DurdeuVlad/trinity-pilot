@@ -6,6 +6,7 @@ Internal hot-path skips this server and calls TerminalWorker directly.
 from __future__ import annotations
 
 from fastmcp import FastMCP
+
 from trinity_pilot.core.types import (
     DomainType,
     ObjectiveSpec,

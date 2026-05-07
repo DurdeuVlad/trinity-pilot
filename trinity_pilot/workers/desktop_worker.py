@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import sys
 from typing import Any
@@ -21,8 +22,16 @@ class DesktopWorker(DomainWorker):
             "degraded_mode": False,
             "error": None,
         }
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 30))
         try:
-            await self._run_objective(spec, evidence)
+            await asyncio.wait_for(
+                self._run_objective(spec, evidence),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise WorkerError(
+                f"Desktop timeout after {timeout_seconds}s for '{spec.objective_id}'"
+            )
         except WorkerError:
             raise
         except Exception as exc:
@@ -52,9 +61,8 @@ class DesktopWorker(DomainWorker):
 
     def _run_uia(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> None:
         import json
-        from pywinauto import Application, findwindows
 
-        goal_lower = spec.goal.lower()
+        from pywinauto import Application
 
         app_title = self._extract_window_title(spec.goal)
         if app_title:
@@ -99,8 +107,9 @@ class DesktopWorker(DomainWorker):
     @staticmethod
     def _capture_screenshot_fallback(evidence: dict[str, Any]) -> None:
         try:
-            import pyautogui
             import io
+
+            import pyautogui
             img = pyautogui.screenshot()
             buf = io.BytesIO()
             img.save(buf, format="PNG")

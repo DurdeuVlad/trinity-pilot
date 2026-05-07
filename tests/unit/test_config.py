@@ -1,5 +1,7 @@
 """Config unit tests — Settings validation."""
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -50,3 +52,12 @@ class TestSettings:
 
     def test_config_error_is_exception(self):
         assert issubclass(ConfigError, Exception)
+
+    def test_from_env_loads_dotenv_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = Path(tmpdir) / ".env"
+            env_file.write_text("GEMINI_API_KEY=dotenv-loaded-key\n")
+            # Clear env so only .env supplies the key
+            with patch.dict(os.environ, {}, clear=True):
+                s = Settings.from_env(dotenv_path=str(env_file))
+            assert s.gemini_api_key == "dotenv-loaded-key"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import sys
 from datetime import datetime
+from typing import Any
 
 import pyautogui
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -31,7 +32,7 @@ def _ts() -> str:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self._bridge = None
+        self._bridge: Any = None
 
         self.setWindowTitle("Trinity Pilot")
         self.resize(960, 720)

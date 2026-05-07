@@ -30,8 +30,16 @@ class TerminalWorker(DomainWorker):
             "workspace": workspace,
             "error": None,
         }
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
         try:
-            await self._run_objective(workspace, spec, evidence)
+            await asyncio.wait_for(
+                self._run_objective(workspace, spec, evidence),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise WorkerError(
+                f"Terminal timeout after {timeout_seconds}s for '{spec.objective_id}'"
+            )
         except WorkerError:
             raise
         except Exception as exc:
