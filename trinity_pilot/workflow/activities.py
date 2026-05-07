@@ -9,6 +9,7 @@ from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.llm.gemini import GeminiProvider
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
+from trinity_pilot.workers.router import WorkerRouter
 
 
 def _planner_provider() -> GeminiProvider:
@@ -34,8 +35,10 @@ async def plan_objectives(user_request: str) -> list[dict[str, Any]]:
 
 @activity.defn
 async def execute_objective(spec_dict: dict[str, Any]) -> dict[str, Any]:
-    """Execute a single objective via domain worker. Implemented in Pass 3."""
-    raise NotImplementedError("Domain workers not implemented — Pass 3")
+    spec = ObjectiveSpec.from_dict(spec_dict)
+    router = WorkerRouter()
+    worker = router.route(spec)
+    return await worker.execute(spec)
 
 
 @activity.defn
