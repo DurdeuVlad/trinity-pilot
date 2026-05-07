@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import sys
+from datetime import datetime
 
 import pyautogui
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -17,14 +18,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from trinity_pilot.ui.status_bar import ObjectiveProgressWidget
+
 # Kill path 3: PyAutoGUI pointer fail-safe — move mouse to any corner to abort
 pyautogui.FAILSAFE = True
+
+
+def _ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self._bridge = None  # WorkflowBridge injected after construction
+        self._bridge = None
 
         self.setWindowTitle("Trinity Pilot")
         self.resize(960, 720)
@@ -42,7 +49,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         self._status_label = QLabel("Ready")
         layout.addWidget(self._status_label)
@@ -51,8 +58,12 @@ class MainWindow(QMainWindow):
         self._log_view.setReadOnly(True)
         layout.addWidget(self._log_view)
 
-        row = QHBoxLayout()
+        # Objective progress bar
+        self._progress = ObjectiveProgressWidget()
+        layout.addWidget(self._progress)
 
+        # Input row
+        row = QHBoxLayout()
         self._input = QLineEdit()
         self._input.setPlaceholderText("Describe your task…")
         self._input.returnPressed.connect(self._handle_submit)
@@ -79,12 +90,22 @@ class MainWindow(QMainWindow):
         self._status_label.setText(text)
 
     def log(self, message: str) -> None:
-        self._log_view.append(message)
+        self._log_view.append(f"[{_ts()}] {message}")
 
     def set_running(self, running: bool) -> None:
         self._stop_btn.setEnabled(running)
         self._input.setEnabled(not running)
+        self._input.setPlaceholderText(
+            "Task running…" if running else "Describe your task…"
+        )
         self.set_status("Running…" if running else "Ready")
+        if not running:
+            self._progress.reset()
+
+    def update_objective_progress(
+        self, objective_id: str, attempt: int, domain: str
+    ) -> None:
+        self._progress.update_progress(objective_id, attempt, domain)
 
     # ------------------------------------------------------------------
     # Internal handlers

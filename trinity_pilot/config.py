@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+class ConfigError(Exception):
+    pass
 
 
 @dataclass
@@ -18,18 +21,21 @@ class Settings:
     temporal_namespace: str = "default"
     db_path: str = "trinity_pilot.db"
 
+    def validate(self) -> None:
+        if not self.gemini_api_key:
+            raise ConfigError("GEMINI_API_KEY is required but not set.")
+        if not self.temporal_host:
+            raise ConfigError("TEMPORAL_HOST must not be empty.")
+
     @classmethod
     def from_env(cls) -> "Settings":
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise EnvironmentError(
-                "GEMINI_API_KEY not set. Add it to .env or environment."
-            )
-        return cls(
-            gemini_api_key=api_key,
+        settings = cls(
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-1.5-pro"),
             gemini_worker_model=os.getenv("GEMINI_WORKER_MODEL", "gemini-1.5-flash"),
             temporal_host=os.getenv("TEMPORAL_HOST", "localhost:7233"),
             temporal_namespace=os.getenv("TEMPORAL_NAMESPACE", "default"),
             db_path=os.getenv("DB_PATH", "trinity_pilot.db"),
         )
+        settings.validate()
+        return settings
