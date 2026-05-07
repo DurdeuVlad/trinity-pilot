@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import signal
 import sys
-from typing import Callable
 
 import pyautogui
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -23,19 +22,21 @@ pyautogui.FAILSAFE = True
 
 
 class MainWindow(QMainWindow):
-    def __init__(
-        self,
-        on_submit: Callable[[str], None] | None = None,
-        on_stop: Callable[[], None] | None = None,
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._on_submit = on_submit
-        self._on_stop = on_stop
+        self._bridge = None  # WorkflowBridge injected after construction
 
         self.setWindowTitle("Trinity Pilot")
         self.resize(960, 720)
         self._build_ui()
         self._wire_kill_paths()
+
+    def set_bridge(self, bridge: object) -> None:
+        self._bridge = bridge
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -71,7 +72,7 @@ class MainWindow(QMainWindow):
         shortcut.activated.connect(self._handle_emergency_stop)
 
     # ------------------------------------------------------------------
-    # Public API (used by workflow bridge in Pass 2)
+    # Public API
     # ------------------------------------------------------------------
 
     def set_status(self, text: str) -> None:
@@ -96,14 +97,24 @@ class MainWindow(QMainWindow):
         self._input.clear()
         self.log(f"[USER] {task}")
         self.set_running(True)
-        if self._on_submit:
-            self._on_submit(task)
+
+        if self._bridge:
+            self._bridge.start_task(
+                user_request=task,
+                on_log=self.log,
+                on_status=lambda s: self.set_status(f"Status: {s}"),
+                on_done=self._on_task_done,
+            )
+
+    def _on_task_done(self, final_status: str) -> None:
+        self.log(f"[SYSTEM] Task finished: {final_status}")
+        self.set_running(False)
 
     def _handle_stop(self) -> None:
         self.log("[SYSTEM] Stop requested.")
+        if self._bridge:
+            self._bridge.stop_task()
         self.set_running(False)
-        if self._on_stop:
-            self._on_stop()
 
     def _handle_emergency_stop(self) -> None:
         self.log("[SYSTEM] Emergency stop (Ctrl+Shift+Q).")
@@ -111,10 +122,16 @@ class MainWindow(QMainWindow):
 
 
 def run_app() -> None:
+    from trinity_pilot.config import Settings
+    from trinity_pilot.ui.bridge import WorkflowBridge
+
     app = QApplication(sys.argv)
-    # Allow Ctrl+C in terminal to propagate
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
+    settings = Settings.from_env()
+    bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)
+
     window = MainWindow()
+    window.set_bridge(bridge)
     window.show()
     sys.exit(app.exec())
