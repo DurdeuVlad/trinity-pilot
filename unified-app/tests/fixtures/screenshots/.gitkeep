@@ -1,7 +1,0 @@
-# Screenshot fixtures directory
-# 
-# This directory will contain test screenshots for HUD validation:
-# - hud_visible_01.png, hud_visible_02.png, hud_visible_03.png (HUD overlay shown)
-# - hud_dismissed_01.png, hud_dismissed_02.png (normal desktop, no HUD)
-#
-# These fixtures are captured manually by running unified-app and submitting test tasks.

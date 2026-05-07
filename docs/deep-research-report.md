@@ -1,0 +1,107 @@
+# Python Desktop Agent Orchestrator for Real PC Automation
+
+## Architecture Definition
+
+I normalize your “MTP servers” to MCP-style capability servers, because the standard that matches your description is the urlModel Context Protocolturn33search0: servers expose **tools**, **resources**, and **prompts** to clients. That is exactly the boundary you want for browser control, terminal control, and desktop-app control. citeturn33search0turn33search2turn33search5turn33search8turn33search13
+
+Your target system is best formalized as a **hierarchical planner / executor / reviewer** with a **typed objective DAG**. A user task enters discovery; the orchestrator clarifies intent, produces self-contained objectives with dependencies and acceptance criteria, asks for plan approval, then executes objectives strictly in dependency order. Each objective gets an isolated worker agent, a bounded tool lease, explicit evidence requirements, and a reviewer pass; if review fails, the orchestrator retries that objective up to three times, then halts downstream objectives. This shape matches the strongest patterns in the agent literature: plan-then-act, interleaved reason/act loops, explicit sequential pipelines, and orchestrator-led replanning on failure. citeturn10search3turn8search0turn30search12turn8search2
+
+The non-negotiables are clear. **Discovery must be separate from execution.** **Objective specs must be typed, not prose-only.** **Workers must be disposable.** **Reviewers must be separate agents, with read-mostly tools.** **Retries belong to the workflow layer, not the LLM prompt.** **The user’s live desktop is not a reliable concurrent work surface.** On realistic long-horizon environments, agents are still brittle: benchmarks like *AgentBench* and *WebArena* show large failure gaps, while *SWE-agent* shows that better interfaces, not just bigger prompts, materially improve outcomes. citeturn10search1turn10search2turn9search3
+
+The right objective schema is: `objective_id`, `goal`, `dependencies`, `domain`, `required_capabilities`, `risk_class`, `preconditions`, `success_tests`, `evidence_bundle`, `max_attempts`, `rollback_or_abort_rule`. If any of those fields is missing, the orchestrator should refuse to execute. That is the line between a system you can audit and a toy. citeturn8search2turn21search8turn31search2
+
+## Candidate Architecture A
+
+**Graph-native orchestrator.** Build the whole system as a stateful graph around urlLangGraphturn21search8 plus MCP-backed domain adapters. LangGraph already leans into durable execution, memory, and human interrupts, which maps well to plan approval, pause/resume, reviewer gates, and objective-local state. This architecture also aligns with the sequential and handoff orchestration patterns documented in urlSemantic Kernel Agent Orchestrationturn30search2. citeturn21search8turn21search17turn30search12turn30search11turn30search18
+
+**Strengths.** Fastest route to a working prototype; easy to model discovery, routing, execution, review, and interrupts as explicit nodes; good developer ergonomics; good fit for approval steps and mid-run edits. **Weaknesses.** The graph becomes your workflow engine whether you want that or not; once you need crash recovery, live cancellation, retry policies, durable queries, and external control messages, a graph alone starts carrying too much operational weight. **Verdict.** Strong inner-loop engine; weak outer control plane. citeturn21search8turn21search17turn30search2turn30search8
+
+## Candidate Architecture B
+
+**Team-of-agents handoff manager.** Use explicit agent delegation, like urlMagentic-Oneturn8search14, urlOpenAI Agents SDKturn29search19 handoffs, or the newer urlMicrosoft Agent Frameworkturn30search16. This architecture is best at the **discovery** phase and at open-ended problem solving: a lead orchestrator routes to browser, terminal, desktop, or code specialists, and can re-plan as the world changes. That mirrors Magentic-One’s orchestrator-plus-specialists design. citeturn8search2turn29search0turn29search1turn29search2turn30search16
+
+**Strengths.** Best flexibility under ambiguity; handoffs are natural; tracing and session memory are first-class in the OpenAI SDK; it maps well to your “spawn agent, kill agent, return evidence, spawn reviewer” model. **Weaknesses.** Free-form delegation easily degenerates into context bloat, weak stop conditions, and unclear ownership of retries. urlSemantic Kernel Agent Orchestrationturn30search2 is still marked experimental, and Microsoft is actively consolidating the older AutoGen / Semantic Kernel lineage into a newer framework, which is a warning sign for betting your core architecture on today’s framework surface area. **Verdict.** Excellent delegation semantics; poor foundation for deterministic execution unless caged inside a stricter runtime. citeturn29search0turn29search1turn29search2turn30search2turn30search16
+
+## Candidate Architecture C
+
+**Durable supervisor plus ACI workers.** Put a real workflow runtime on the outside—best current fit: urlTemporal Python SDKturn31search2—and then run short-lived objective workers inside it, using domain-specific agent-computer interfaces inspired by urlSWE-agentturn28search6, urlOpenHands SDKturn31search4, and urlTaskWeaverturn31search0. Temporal gives you workflow state, durable retries, external Signals / Queries / Updates, and strong control over long-running jobs. SWE-agent contributes the key lesson that interface design matters; OpenHands contributes sandbox and runtime patterns; TaskWeaver contributes code-first plugin execution. citeturn31search2turn31search5turn31search8turn28search2turn31search4turn31search0
+
+**Strengths.** Best safety, auditability, retry semantics, pause/resume, operator control, and objective isolation. It is the only architecture that cleanly separates: workflow durability, planning, tool routing, execution, review, and UI. **Weaknesses.** Highest engineering cost; you must build more glue yourself; if you skip sandboxing, host risk spikes immediately. OpenHands’ local process runtime explicitly warns that it has no sandbox isolation and should only be used in controlled environments. **Verdict.** Best production architecture, especially for “don’t be buggy” requirements and mixed browser / terminal / desktop tasks. citeturn28search0turn31search13turn28search20turn31search19
+
+## Comparative Findings
+
+**Hypothesis one: deterministic workflow beats free-form multi-agent chat for execution.** Supported. ReAct established the value of interleaving reasoning with action; Plan-and-Solve improved task decomposition; Magentic-One shows orchestrator-led replanning is useful; but WebArena and AgentBench still show that realistic long-horizon tasks remain hard. So: use deliberative agents for planning, but use a deterministic workflow engine for execution order, retries, and stopping rules. citeturn8search0turn10search3turn8search2turn10search2turn10search1
+
+**Hypothesis two: domain-native interfaces beat generic screen-driving.** Supported. SWE-agent’s core claim is that a purpose-built ACI improves software-engineering performance. On the browser side, Playwright’s actionability checks, auto-waiting, context isolation, and trace viewer are precisely the features you want when the environment changes mid-run. On Windows desktop automation, pywinauto’s UIA backend and explicit waiting/timing facilities exist because GUI state is unstable and naive timing is unreliable. Use pixels and coordinate clicks only as a fallback tier. citeturn9search3turn24search3turn24search6turn24search14turn38search3turn38search0turn38search5
+
+**Hypothesis three: memory should be structured first and semantic second.** Supported. Reflexion, Voyager, Generative Agents, and MemGPT all point in the same direction: retries improve when agents can retrieve prior failures, reflections, and reusable skills. But for this product, the highest-value memory is not an opaque vector store; it is a typed event ledger: objective specs, tool calls, observations, artifacts, errors, review outcomes, and successful recovery recipes. Add semantic retrieval later as a secondary index. citeturn7search1turn7search2turn9search0turn9search1
+
+**Hypothesis four: same-session desktop automation cannot be made “not buggy at all.”** Supported as an engineering inference. Accessibility APIs expose live UI trees; browser and desktop automation frameworks rely on waiting because the environment is dynamic; PyAutoGUI ships with a fail-safe because uncontrolled pointer automation is dangerous; and unsandboxed local agent runtimes are explicitly warned against. If the user can freely perturb the same session the agent is controlling, correctness drops. For production reliability, isolate execution in a dedicated desktop session or VM and stream the view back to the main app. citeturn19search2turn38search0turn24search3turn28search0turn19search0turn20search4
+
+The conclusion is blunt: **Candidate C wins**, but only after stealing the best parts of A and B. Use a durable supervisor from C, a compact graph-style inner execution loop from A, and explicit handoff semantics from B—but do **not** let free-form handoffs run the outer control plane. citeturn31search2turn21search8turn29search0
+
+## Mega-Architecture and Technical Specification
+
+**Core stack.** Build the desktop shell in urlQt for Pythonturn37search4 with PySide6 widgets; use Qt WebEngine for the embedded browser surface and QtAsyncio for UI-plus-async integration. Qt for Python gives you official Qt bindings; PySide6 has desktop deployment tooling; QtAsyncio exists specifically to integrate Qt with Python’s async model. This is the strongest fully-Python desktop choice among current mature options. citeturn37search4turn37search2turn37search3turn37search6turn37search11
+
+**Control plane.** Use urlTemporal Python SDKturn31search2 as the source of truth for task state. One workflow equals one user task. Temporal handles objective-order execution, max-attempt logic, cancellation, pause/resume, plan approval, and status queries through Signals, Queries, and Updates. The orchestrator itself should be a deterministic workflow plus activities; LLM calls live inside activities, not in the workflow core. citeturn31search2turn31search5turn31search8turn31search11
+
+**Planner and router.** Keep a narrow inner planner. A task becomes a DAG of `ObjectiveSpec` records. Each objective gets one `domain` chosen from `browser`, `terminal`, `desktop`, or `mixed`; one `tool_lease`; one `success_test`; one `review_policy`. The router selects a domain by affordance score, not by model whim. If the domain boundary changes, the orchestrator ends the current worker and spawns a new one. That is safer than letting one agent accrete every tool forever. This follows the orchestrator/specialist pattern in Magentic-One and the handoff model in the OpenAI Agents SDK, but keeps routing typed and explicit. citeturn8search2turn29search0turn29search5
+
+**Capability boundary.** Expose every external domain through local MCP servers built with the official MCP Python SDK or urlFastMCPturn6search7. Each server must publish: tools, resources, prompts, version, risk class, and health. But do not force every internal call through MCP. For performance-critical local execution, use a shared Python tool manifest and offer an MCP adapter on top of it. In other words: **MCP at the product boundary; direct calls in the hot path.** citeturn6search15turn6search7turn33search0turn33search8turn33search5turn33search2
+
+**Browser domain.** Primary substrate: urlPlaywright Pythonturn24search12. It gives you auto-waiting, actionability checks, navigations, tracing, and context isolation. Use headful Chromium in a dedicated profile for live tasks; save a trace on every attempt; save DOM snapshots and screenshots on failure. urlbrowser-useturn28search3 is useful as an MCP wrapper or rapid-integration layer, but I would not make it the ground truth execution engine; Playwright is the more reliable substrate. citeturn24search3turn24search6turn24search14turn24search15turn28search3turn23search10
+
+**Terminal / code domain.** Use an ACI, not a raw unconstrained shell. The right baseline is a PTY-backed command runner plus a repo/workspace abstraction, inspired by SWE-agent’s ACI, OpenHands’ composable SDK, and TaskWeaver’s code-first plugin model. Commands should be high-signal and structured: inspect tree, open file span, patch file, run test, run formatter, run command, capture diff, capture artifact. Raw shell remains available, but behind an elevated capability flag. citeturn28search2turn28search20turn31search4turn31search0turn31search15turn31search19
+
+**Desktop-app domain.** Use accessibility-first backends per OS. On Windows, prefer pywinauto with the UIA backend and explicit waits. On macOS, use AXUIElement. On Linux, use AT-SPI. Only if those layers cannot reach the target control should the worker fall back to screenshot-plus-input automation with MSS and PyAutoGUI; when it does, the attempt should be marked **degraded mode** because reliability and explainability are lower. PyAutoGUI’s own docs emphasize fail-safe aborts for exactly this reason. citeturn38search3turn38search0turn38search5turn19search0turn20search4turn20search2turn24search1turn19search2
+
+**Memory and evidence.** Local durable data should live in SQLite. Use WAL mode, JSON columns, and FTS5. Store: task records, objective DAGs, attempt logs, tool results, screenshots, Playwright traces, structured reflections, reviewer decisions, and reusable recovery recipes. FTS5 covers deterministic full-text retrieval; optional semantic indexing can come later with SQLite’s newer vector extension, but that should be a tier-two enhancement, not a launch dependency. citeturn25search1turn26search0turn26search14turn26search2turn26search6turn27search0
+
+**Reviewer pass.** After every objective, kill the executor worker and spawn a new reviewer worker with a different prompt, lower tool privileges, and a proof burden: show that the acceptance criteria are satisfied using the evidence bundle plus current environment checks. The reviewer can fail an objective only with a typed reason: missing artifact, failed assertion, UI state mismatch, wrong output, or environment divergence. If failed, the orchestrator opens attempt `n+1`; after three failed attempts, the task stops. This mirrors the writer/reviewer separation seen in current agent orchestration patterns and the reflective retry logic supported by Reflexion-style memory. citeturn30search13turn7search1
+
+**Safety and sandboxing.** Every objective attempt runs in its own worker process. Browser objectives run in a dedicated browser profile. Terminal objectives run in an isolated workspace or sandbox. Desktop objectives run, in the best version of this system, in a dedicated desktop session or VM whose display is streamed into the PySide app. If you insist on controlling the same live desktop the user is using, you must accept lower reliability. Add three kill paths: in-app stop button, global hotkey, and pointer fail-safe. citeturn28search0turn29search9turn19search2
+
+**User experience.** One main chat window. Discovery and approvals happen in the chat pane. During execution, the app shows the active objective, worker type, last action, current state, and evidence feed. For browser tasks, the browser surface should be the main visible pane. For isolated desktop tasks, show a live mirrored feed, not the real shared control surface. The user may observe at all times and interrupt at all times; they should not edit the active controlled surface unless they are explicitly taking over. That is the right compromise between trust, controllability, and reliability. citeturn37search0turn24search6turn21search0
+
+**Open questions / limitations.** Two choices still dominate the design. First: **Windows-only first, or cross-platform from day one?** Cross-platform is possible, but desktop automation quality is best if you start Windows-first. Second: **same-session control or isolated runner?** If you want “best effort,” same-session is fine. If you want “production reliable,” use an isolated desktop session or VM and stream it back. The research strongly favors the second answer. citeturn38search3turn19search0turn20search4turn10search2turn10search1
+
+## Research Bibliography
+
+**Papers**
+
+- *ReAct: Synergizing Reasoning and Acting in Language Models* — foundation for interleaved reason/act loops. citeturn8search0
+- *Reflexion: Language Agents with Verbal Reinforcement Learning* — explicit reflective memory for retries. citeturn7search1
+- *Voyager: An Open-Ended Embodied Agent with Large Language Models* — skill libraries and iterative recovery. citeturn7search2
+- *Toolformer: Language Models Can Teach Themselves to Use Tools* — tool selection matters, not just prompting. citeturn7search3
+- *AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation* — multi-agent conversation as an application substrate. citeturn8search1
+- *Magentic-One: A Generalist Multi-Agent System for Solving Complex Tasks* — orchestrator plus specialists plus replanning. citeturn8search2
+- *MetaGPT: Meta Programming for A Multi-Agent Collaborative Framework* — SOP-driven multi-agent software workflows. citeturn8search15
+- *Generative Agents: Interactive Simulacra of Human Behavior* — observation, planning, reflection memory stack. citeturn9search0
+- *MemGPT: Towards LLMs as Operating Systems* — hierarchical memory as a systems problem. citeturn9search1
+- *CAMEL: Communicative Agents for “Mind” Exploration of Large Language Model Society* — role-playing agent societies. citeturn9search2
+- *SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering* — ACI design for coding agents. citeturn9search3
+- *TaskWeaver: A Code-First Agent Framework* — code-first planning plus plugin execution. citeturn10search0
+- *AgentBench: Evaluating LLMs as Agents* — broad benchmark evidence of current failure modes. citeturn10search1
+- *WebArena: A Realistic Web Environment for Building Autonomous Agents* — realistic web-task brittleness. citeturn10search2
+- *Plan-and-Solve Prompting* — explicit decomposition before execution. citeturn10search3
+
+**Books**
+
+- entity["book","Designing Data-Intensive Applications","Martin Kleppmann"] — data models, logs, durability, tradeoffs. citeturn11search12
+- entity["book","Patterns of Enterprise Application Architecture","Martin Fowler"] — service boundaries, repositories, unit-of-work thinking. citeturn11search5
+- entity["book","Clean Architecture","Robert C. Martin"] — dependency direction and boundary discipline. citeturn11search6
+- entity["book","Fundamentals of Software Architecture","Mark Richards and Neal Ford"] — architecture characteristics and tradeoff framing. citeturn11search19
+- entity["book","Software Architecture: The Hard Parts","Neal Ford, Mark Richards, Pramod Sadalage, and Zhamak Dehghani"] — modern distributed tradeoffs. citeturn12search0
+- entity["book","Architecture Patterns with Python","Harry Percival and Bob Gregory"] — Pythonic clean architecture and event-driven patterns. citeturn14search4
+- entity["book","Domain-Driven Design","Eric Evans"] — domain boundaries and ubiquitous language. citeturn14search9
+- entity["book","Building Microservices","Sam Newman"] — decomposition and operational cost discipline. citeturn34search4
+- entity["book","Release It!","Michael T. Nygard"] — failure modes, stability patterns, production realism. citeturn14search2
+- entity["book","Site Reliability Engineering","Betsy Beyer, Chris Jones, Jennifer Petoff, and Niall Richard Murphy"] — toil reduction, SLO thinking, operational feedback loops. citeturn13search17
+- entity["book","Python Concurrency with asyncio","Matthew Fowler"] — async design for Python control loops. citeturn16search0
+- entity["book","Fluent Python","Luciano Ramalho"] — idiomatic modern Python, including advanced language use. citeturn35search15
+- entity["book","Test-Driven Development with Python","Harry Percival"] — acceptance tests and feedback-driven development. citeturn16search10
+- entity["book","API Design Patterns","JJ Geewax"] — tool/API contract design, useful for MCP and internal ACIs. citeturn15search2
+- entity["book","Database Internals","Alex Petrov"] — storage-engine and indexing intuition for the memory layer. citeturn35search6
+
+The shortest honest recommendation is this: **build a PySide6 desktop shell, run a Temporal outer supervisor, use a small graph-style planner inside each objective, expose tools through MCP, drive the browser with Playwright, drive code tasks through a SWE-agent-style ACI, drive desktop apps through OS accessibility APIs, persist everything in SQLite, and isolate execution from the user’s live desktop whenever reliability matters.** That is the architecture most likely to survive contact with real users. citeturn37search4turn31search2turn21search8turn33search0turn24search12turn28search2turn38search3turn25search1
