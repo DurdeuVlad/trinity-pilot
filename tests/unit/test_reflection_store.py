@@ -52,3 +52,15 @@ class TestReflectionStore:
         store.save_reflection("obj-3", "t-1", 1, None, "passed", "")
         r = store.get_reflections("obj-3")[0]
         assert r["failure_reason"] is None
+
+    def test_close_and_reopen_persists_data(self, tmp_path):
+        db_path = str(tmp_path / "reflections.db")
+        store = ReflectionStore(db_path)
+        store.save_reflection("obj-persist", "t-1", 1, None, "note", "hint")
+        store.close()
+
+        store2 = ReflectionStore(db_path)
+        reflections = store2.get_reflections("obj-persist")
+        assert len(reflections) == 1
+        assert reflections[0]["notes"] == "note"
+        store2.close()

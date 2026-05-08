@@ -32,8 +32,8 @@ class TestSettings:
         env = {"GEMINI_API_KEY": "test-key"}
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
-        assert s.gemini_planner_model == "gemini-1.5-pro"
-        assert s.gemini_worker_model == "gemini-1.5-flash"
+        assert s.gemini_planner_model == "gemini-2.0-flash"
+        assert s.gemini_worker_model == "gemini-2.0-flash"
         assert s.temporal_host == "localhost:7233"
         assert s.db_path == "trinity_pilot.db"
 

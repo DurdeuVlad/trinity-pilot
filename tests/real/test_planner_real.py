@@ -8,7 +8,7 @@ pytestmark = pytest.mark.real
 
 
 async def test_planner_returns_valid_specs(gemini_api_key):
-    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-1.5-flash")
+    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
     planner = ObjectivePlanner(provider=provider)
 
     specs = await planner.plan("Open a browser and navigate to https://example.com")
@@ -29,7 +29,7 @@ async def test_planner_returns_valid_specs(gemini_api_key):
 
 
 async def test_planner_multi_step_task(gemini_api_key):
-    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-1.5-flash")
+    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
     planner = ObjectivePlanner(provider=provider)
 
     specs = await planner.plan(

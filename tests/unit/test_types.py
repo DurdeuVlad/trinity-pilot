@@ -55,6 +55,19 @@ class TestObjectiveSpec:
         assert restored.domain == spec.domain
         assert restored.risk_class == spec.risk_class
 
+    def test_metadata_roundtrip(self):
+        spec = _make_spec()
+        spec.metadata = {"timeout_seconds": 42, "custom_key": "value"}
+        restored = ObjectiveSpec.from_dict(spec.to_dict())
+        assert restored.metadata["timeout_seconds"] == 42
+        assert restored.metadata["custom_key"] == "value"
+
+    def test_metadata_defaults_to_empty_dict(self):
+        d = _make_spec().to_dict()
+        d.pop("metadata", None)  # simulate old serialized data
+        restored = ObjectiveSpec.from_dict(d)
+        assert restored.metadata == {}
+
     def test_domain_enum_values(self):
         assert DomainType.BROWSER.value == "browser"
         assert DomainType.TERMINAL.value == "terminal"
