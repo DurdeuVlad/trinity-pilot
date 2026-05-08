@@ -71,3 +71,27 @@ class TestTaskStoreSearch:
         store.save_task(TaskRecord(task_id="t-search-2", user_request="open terminal"))
         results = store.search("xyznonexistentquery123")
         assert results == []
+
+
+class TestTaskStoreUpdateStatus:
+    def test_update_status_written_to_db(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-direct", user_request="x", status=TaskStatus.PENDING))
+        store.update_status("t-direct", TaskStatus.RUNNING)
+
+        # Query DB directly — bypasses get_task() to confirm row is actually updated
+        row = store._conn.execute(
+            "SELECT status FROM tasks WHERE task_id=?", ("t-direct",)
+        ).fetchone()
+        assert row is not None
+        assert row["status"] == TaskStatus.RUNNING.value
+
+    def test_update_status_to_cancelled(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-cancel", user_request="y", status=TaskStatus.RUNNING))
+        store.update_status("t-cancel", TaskStatus.CANCELLED)
+
+        row = store._conn.execute(
+            "SELECT status FROM tasks WHERE task_id=?", ("t-cancel",)
+        ).fetchone()
+        assert row["status"] == TaskStatus.CANCELLED.value
