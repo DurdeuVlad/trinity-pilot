@@ -1,5 +1,12 @@
 # Changelog
 
+## Pass 17 — Test coverage: reviewer recovery_hint, browser timeout, gemini no-tool-calls (2026-05-08)
+
+- ObjectiveReviewer: recovery_hint field in ReviewResult (3 tests: populated on failure, empty on pass, defaults to empty when missing)
+- BrowserWorker: timeout raises WorkerError test (mocked _execute_inner with sleep)
+- GeminiProvider.complete_with_tools: no function_call parts returns empty tool_calls list + content matches response text
+- 212 tests total
+
 ## Pass 16 — Test coverage: CHANGELOG, created_files, evidence round-trip, reflection cross-task, validate, system_instruction (2026-05-08)
 
 - TerminalWorker: created_files captured in evidence after shell_raw command

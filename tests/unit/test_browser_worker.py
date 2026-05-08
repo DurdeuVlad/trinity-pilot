@@ -103,3 +103,18 @@ class TestBrowserWorker:
 
     def test_extract_url_returns_none_if_missing(self):
         assert BrowserWorker._extract_url("open the browser") is None
+
+    async def test_timeout_raises_worker_error(self):
+        import asyncio
+
+        async def slow_inner(spec, evidence):
+            await asyncio.sleep(999)
+
+        worker = BrowserWorker()
+        worker._execute_inner = slow_inner  # type: ignore
+
+        spec = _spec()
+        spec.metadata["timeout_seconds"] = 0.01
+
+        with pytest.raises(WorkerError, match="[Tt]imeout"):
+            await worker.execute(spec)

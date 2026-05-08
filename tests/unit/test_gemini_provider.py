@@ -72,6 +72,33 @@ class TestGeminiProviderCompleteWithTools:
             await provider.complete_with_tools(messages=[], tools=[])
 
 
+class TestGeminiProviderCompleteWithToolsNoToolCalls:
+    async def test_no_function_call_parts_returns_empty_tool_calls(self):
+        # Parts with no function_call attribute (or function_call is None)
+        fake_part = MagicMock(spec=[])  # no function_call attribute
+        fake_response = MagicMock()
+        fake_response.parts = [fake_part]
+        fake_response.text = "just a plain response"
+
+        fake_chat = MagicMock()
+        fake_chat.send_message = MagicMock(return_value=fake_response)
+        fake_model = MagicMock()
+        fake_model.start_chat = MagicMock(return_value=fake_chat)
+
+        with patch("google.generativeai.configure"):
+            with patch("google.generativeai.GenerativeModel", return_value=fake_model):
+                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.base import LLMMessage
+                provider = GeminiProvider(api_key="fake-key", model="gemini-2.0-flash")
+                result = await provider.complete_with_tools(
+                    messages=[LLMMessage(role="user", content="hello")],
+                    tools=[],
+                )
+
+        assert result.tool_calls == []
+        assert result.content == "just a plain response"
+
+
 class TestGeminiProviderCompleteEmptyMessages:
     async def test_complete_empty_messages_raises_value_error(self):
         with patch("google.generativeai.configure"):

@@ -92,3 +92,35 @@ class TestObjectiveReviewer:
         reviewer = ObjectiveReviewer(StubProvider(payload))
         result = await reviewer.review(_make_spec(), {})
         assert result.passed is True
+
+    async def test_recovery_hint_populated_on_failure(self):
+        payload = json.dumps({
+            "passed": False,
+            "failure_reason": "wrong_output",
+            "notes": "title mismatch",
+            "recovery_hint": "scroll down before taking screenshot",
+        })
+        reviewer = ObjectiveReviewer(StubProvider(payload))
+        result = await reviewer.review(_make_spec(), {"screenshot": "data"})
+        assert result.recovery_hint == "scroll down before taking screenshot"
+
+    async def test_recovery_hint_empty_on_pass(self):
+        payload = json.dumps({
+            "passed": True,
+            "failure_reason": None,
+            "notes": "all good",
+            "recovery_hint": "",
+        })
+        reviewer = ObjectiveReviewer(StubProvider(payload))
+        result = await reviewer.review(_make_spec(), {"screenshot": "data"})
+        assert result.recovery_hint == ""
+
+    async def test_recovery_hint_defaults_to_empty_string_when_missing(self):
+        payload = json.dumps({
+            "passed": True,
+            "failure_reason": None,
+            "notes": "ok",
+        })
+        reviewer = ObjectiveReviewer(StubProvider(payload))
+        result = await reviewer.review(_make_spec(), {})
+        assert result.recovery_hint == ""
