@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 from trinity_pilot.core.types import (
@@ -89,27 +90,29 @@ class TaskStore:
 class AttemptStore:
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self._conn: sqlite3.Connection = open_db(db_path)
+        self._lock = threading.Lock()
 
     def log_attempt(self, log: AttemptLog) -> None:
         evidence_json = json.dumps(log.evidence)
         failure_reason = log.failure_reason.value if log.failure_reason else None
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO attempt_logs
-            (attempt_id, task_id, objective_id, attempt_number, status, failure_reason, evidence_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                log.attempt_id,
-                log.task_id,
-                log.objective_id,
-                log.attempt_number,
-                log.status,
-                failure_reason,
-                evidence_json,
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO attempt_logs
+                (attempt_id, task_id, objective_id, attempt_number, status, failure_reason, evidence_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    log.attempt_id,
+                    log.task_id,
+                    log.objective_id,
+                    log.attempt_number,
+                    log.status,
+                    failure_reason,
+                    evidence_json,
+                ),
+            )
+            self._conn.commit()
 
     def get_attempts(self, objective_id: str) -> list[AttemptLog]:
         rows = self._conn.execute(

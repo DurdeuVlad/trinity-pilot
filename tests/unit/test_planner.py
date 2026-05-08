@@ -109,3 +109,14 @@ class TestObjectivePlanner:
         assert "x" * 100 in error_msg
         # Full 200-char string should NOT appear verbatim (it's truncated)
         assert "x" * 200 not in error_msg
+
+    async def test_plan_reorders_when_llm_returns_deps_before_dependents(self):
+        """Even if LLM returns B before A (B depends on A), plan() returns [A, B]."""
+        spec_b = _make_spec_dict(objective_id="obj-b", goal="Step B", dependencies=["obj-a"])
+        spec_a = _make_spec_dict(objective_id="obj-a", goal="Step A", dependencies=[])
+        # LLM returns B before A — wrong order
+        payload = json.dumps([spec_b, spec_a])
+        planner = ObjectivePlanner(StubProvider(payload))
+        specs = await planner.plan("do A then B")
+        ids = [s.objective_id for s in specs]
+        assert ids.index("obj-a") < ids.index("obj-b")

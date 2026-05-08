@@ -50,3 +50,17 @@ class TestWorkerRouter:
         w1 = router.route(_spec(DomainType.BROWSER))
         w2 = router.route(_spec(DomainType.BROWSER))
         assert w1 is not w2
+
+
+class TestWorkerErrorClass:
+    def test_worker_error_is_exception_subclass(self):
+        assert issubclass(WorkerError, Exception)
+
+    def test_worker_error_message_preserved(self):
+        err = WorkerError("something went wrong")
+        assert "something went wrong" in str(err)
+
+    def test_worker_error_can_be_raised_and_caught(self):
+        import pytest
+        with pytest.raises(WorkerError, match="test error"):
+            raise WorkerError("test error")

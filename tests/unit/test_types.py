@@ -1,6 +1,7 @@
 import pytest
 
 from trinity_pilot.core.types import (
+    AttemptLog,
     DomainType,
     FailureReason,
     ObjectiveSpec,
@@ -113,3 +114,25 @@ class TestObjectiveSpecMetadataRoundTrip:
         del d["metadata"]
         restored = ObjectiveSpec.from_dict(d)
         assert restored.metadata == {}
+
+
+class TestAttemptLogDefaults:
+    def test_default_evidence_is_empty_dict(self):
+        log = AttemptLog(
+            attempt_id="a",
+            objective_id="b",
+            task_id="c",
+            attempt_number=1,
+            status="passed",
+        )
+        assert log.evidence == {}
+
+    def test_default_failure_reason_is_none(self):
+        log = AttemptLog(
+            attempt_id="a",
+            objective_id="b",
+            task_id="c",
+            attempt_number=1,
+            status="passed",
+        )
+        assert log.failure_reason is None

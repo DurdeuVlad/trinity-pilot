@@ -81,3 +81,15 @@ class TestTerminalWorker:
     def test_extract_command_none_on_no_match(self):
         cmd = TerminalWorker._extract_command("vague goal with no command")
         assert cmd is None
+
+    def test_extract_command_backtick_wins_over_run_prefix(self):
+        # Goal has both "run X" and backtick — backtick is matched first (re.search finds first)
+        cmd = TerminalWorker._extract_command("run echo hello and also run `ls -la`")
+        # backtick pattern appears in goal, so backtick wins
+        assert cmd == "ls -la"
+
+    def test_extract_command_backtick_only_whitespace_returns_none(self):
+        # Backtick with only whitespace — strip returns empty string → falsy → None
+        cmd = TerminalWorker._extract_command("run `   ` in workspace")
+        # Stripped content is empty string, which is falsy
+        assert not cmd  # either None or empty string is acceptable

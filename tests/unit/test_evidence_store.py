@@ -90,6 +90,14 @@ class TestEvidenceStore:
         attempt_numbers = sorted(lg.attempt_number for lg in logs)
         assert attempt_numbers == [1, 2]
 
+    def test_list_attempts_returns_attempt_log_instances(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        store.save(_log(attempt_number=1))
+
+        logs = store.list_attempts("task-1")
+        assert len(logs) == 1
+        assert isinstance(logs[0], AttemptLog)
+
     def test_list_attempts_empty_for_unknown_task(self, tmp_path):
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         assert store.list_attempts("ghost-task") == []

@@ -70,3 +70,12 @@ class TestGeminiProviderCompleteWithTools:
             provider = GeminiProvider(api_key="fake-key")
         with pytest.raises(ValueError, match="messages"):
             await provider.complete_with_tools(messages=[], tools=[])
+
+
+class TestGeminiProviderCompleteEmptyMessages:
+    async def test_complete_empty_messages_raises_value_error(self):
+        with patch("google.generativeai.configure"):
+            from trinity_pilot.llm.gemini import GeminiProvider
+            provider = GeminiProvider(api_key="fake-key")
+        with pytest.raises(ValueError, match="messages"):
+            await provider.complete(messages=[])
