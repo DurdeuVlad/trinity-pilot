@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-temporalio = pytest.importorskip("temporalio", reason="temporalio not installed")
+pytest.importorskip("temporalio.testing", reason="temporalio not installed")
 
 from unittest.mock import AsyncMock, patch
 
@@ -113,3 +113,5 @@ class TestTaskWorkflowRetry:
         assert "retry_context" in received_specs[1]
         ctx = json.loads(received_specs[1]["retry_context"])
         assert ctx[0]["recovery_hint"] == "hint-one"
+
+

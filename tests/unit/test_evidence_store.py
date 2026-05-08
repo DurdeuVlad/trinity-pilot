@@ -84,3 +84,28 @@ class TestEvidenceStore:
     def test_list_attempts_empty_for_unknown_task(self, tmp_path):
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         assert store.list_attempts("ghost-task") == []
+
+    def test_delete_task_removes_db_rows(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        store.save(_log(attempt_number=1))
+        assert len(store.list_attempts("task-1")) == 1
+        store.delete_task("task-1")
+        assert store.list_attempts("task-1") == []
+
+    def test_delete_task_removes_evidence_files(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        store.save(_log(attempt_number=1))
+        task_dir = tmp_path / "task-1"
+        assert task_dir.exists()
+        store.delete_task("task-1")
+        assert not task_dir.exists()
+
+    def test_delete_task_nonexistent_is_noop(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        # Should not raise
+        store.delete_task("no-such-task")
+
+    def test_delete_task_empty_id_raises_value_error(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        with pytest.raises(ValueError, match="task_id"):
+            store.delete_task("")

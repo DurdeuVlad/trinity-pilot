@@ -8,7 +8,7 @@ from temporalio import activity
 
 from trinity_pilot.core.types import AttemptLog, FailureReason, ObjectiveSpec
 from trinity_pilot.llm.gemini import GeminiProvider
-from trinity_pilot.planner.planner import ObjectivePlanner
+from trinity_pilot.planner.planner import ObjectivePlanner, PlanningError
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
 from trinity_pilot.workers.router import WorkerRouter
 
@@ -16,22 +16,26 @@ from trinity_pilot.workers.router import WorkerRouter
 def _planner_provider() -> GeminiProvider:
     return GeminiProvider(
         api_key=os.environ["GEMINI_API_KEY"],
-        model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-1.5-pro"),
+        model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
     )
 
 
 def _reviewer_provider() -> GeminiProvider:
     return GeminiProvider(
         api_key=os.environ["GEMINI_API_KEY"],
-        model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-1.5-pro"),
+        model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
     )
 
 
 @activity.defn
 async def plan_objectives(user_request: str) -> list[dict[str, Any]]:
-    planner = ObjectivePlanner(provider=_planner_provider())
-    specs = await planner.plan(user_request)
-    return [s.to_dict() for s in specs]
+    try:
+        planner = ObjectivePlanner(provider=_planner_provider())
+        specs = await planner.plan(user_request)
+        return [s.to_dict() for s in specs]
+    except PlanningError as exc:
+        from temporalio.exceptions import ApplicationError
+        raise ApplicationError("planning_failed", str(exc), non_retryable=True) from exc
 
 
 @activity.defn

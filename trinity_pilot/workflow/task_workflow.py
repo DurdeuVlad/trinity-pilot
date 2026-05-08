@@ -27,6 +27,7 @@ class TaskWorkflow:
     def __init__(self) -> None:
         self._cancelled = False
         self._current_objective: str = ""
+        self._completed_objectives: list[str] = []
 
     @workflow.run
     async def run(self, user_request: str) -> dict:
@@ -91,6 +92,7 @@ class TaskWorkflow:
 
                 if review.get("passed"):
                     results[obj_id] = {"status": "passed", "evidence": evidence}
+                    self._completed_objectives.append(obj_id)
                     passed = True
                     break
 
@@ -141,3 +143,7 @@ class TaskWorkflow:
     @workflow.query
     def current_objective(self) -> str:
         return self._current_objective
+
+    @workflow.query
+    def completed_objectives(self) -> list[str]:
+        return list(self._completed_objectives)

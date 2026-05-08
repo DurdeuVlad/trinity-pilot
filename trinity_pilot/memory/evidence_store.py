@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -68,3 +69,15 @@ class EvidenceStore:
     def list_attempts(self, task_id: str) -> list[Any]:
         """Return all AttemptLog records for a task from the database."""
         return self._attempt_store.get_attempts_by_task(task_id)
+
+    def delete_task(self, task_id: str) -> None:
+        """Remove all attempt log rows and evidence files for a task."""
+        if not task_id:
+            raise ValueError("task_id must not be empty")
+        self._attempt_store._conn.execute(
+            "DELETE FROM attempt_logs WHERE task_id=?", (task_id,)
+        )
+        self._attempt_store._conn.commit()
+        task_dir = self._base_dir / task_id
+        if task_dir.exists():
+            shutil.rmtree(task_dir)

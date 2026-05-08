@@ -21,6 +21,10 @@ class GeminiProvider(LLMProvider):
         genai.configure(api_key=api_key)
         self._model_name = model
 
+    @property
+    def model(self) -> str:
+        return self._model_name
+
     def _make_model(
         self,
         system: str,
