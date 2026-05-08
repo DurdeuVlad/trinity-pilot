@@ -70,3 +70,17 @@ class TestEvidenceStore:
         # Only files under tmp_path should exist
         written = list(tmp_path.rglob("evidence.json"))
         assert len(written) == 1
+
+    def test_list_attempts_returns_all_for_task(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        store.save(_log(attempt_number=1))
+        store.save(_log(attempt_number=2))
+
+        logs = store.list_attempts("task-1")
+        assert len(logs) == 2
+        attempt_numbers = sorted(lg.attempt_number for lg in logs)
+        assert attempt_numbers == [1, 2]
+
+    def test_list_attempts_empty_for_unknown_task(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        assert store.list_attempts("ghost-task") == []

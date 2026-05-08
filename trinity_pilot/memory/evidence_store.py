@@ -64,3 +64,7 @@ class EvidenceStore:
         if not evidence_file.exists():
             return {}
         return json.loads(evidence_file.read_text(encoding="utf-8"))
+
+    def list_attempts(self, task_id: str) -> list[Any]:
+        """Return all AttemptLog records for a task from the database."""
+        return self._attempt_store.get_attempts_by_task(task_id)

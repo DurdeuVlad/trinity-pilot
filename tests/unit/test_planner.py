@@ -90,3 +90,22 @@ class TestObjectivePlanner:
         planner = ObjectivePlanner(StubProvider(payload))
         specs = await planner.plan("open example.com")
         assert len(specs) == 1
+
+    async def test_malformed_json_includes_request_context(self):
+        request = "open the browser and go to example.com please"
+        planner = ObjectivePlanner(StubProvider("not valid json {{{"))
+        with pytest.raises(PlanningError) as exc_info:
+            await planner.plan(request)
+        assert "Request context" in str(exc_info.value)
+        # Truncated to 100 chars max
+        assert request[:100] in str(exc_info.value)
+
+    async def test_malformed_json_long_request_truncated_to_100(self):
+        long_request = "x" * 200
+        planner = ObjectivePlanner(StubProvider("not valid json {{{"))
+        with pytest.raises(PlanningError) as exc_info:
+            await planner.plan(long_request)
+        error_msg = str(exc_info.value)
+        assert "x" * 100 in error_msg
+        # Full 200-char string should NOT appear verbatim (it's truncated)
+        assert "x" * 200 not in error_msg

@@ -38,5 +38,13 @@ class ReflectionStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_all_reflections(self, task_id: str) -> list[dict]:
+        """Return all reflections for a task, ordered by objective then attempt."""
+        rows = self._conn.execute(
+            "SELECT * FROM reflections WHERE task_id=? ORDER BY objective_id, attempt_number",
+            (task_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def close(self) -> None:
         self._conn.close()

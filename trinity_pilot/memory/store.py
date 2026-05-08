@@ -93,6 +93,17 @@ class AttemptStore:
             "SELECT * FROM attempt_logs WHERE objective_id=? ORDER BY attempt_number",
             (objective_id,),
         ).fetchall()
+        return self._rows_to_logs(rows)
+
+    def get_attempts_by_task(self, task_id: str) -> list[AttemptLog]:
+        """Return all attempt logs for a task, ordered by objective then attempt."""
+        rows = self._conn.execute(
+            "SELECT * FROM attempt_logs WHERE task_id=? ORDER BY objective_id, attempt_number",
+            (task_id,),
+        ).fetchall()
+        return self._rows_to_logs(rows)
+
+    def _rows_to_logs(self, rows: list) -> list[AttemptLog]:
         result = []
         for row in rows:
             fr = FailureReason(row["failure_reason"]) if row["failure_reason"] else None

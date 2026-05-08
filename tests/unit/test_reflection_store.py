@@ -64,3 +64,20 @@ class TestReflectionStore:
         assert len(reflections) == 1
         assert reflections[0]["notes"] == "note"
         store2.close()
+
+    def test_get_all_reflections_returns_all_for_task(self):
+        store = ReflectionStore(":memory:")
+        store.save_reflection("obj-a", "task-x", 1, None, "note a1", "hint a1")
+        store.save_reflection("obj-b", "task-x", 1, "wrong_output", "note b1", "hint b1")
+        store.save_reflection("obj-a", "task-x", 2, None, "note a2", "hint a2")
+        # Different task — should NOT appear
+        store.save_reflection("obj-c", "task-y", 1, None, "note c", "hint c")
+
+        result = store.get_all_reflections("task-x")
+        assert len(result) == 3
+        objectives = [r["objective_id"] for r in result]
+        assert "obj-c" not in objectives
+
+    def test_get_all_reflections_empty_for_unknown_task(self):
+        store = ReflectionStore(":memory:")
+        assert store.get_all_reflections("no-such-task") == []

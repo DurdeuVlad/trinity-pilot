@@ -46,8 +46,11 @@ class ObjectivePlanner:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
+            context = user_request[:100]
             raise PlanningError(
-                f"Planner returned invalid JSON: {exc}\nRaw response:\n{response.content}"
+                f"Planner returned invalid JSON: {exc}"
+                f"\nRequest context: {context!r}"
+                f"\nRaw response:\n{response.content}"
             ) from exc
 
         if not isinstance(data, list):
