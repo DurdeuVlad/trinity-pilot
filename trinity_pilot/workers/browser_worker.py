@@ -6,14 +6,18 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import DomainWorker, WorkerError
+from trinity_pilot.workers.evidence_schema import validate_evidence
 
 _PROFILE_DIR = Path.home() / ".trinity-pilot" / "browser-profile"
 
 
 class BrowserWorker(DomainWorker):
     """Playwright-backed browser worker. One context per attempt, closed in finally."""
+
+    def __init__(self) -> None:
+        super().__init__()
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
@@ -36,6 +40,7 @@ class BrowserWorker(DomainWorker):
             raise WorkerError(
                 f"Browser timeout after {timeout_seconds}s for '{spec.objective_id}'"
             )
+        validate_evidence(DomainType.BROWSER, evidence)
         return evidence
 
     async def _execute_inner(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> None:

@@ -5,12 +5,16 @@ import base64
 import sys
 from typing import Any
 
-from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import DomainWorker, WorkerError
+from trinity_pilot.workers.evidence_schema import validate_evidence
 
 
 class DesktopWorker(DomainWorker):
     """Accessibility-first desktop worker. UIA backend on Windows; degrades to screenshot."""
+
+    def __init__(self) -> None:
+        super().__init__()
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         evidence: dict[str, Any] = {
@@ -39,6 +43,7 @@ class DesktopWorker(DomainWorker):
             raise WorkerError(
                 f"Desktop execution failed for '{spec.objective_id}': {exc}"
             ) from exc
+        validate_evidence(DomainType.DESKTOP, evidence)
         return evidence
 
     async def _run_objective(

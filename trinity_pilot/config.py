@@ -26,6 +26,8 @@ class Settings:
             raise ConfigError("GEMINI_API_KEY is required but not set.")
         if not self.temporal_host:
             raise ConfigError("TEMPORAL_HOST must not be empty.")
+        if not self.temporal_namespace:
+            raise ConfigError("TEMPORAL_NAMESPACE must not be empty.")
 
     @classmethod
     def from_env(cls, dotenv_path: str | None = None) -> "Settings":

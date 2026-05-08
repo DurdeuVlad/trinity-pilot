@@ -47,8 +47,9 @@ class TaskWorkflow:
             self._current_objective = obj_id
             passed = False
             prior_reflections = []
+            max_attempts = int(spec_dict.get("max_attempts", _MAX_ATTEMPTS))
 
-            for attempt in range(1, _MAX_ATTEMPTS + 1):
+            for attempt in range(1, max_attempts + 1):
                 if self._cancelled:
                     return {"status": "cancelled", "results": results}
 

@@ -8,8 +8,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import DomainWorker, WorkerError
+from trinity_pilot.workers.evidence_schema import validate_evidence
 
 _MAX_OUTPUT_CHARS = 10_000
 _READ_TIMEOUT = 30.0
@@ -17,6 +18,9 @@ _READ_TIMEOUT = 30.0
 
 class TerminalWorker(DomainWorker):
     """PTY-backed terminal worker. Isolated tempdir per attempt, cleaned in finally."""
+
+    def __init__(self) -> None:
+        super().__init__()
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         workspace = tempfile.mkdtemp(prefix="trinity-term-")
@@ -49,6 +53,7 @@ class TerminalWorker(DomainWorker):
             ) from exc
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
+        validate_evidence(DomainType.TERMINAL, evidence)
         return evidence
 
     async def _run_objective(

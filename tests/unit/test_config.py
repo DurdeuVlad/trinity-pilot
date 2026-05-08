@@ -53,6 +53,11 @@ class TestSettings:
     def test_config_error_is_exception(self):
         assert issubclass(ConfigError, Exception)
 
+    def test_validate_raises_on_empty_temporal_namespace(self):
+        s = Settings(gemini_api_key="key", temporal_namespace="")
+        with pytest.raises(ConfigError, match="TEMPORAL_NAMESPACE"):
+            s.validate()
+
     def test_from_env_loads_dotenv_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             env_file = Path(tmpdir) / ".env"
