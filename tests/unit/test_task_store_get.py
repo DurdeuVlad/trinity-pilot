@@ -1,4 +1,4 @@
-"""TaskStore.get_task tests."""
+"""TaskStore unit tests."""
 from trinity_pilot.core.types import TaskRecord, TaskStatus
 from trinity_pilot.memory.store import TaskStore
 
@@ -33,3 +33,27 @@ class TestTaskStoreGetTask:
         loaded = store.get_task("task-upd")
         assert loaded is not None
         assert loaded.status == TaskStatus.COMPLETED
+
+
+class TestTaskStoreListTasks:
+    def test_list_tasks_returns_all(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-1", user_request="req1", status=TaskStatus.PENDING))
+        store.save_task(TaskRecord(task_id="t-2", user_request="req2", status=TaskStatus.RUNNING))
+        results = store.list_tasks()
+        assert len(results) == 2
+        ids = {r.task_id for r in results}
+        assert ids == {"t-1", "t-2"}
+
+    def test_list_tasks_filters_by_status(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-1", user_request="a", status=TaskStatus.PENDING))
+        store.save_task(TaskRecord(task_id="t-2", user_request="b", status=TaskStatus.COMPLETED))
+        store.save_task(TaskRecord(task_id="t-3", user_request="c", status=TaskStatus.PENDING))
+        running = store.list_tasks(status=TaskStatus.COMPLETED)
+        assert len(running) == 1
+        assert running[0].task_id == "t-2"
+
+    def test_list_tasks_empty_store(self):
+        store = TaskStore()
+        assert store.list_tasks() == []

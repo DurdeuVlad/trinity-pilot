@@ -58,6 +58,11 @@ class TestSettings:
         with pytest.raises(ConfigError, match="TEMPORAL_NAMESPACE"):
             s.validate()
 
+    def test_validate_raises_on_empty_temporal_host(self):
+        s = Settings(gemini_api_key="key", temporal_host="")
+        with pytest.raises(ConfigError, match="TEMPORAL_HOST"):
+            s.validate()
+
     def test_from_env_loads_dotenv_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             env_file = Path(tmpdir) / ".env"

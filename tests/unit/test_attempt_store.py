@@ -39,6 +39,17 @@ class TestAttemptStoreGetByTask:
         store = AttemptStore(":memory:")
         assert store.get_attempts_by_task("ghost") == []
 
+    def test_get_attempts_ordered_by_attempt_number(self):
+        store = AttemptStore(":memory:")
+        # Insert out of order
+        store.log_attempt(_log(task_id="t", objective_id="obj", attempt_number=3))
+        store.log_attempt(_log(task_id="t", objective_id="obj", attempt_number=1))
+        store.log_attempt(_log(task_id="t", objective_id="obj", attempt_number=2))
+
+        results = store.get_attempts("obj")
+        numbers = [r.attempt_number for r in results]
+        assert numbers == [1, 2, 3]
+
     def test_get_attempts_by_task_ordered_by_objective_then_attempt(self):
         store = AttemptStore(":memory:")
         store.log_attempt(_log(task_id="t", objective_id="obj-b", attempt_number=1))

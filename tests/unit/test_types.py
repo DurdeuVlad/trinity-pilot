@@ -94,3 +94,22 @@ class TestReviewResult:
     def test_failed_review_has_reason(self):
         r = ReviewResult(passed=False, failure_reason=FailureReason.WRONG_OUTPUT)
         assert r.failure_reason == FailureReason.WRONG_OUTPUT
+
+
+class TestObjectiveSpecMetadataRoundTrip:
+    def test_to_dict_includes_metadata(self):
+        spec = _make_spec(metadata={"timeout_seconds": 30, "env": "prod"})
+        d = spec.to_dict()
+        assert d["metadata"] == {"timeout_seconds": 30, "env": "prod"}
+
+    def test_from_dict_restores_metadata(self):
+        spec = _make_spec(metadata={"key": "value"})
+        restored = ObjectiveSpec.from_dict(spec.to_dict())
+        assert restored.metadata == {"key": "value"}
+
+    def test_from_dict_defaults_metadata_to_empty(self):
+        spec = _make_spec()
+        d = spec.to_dict()
+        del d["metadata"]
+        restored = ObjectiveSpec.from_dict(d)
+        assert restored.metadata == {}

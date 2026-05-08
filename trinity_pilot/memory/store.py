@@ -52,6 +52,29 @@ class TaskStore:
             status=TaskStatus(row["status"]),
         )
 
+    def list_tasks(self, status: "TaskStatus | None" = None) -> list["TaskRecord"]:
+        """Return all tasks, optionally filtered by status."""
+        if status is None:
+            rows = self._conn.execute("SELECT * FROM tasks").fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE status=?", (status.value,)
+            ).fetchall()
+        result = []
+        for row in rows:
+            objectives = [
+                ObjectiveSpec.from_dict(o) for o in json.loads(row["objectives_json"])
+            ]
+            result.append(
+                TaskRecord(
+                    task_id=row["task_id"],
+                    user_request=row["user_request"],
+                    objectives=objectives,
+                    status=TaskStatus(row["status"]),
+                )
+            )
+        return result
+
     def search(self, query: str) -> list[str]:
         rows = self._conn.execute(
             "SELECT task_id FROM task_fts WHERE task_fts MATCH ? ORDER BY rank",

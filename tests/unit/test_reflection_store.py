@@ -1,6 +1,8 @@
 """ReflectionStore unit tests — all in-memory SQLite."""
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from trinity_pilot.memory.reflection import ReflectionStore
@@ -81,3 +83,9 @@ class TestReflectionStore:
     def test_get_all_reflections_empty_for_unknown_task(self):
         store = ReflectionStore(":memory:")
         assert store.get_all_reflections("no-such-task") == []
+
+    def test_save_reflection_returns_valid_uuid(self):
+        store = ReflectionStore(":memory:")
+        rid = store.save_reflection("obj-1", "t-1", 1, None, "note", "hint")
+        parsed = uuid.UUID(rid)  # raises ValueError if not a valid UUID
+        assert str(parsed) == rid
