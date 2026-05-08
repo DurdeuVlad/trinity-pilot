@@ -1,5 +1,13 @@
 # Changelog
 
+## Pass 18 — Evidence schema gaps, ObjectiveSpec whitespace validation, TaskRecord objectives (2026-05-08)
+
+- validate_evidence: MIXED domain no-schema no-raise test; error message lists missing keys test
+- ObjectiveSpec.validate(): whitespace-only goal now raises ValueError (strip before check); negative max_attempts raises ValueError
+- TaskRecord: objectives field can be set; defaults to empty list
+- EvidenceStore: dom_snapshot and trace_path binary fields written to separate .bin files
+- 220 tests total
+
 ## Pass 17 — Test coverage: reviewer recovery_hint, browser timeout, gemini no-tool-calls (2026-05-08)
 
 - ObjectiveReviewer: recovery_hint field in ReviewResult (3 tests: populated on failure, empty on pass, defaults to empty when missing)

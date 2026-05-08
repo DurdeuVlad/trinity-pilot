@@ -136,3 +136,25 @@ class TestAttemptLogDefaults:
             status="passed",
         )
         assert log.failure_reason is None
+
+
+class TestObjectiveSpecValidateEdgeCases:
+    def test_negative_max_attempts_raises_value_error(self):
+        spec = _make_spec(max_attempts=-1)
+        with pytest.raises(ValueError, match="max_attempts"):
+            spec.validate()
+
+    def test_whitespace_goal_raises_value_error(self):
+        spec = _make_spec(goal="   ")
+        with pytest.raises(ValueError, match="goal"):
+            spec.validate()
+
+
+class TestTaskRecordObjectives:
+    def test_objectives_can_be_set(self):
+        record = TaskRecord(task_id="t-1", user_request="req", objectives=["obj-a", "obj-b"])
+        assert record.objectives == ["obj-a", "obj-b"]
+
+    def test_objectives_default_empty(self):
+        record = TaskRecord(task_id="t-1", user_request="req")
+        assert record.objectives == []

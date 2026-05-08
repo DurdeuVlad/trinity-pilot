@@ -135,3 +135,19 @@ class TestEvidenceStore:
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         with pytest.raises(ValueError, match="task_id"):
             store.delete_task("")
+
+    def test_dom_snapshot_binary_field_written_to_separate_file(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        large_b64 = "D" * 1000
+        log = _log(evidence={"dom_snapshot": large_b64})
+        store.save(log)
+        bin_file = tmp_path / "task-1" / "obj-1" / "attempt_1" / "dom_snapshot.bin"
+        assert bin_file.exists()
+
+    def test_trace_path_binary_field_written_to_separate_file(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        large_b64 = "E" * 1000
+        log = _log(evidence={"trace_path": large_b64})
+        store.save(log)
+        bin_file = tmp_path / "task-1" / "obj-1" / "attempt_1" / "trace_path.bin"
+        assert bin_file.exists()

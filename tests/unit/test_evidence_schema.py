@@ -58,3 +58,17 @@ class TestValidateEvidence:
         del ev["action_log"]
         with pytest.raises(WorkerError, match="action_log"):
             validate_evidence(DomainType.DESKTOP, ev)
+
+    def test_mixed_domain_no_schema_does_not_raise(self):
+        """MIXED domain has no schema — validate_evidence must be a no-op."""
+        validate_evidence(DomainType.MIXED, {})  # empty dict, no keys — should not raise
+
+    def test_error_message_lists_missing_key(self):
+        ev = _terminal_evidence()
+        del ev["exit_code"]
+        del ev["stdout"]
+        try:
+            validate_evidence(DomainType.TERMINAL, ev)
+            assert False, "expected WorkerError"
+        except WorkerError as e:
+            assert "exit_code" in str(e) or "stdout" in str(e)

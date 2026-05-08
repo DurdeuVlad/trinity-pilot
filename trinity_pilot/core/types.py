@@ -65,9 +65,9 @@ class ObjectiveSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        # String fields must be non-empty
+        # String fields must be non-empty (strip whitespace before check)
         for fname in ("objective_id", "goal", "rollback_or_abort_rule"):
-            if not getattr(self, fname):
+            if not str(getattr(self, fname, "") or "").strip():
                 raise ValueError(f"ObjectiveSpec missing required field: {fname}")
         # List fields must not be None (empty list is valid for deps/preconditions)
         for fname in (
