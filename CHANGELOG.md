@@ -1,5 +1,109 @@
 # Changelog
 
+## Pass 16 — Test coverage: CHANGELOG, created_files, evidence round-trip, reflection cross-task, validate, system_instruction (2026-05-08)
+
+- TerminalWorker: created_files captured in evidence after shell_raw command
+- EvidenceStore: load_attempt_evidence round-trip test
+- ReflectionStore: cross-task isolation test (same obj_id, different task_ids)
+- TaskStore.list_tasks: user_request field preserved in returned TaskRecord
+- ObjectiveSpec.validate(): empty goal raises ValueError
+- GeminiProvider.complete(): system_instruction passed to GenerativeModel
+- CHANGELOG updated with Passes 5-15 history
+
+## Pass 15 — Behavioral contracts, threading fix (2026-05-08)
+
+- save_reflection_activity: 2 unit tests (correct args, null failure_reason)
+- TerminalWorker._extract_command: backtick-wins-over-run, empty backtick edge cases
+- EvidenceStore.list_attempts: type check (returns AttemptLog instances)
+- ObjectivePlanner.plan(): dependency reorder test (LLM returns [B,A] -> plan returns [A,B])
+- GeminiProvider.complete(): empty messages raises ValueError
+- WorkerError: issubclass, message preserved, raise/catch tests
+- AttemptLog: default evidence={}, default failure_reason=None
+- BUG FIX: AttemptStore.log_attempt threading.Lock prevents SQLite WAL concurrent write race
+- 202 tests total
+
+## Pass 14 — Desktop MCP tests, persist_attempt activity test, tool_calls, update_status (2026-05-08)
+
+- test_mcp_desktop.py: desktop_screenshot + desktop_find_window mocked (4 tests)
+- test_persist_activity.py: persist_attempt passed/failed status, AttemptLog fields (2 tests)
+- GeminiProvider.complete_with_tools: tool_calls parsing + empty messages raises (2 tests)
+- TaskStore.update_status: direct DB row assertion (2 tests)
+- 190 tests total
+
+## Pass 13 — Binary round-trip, cancel tests, worker_runner smoke, CLI tests, search tests (2026-05-08)
+
+- EvidenceStore: binary field content round-trip (file bytes match original)
+- TaskWorkflow: cancel flag tests (idempotent, sets _cancelled correctly)
+- test_worker_runner.py: smoke import, callable checks, _TASK_QUEUE constant (4 tests)
+- test_main.py: --help exit 0, --version exit 0 + version string, --worker in help (4 tests)
+- TaskStore.search(): match found, no-match returns [] (2 tests)
+- 180 tests total
+
+## Pass 12 — list_tasks, metadata round-trip, MCP browser/review tests (2026-05-08)
+
+- TaskStore.list_tasks(status=None): list all or filter by TaskStatus
+- ObjectiveSpec to_dict/from_dict: metadata round-trip (3 tests)
+- test_mcp_browser.py: browser_navigate mocked (2 tests)
+- test_review_activity.py: review_objective passing/failing result (2 tests)
+- Settings.validate: temporal_host empty raises ConfigError test
+- AttemptStore.get_attempts: ordering test
+- ReflectionStore.save_reflection: UUID validity test
+- 167 tests total
+
+## Pass 11 — Observability, ApplicationError, delete_task, model property, MCP terminal tests (2026-05-08)
+
+- TaskWorkflow.completed_objectives() query: returns list of passed obj IDs, returns copy
+- plan_objectives wraps PlanningError as ApplicationError("planning_failed", non_retryable=True)
+- EvidenceStore.delete_task(task_id): removes DB rows + directory tree
+- GeminiProvider.model property: exposes model name
+- activities.py: fix stale gemini-1.5-pro defaults -> gemini-2.0-flash
+- tests/unit/conftest.py created; temporalio stub pattern for unit tests
+- 154 tests total
+
+## Pass 10 — README, error context, cancellation record, reflection/attempt queries (2026-05-08)
+
+- README.md: full project description, setup, run, test, layout docs
+- PlanningError on JSON decode includes truncated user_request context (first 100 chars)
+- TaskWorkflow: cancelled objective recorded as {"status": "cancelled"} in results
+- ReflectionStore.get_all_reflections(task_id): all reflections for a task
+- AttemptStore.get_attempts_by_task(task_id): all attempts for a task
+- EvidenceStore.list_attempts(task_id): delegates to AttemptStore
+- 136 tests total
+
+## Pass 9 — Real Gemini tests, reviewer tests, pipeline smoke (2026-05-08)
+
+- ObjectiveReviewer: full reviewer unit tests (6 tests)
+- test_reviewer_real.py: passing + failing evidence against live Gemini
+- test_pipeline_real.py: planner -> TerminalWorker -> reviewer round-trip
+- Config: default models updated to gemini-2.0-flash
+- tests/real/conftest.py: gemini_api_key fixture
+- 127 CI tests + 10 real tests
+
+## Pass 8 — CLI, lazy PySide6, worker timeout, evidence schema (2026-05-08)
+
+- __main__.py: --worker flag, --version, --help, lazy PySide6 import
+- worker_runner.py: all temporalio imports lazy
+- ui/__init__.py: lazy __getattr__ to avoid PySide6 at collection time
+- BrowserWorker: _execute_inner() method, asyncio.wait_for timeout guard
+- evidence_schema.py: per-domain required-key validation
+- EvidenceStore: injectable base_dir for test isolation
+- 127 CI tests
+
+## Pass 7 — Integration pipeline smoke, metadata field, evidence validation (2026-05-08)
+
+- ObjectiveSpec: metadata: dict[str, Any] field added
+- workers: timeout guard via asyncio.wait_for + metadata["timeout_seconds"]
+- evidence_schema.py: validate_evidence(domain, evidence) at worker boundary
+- test_pipeline_smoke.py: MockLLMProvider, passing + failure+reflection persistence
+- EvidenceStore: injectable base_dir
+- All workers: explicit __init__, timeout, schema validation
+
+## Pass 5 — Hardening, ruff/mypy clean (2026-05-08)
+
+- ruff + mypy clean pass across all modules
+- test_kill_paths.py: lazy PySide6/pyautogui imports
+- Various type annotation fixes
+
 ## Pass 4 — Evidence persistence, reflection memory, hardening
 
 - EvidenceStore: atomic writes to `~/.trinity-pilot/evidence/{task_id}/{obj_id}/attempt_N/`

@@ -82,6 +82,30 @@ class TestTerminalWorker:
         cmd = TerminalWorker._extract_command("vague goal with no command")
         assert cmd is None
 
+    async def test_created_files_captured_in_evidence(self):
+        import sys
+        # Use shell_raw to write a file
+        if sys.platform == "win32":
+            goal = "run `echo content > output.txt`"
+        else:
+            goal = "run `echo content > output.txt`"
+        spec = ObjectiveSpec(
+            objective_id="obj-files",
+            goal=goal,
+            dependencies=[],
+            domain=DomainType.TERMINAL,
+            required_capabilities=["shell_raw"],
+            risk_class=RiskClass.LOW,
+            preconditions=[],
+            success_tests=["file created"],
+            evidence_bundle=["created_files"],
+            max_attempts=1,
+            rollback_or_abort_rule="abort",
+        )
+        worker = TerminalWorker()
+        evidence = await worker.execute(spec)
+        assert "output.txt" in evidence["created_files"]
+
     def test_extract_command_backtick_wins_over_run_prefix(self):
         # Goal has both "run X" and backtick — backtick is matched first (re.search finds first)
         cmd = TerminalWorker._extract_command("run echo hello and also run `ls -la`")

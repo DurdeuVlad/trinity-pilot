@@ -89,3 +89,14 @@ class TestReflectionStore:
         rid = store.save_reflection("obj-1", "t-1", 1, None, "note", "hint")
         parsed = uuid.UUID(rid)  # raises ValueError if not a valid UUID
         assert str(parsed) == rid
+
+    def test_get_reflections_cross_task_same_obj_id(self):
+        """get_reflections queries by obj_id — returns entries from all tasks."""
+        store = ReflectionStore(":memory:")
+        store.save_reflection("obj-x", "task-alpha", 1, None, "note alpha", "hint alpha")
+        store.save_reflection("obj-x", "task-beta", 1, None, "note beta", "hint beta")
+
+        result = store.get_reflections("obj-x")
+        assert len(result) == 2
+        task_ids = {r["task_id"] for r in result}
+        assert task_ids == {"task-alpha", "task-beta"}

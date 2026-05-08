@@ -58,6 +58,13 @@ class TestTaskStoreListTasks:
         store = TaskStore()
         assert store.list_tasks() == []
 
+    def test_list_tasks_preserves_user_request(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-req", user_request="open browser and go to example.com", status=TaskStatus.PENDING))
+        results = store.list_tasks()
+        assert len(results) == 1
+        assert results[0].user_request == "open browser and go to example.com"
+
 
 class TestTaskStoreSearch:
     def test_search_finds_matching_task(self):

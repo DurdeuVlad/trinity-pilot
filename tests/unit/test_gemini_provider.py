@@ -79,3 +79,33 @@ class TestGeminiProviderCompleteEmptyMessages:
             provider = GeminiProvider(api_key="fake-key")
         with pytest.raises(ValueError, match="messages"):
             await provider.complete(messages=[])
+
+
+class TestGeminiProviderSystemInstruction:
+    async def test_complete_passes_system_instruction_to_model(self):
+        from unittest.mock import call
+
+        fake_response = MagicMock()
+        fake_response.text = "ok"
+        fake_chat = MagicMock()
+        fake_chat.send_message = MagicMock(return_value=fake_response)
+        fake_model_instance = MagicMock()
+        fake_model_instance.start_chat = MagicMock(return_value=fake_chat)
+
+        with patch("google.generativeai.configure"):
+            with patch("google.generativeai.GenerativeModel", return_value=fake_model_instance) as mock_gen_model:
+                from importlib import reload
+                import trinity_pilot.llm.gemini as gem_mod
+                reload(gem_mod)
+                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.base import LLMMessage
+                provider = GeminiProvider(api_key="fake-key", model="gemini-2.0-flash")
+                await provider.complete(
+                    messages=[LLMMessage(role="user", content="hello")],
+                    system="You are helpful",
+                )
+
+        mock_gen_model.assert_called_once_with(
+            "gemini-2.0-flash",
+            system_instruction="You are helpful",
+        )

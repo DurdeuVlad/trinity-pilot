@@ -90,6 +90,15 @@ class TestEvidenceStore:
         attempt_numbers = sorted(lg.attempt_number for lg in logs)
         assert attempt_numbers == [1, 2]
 
+    def test_load_attempt_evidence_round_trip_matches_saved(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        log = _log(evidence={"stdout": "hello round-trip", "exit_code": 0})
+        store.save(log)
+
+        loaded = store.load_attempt_evidence("task-1", "obj-1", 1)
+        assert loaded["stdout"] == "hello round-trip"
+        assert loaded["exit_code"] == 0
+
     def test_list_attempts_returns_attempt_log_instances(self, tmp_path):
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         store.save(_log(attempt_number=1))
