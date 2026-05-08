@@ -1,5 +1,15 @@
 # Changelog
 
+## Pass 19 - Final hardening: desktop fallback, DAG scale, provider/config/workflow edges (2026-05-08)
+
+- DesktopWorker: degraded-mode evidence when pywinauto and PyAutoGUI imports fail
+- ObjectivePlanner: five-objective reverse dependency chain reorders by DAG
+- ReflectionStore and EvidenceStore: three-attempt ordering and exact five-key evidence round trip
+- GeminiProvider and Settings: empty-system kwargs omitted; Temporal namespace and worker model env overrides covered
+- TaskWorkflow: internal `_results` mirror populated on objective pass
+- TerminalWorker: Windows command builtins run through `cmd.exe /c` while preserving non-shell subprocess execution
+- 230 tests total
+
 ## Pass 18 — Evidence schema gaps, ObjectiveSpec whitespace validation, TaskRecord objectives (2026-05-08)
 
 - validate_evidence: MIXED domain no-schema no-raise test; error message lists missing keys test

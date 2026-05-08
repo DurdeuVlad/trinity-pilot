@@ -4,6 +4,7 @@ import asyncio
 import os
 import shlex
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,33 @@ class TerminalWorker(DomainWorker):
                 args = shlex.split(command)
             except ValueError as exc:
                 raise WorkerError(f"Command parse failed: {exc}") from exc
+            if sys.platform == "win32" and args and args[0].lower() in {
+                "assoc",
+                "break",
+                "call",
+                "cd",
+                "chdir",
+                "cls",
+                "copy",
+                "del",
+                "dir",
+                "echo",
+                "erase",
+                "exit",
+                "md",
+                "mkdir",
+                "move",
+                "rd",
+                "ren",
+                "rename",
+                "rmdir",
+                "set",
+                "type",
+                "ver",
+                "vol",
+            }:
+                comspec = os.environ.get("ComSpec", "cmd.exe")
+                args = [comspec, "/c", command]
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,

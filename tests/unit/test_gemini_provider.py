@@ -98,6 +98,32 @@ class TestGeminiProviderCompleteWithToolsNoToolCalls:
         assert result.tool_calls == []
         assert result.content == "just a plain response"
 
+    async def test_complete_with_tools_omits_system_instruction_when_system_empty(self):
+        fake_response = MagicMock()
+        fake_response.parts = []
+        fake_response.text = "ok"
+        fake_chat = MagicMock()
+        fake_chat.send_message = MagicMock(return_value=fake_response)
+        fake_model = MagicMock()
+        fake_model.start_chat = MagicMock(return_value=fake_chat)
+
+        with patch("google.generativeai.configure"):
+            with patch("google.generativeai.GenerativeModel", return_value=fake_model) as mock_gen_model:
+                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.base import LLMMessage
+
+                provider = GeminiProvider(api_key="fake-key", model="gemini-2.0-flash")
+                await provider.complete_with_tools(
+                    messages=[LLMMessage(role="user", content="hello")],
+                    tools=[{"name": "noop"}],
+                    system="",
+                )
+
+        mock_gen_model.assert_called_once_with(
+            "gemini-2.0-flash",
+            tools=[{"name": "noop"}],
+        )
+
 
 class TestGeminiProviderCompleteEmptyMessages:
     async def test_complete_empty_messages_raises_value_error(self):
@@ -136,3 +162,33 @@ class TestGeminiProviderSystemInstruction:
             "gemini-2.0-flash",
             system_instruction="You are helpful",
         )
+
+    async def test_complete_omits_system_instruction_kwarg_when_system_empty(self):
+        fake_response = MagicMock()
+        fake_response.text = "ok"
+        fake_chat = MagicMock()
+        fake_chat.send_message = MagicMock(return_value=fake_response)
+        fake_model_instance = MagicMock()
+        fake_model_instance.start_chat = MagicMock(return_value=fake_chat)
+
+        with patch("google.generativeai.configure"):
+            with patch(
+                "google.generativeai.GenerativeModel",
+                return_value=fake_model_instance,
+            ) as mock_gen_model:
+                from importlib import reload
+
+                import trinity_pilot.llm.gemini as gem_mod
+                from trinity_pilot.llm.base import LLMMessage
+
+                reload(gem_mod)
+                provider = gem_mod.GeminiProvider(
+                    api_key="fake-key",
+                    model="gemini-2.0-flash",
+                )
+                await provider.complete(
+                    messages=[LLMMessage(role="user", content="hello")],
+                    system="",
+                )
+
+        mock_gen_model.assert_called_once_with("gemini-2.0-flash")

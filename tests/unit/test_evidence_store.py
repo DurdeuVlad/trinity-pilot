@@ -99,6 +99,21 @@ class TestEvidenceStore:
         assert loaded["stdout"] == "hello round-trip"
         assert loaded["exit_code"] == 0
 
+    def test_load_attempt_evidence_preserves_all_saved_keys(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        evidence = {
+            "stdout": "ok",
+            "stderr": "",
+            "exit_code": 0,
+            "command": "pytest -q",
+            "duration_ms": 42,
+        }
+        store.save(_log(evidence=evidence))
+
+        loaded = store.load_attempt_evidence("task-1", "obj-1", 1)
+
+        assert loaded == evidence
+
     def test_list_attempts_returns_attempt_log_instances(self, tmp_path):
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         store.save(_log(attempt_number=1))

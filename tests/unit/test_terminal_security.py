@@ -53,6 +53,34 @@ class TestTerminalSecurity:
         assert len(exec_calls) == 1, "exec should be called"
         assert len(shell_calls) == 0, "shell must NOT be called by default"
 
+    async def test_windows_builtin_uses_cmd_via_exec_not_shell(self, monkeypatch):
+        exec_calls = []
+
+        async def fake_exec(*args, **kwargs):
+            exec_calls.append(args)
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"hello\r\n", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        monkeypatch.setattr(
+            "trinity_pilot.workers.terminal_worker.sys.platform",
+            "win32",
+        )
+        monkeypatch.setenv("ComSpec", "cmd.exe")
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec), \
+             patch("asyncio.create_subprocess_shell", side_effect=AssertionError("shell should not be called")):
+            stdout, stderr, exit_code = await TerminalWorker._run_command(
+                "echo hello",
+                cwd=".",
+            )
+
+        assert exec_calls == [("cmd.exe", "/c", "echo hello")]
+        assert "hello" in stdout
+        assert stderr == ""
+        assert exit_code == 0
+
     async def test_shell_raw_capability_uses_subprocess_shell(self):
         """With shell_raw capability: create_subprocess_shell is allowed."""
         shell_calls = []

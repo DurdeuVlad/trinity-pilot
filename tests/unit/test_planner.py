@@ -120,3 +120,23 @@ class TestObjectivePlanner:
         specs = await planner.plan("do A then B")
         ids = [s.objective_id for s in specs]
         assert ids.index("obj-a") < ids.index("obj-b")
+
+    async def test_plan_reorders_five_objective_chain_from_reverse_llm_order(self):
+        specs_data = [
+            _make_spec_dict(objective_id="obj-5", goal="Step 5", dependencies=["obj-4"]),
+            _make_spec_dict(objective_id="obj-4", goal="Step 4", dependencies=["obj-3"]),
+            _make_spec_dict(objective_id="obj-3", goal="Step 3", dependencies=["obj-2"]),
+            _make_spec_dict(objective_id="obj-2", goal="Step 2", dependencies=["obj-1"]),
+            _make_spec_dict(objective_id="obj-1", goal="Step 1", dependencies=[]),
+        ]
+        planner = ObjectivePlanner(StubProvider(json.dumps(specs_data)))
+
+        specs = await planner.plan("do five ordered steps")
+
+        assert [s.objective_id for s in specs] == [
+            "obj-1",
+            "obj-2",
+            "obj-3",
+            "obj-4",
+            "obj-5",
+        ]

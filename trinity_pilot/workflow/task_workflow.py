@@ -28,6 +28,7 @@ class TaskWorkflow:
         self._cancelled = False
         self._current_objective: str = ""
         self._completed_objectives: list[str] = []
+        self._results: dict[str, dict] = {}
 
     @workflow.run
     async def run(self, user_request: str) -> dict:
@@ -41,6 +42,7 @@ class TaskWorkflow:
         )
 
         results: dict[str, dict] = {}
+        self._results = results
         prior_reflections: list[dict] = []
 
         for spec_dict in objective_dicts:

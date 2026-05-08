@@ -63,6 +63,7 @@ def _stub_temporalio():
 _stub_temporalio()
 
 from trinity_pilot.workflow.task_workflow import TaskWorkflow  # noqa: E402
+import trinity_pilot.workflow.task_workflow as task_workflow_mod  # noqa: E402
 
 
 class TestTaskWorkflowCompletedObjectives:
@@ -97,6 +98,51 @@ class TestTaskWorkflowCompletedObjectives:
     def test_current_objective_empty_at_init(self):
         wf = TaskWorkflow()
         assert wf.current_objective() == ""
+
+    async def test_run_populates_internal_results_dict_on_objective_pass(
+        self, monkeypatch
+    ):
+        wf = TaskWorkflow()
+        spec = {
+            "objective_id": "obj-pass",
+            "goal": "Pass one objective",
+            "dependencies": [],
+            "domain": "terminal",
+            "required_capabilities": ["shell"],
+            "risk_class": "low",
+            "preconditions": [],
+            "success_tests": ["passes"],
+            "evidence_bundle": ["stdout"],
+            "max_attempts": 1,
+            "rollback_or_abort_rule": "abort",
+        }
+
+        async def fake_execute_activity(activity, *args, **kwargs):
+            if activity.__name__ == "plan_objectives":
+                return [spec]
+            if activity.__name__ == "execute_objective":
+                return {"stdout": "ok"}
+            if activity.__name__ == "review_objective":
+                return {
+                    "passed": True,
+                    "failure_reason": None,
+                    "notes": "",
+                    "recovery_hint": "",
+                }
+            if activity.__name__ == "persist_attempt":
+                return None
+            raise AssertionError(f"unexpected activity: {activity.__name__}")
+
+        monkeypatch.setattr(
+            task_workflow_mod.workflow,
+            "execute_activity",
+            fake_execute_activity,
+        )
+
+        result = await wf.run("pass one objective")
+
+        assert result["results"]["obj-pass"]["status"] == "passed"
+        assert wf._results["obj-pass"]["status"] == "passed"
 
 
 class TestTaskWorkflowCancelledResults:

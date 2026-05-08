@@ -41,6 +41,17 @@ class TestReflectionStore:
         assert reflections[0]["attempt_number"] == 1
         assert reflections[1]["attempt_number"] == 2
 
+    def test_three_reflections_ordered_by_attempt_when_saved_out_of_order(self):
+        store = ReflectionStore(":memory:")
+        store.save_reflection("obj-3", "t-1", 3, "wrong_output", "third", "retry 3")
+        store.save_reflection("obj-3", "t-1", 1, "missing_artifact", "first", "retry 1")
+        store.save_reflection("obj-3", "t-1", 2, "failed_assertion", "second", "retry 2")
+
+        reflections = store.get_reflections("obj-3")
+
+        assert [r["attempt_number"] for r in reflections] == [1, 2, 3]
+        assert [r["notes"] for r in reflections] == ["first", "second", "third"]
+
     def test_reflections_isolated_by_objective_id(self):
         store = ReflectionStore(":memory:")
         store.save_reflection("obj-a", "t-1", 1, None, "note a", "hint a")

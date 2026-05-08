@@ -35,6 +35,7 @@ class TestSettings:
         assert s.gemini_planner_model == "gemini-2.0-flash"
         assert s.gemini_worker_model == "gemini-2.0-flash"
         assert s.temporal_host == "localhost:7233"
+        assert s.temporal_namespace == "default"
         assert s.db_path == "trinity_pilot.db"
 
     def test_from_env_respects_overrides(self):
@@ -49,6 +50,26 @@ class TestSettings:
         assert s.gemini_planner_model == "gemini-2.0-pro"
         assert s.temporal_host == "myhost:7233"
         assert s.db_path == "/tmp/test.db"
+
+    def test_from_env_loads_temporal_namespace_override(self):
+        env = {
+            "GEMINI_API_KEY": "my-key",
+            "TEMPORAL_NAMESPACE": "thesis-defense",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+
+        assert s.temporal_namespace == "thesis-defense"
+
+    def test_from_env_loads_worker_model_override(self):
+        env = {
+            "GEMINI_API_KEY": "my-key",
+            "GEMINI_WORKER_MODEL": "gemini-worker-test",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+
+        assert s.gemini_worker_model == "gemini-worker-test"
 
     def test_config_error_is_exception(self):
         assert issubclass(ConfigError, Exception)
