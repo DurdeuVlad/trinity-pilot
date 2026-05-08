@@ -55,6 +55,15 @@ class TestEvidenceStore:
         bin_file = tmp_path / "task-1" / "obj-1" / "attempt_1" / "screenshot.bin"
         assert bin_file.exists()
 
+    def test_large_binary_field_content_matches_original(self, tmp_path):
+        store = EvidenceStore(":memory:", base_dir=tmp_path)
+        large_b64 = "B" * 1000
+        log = _log(evidence={"screenshot": large_b64})
+        store.save(log)
+
+        bin_file = tmp_path / "task-1" / "obj-1" / "attempt_1" / "screenshot.bin"
+        assert bin_file.read_bytes() == large_b64.encode()
+
     def test_multiple_attempts_separate_directories(self, tmp_path):
         store = EvidenceStore(":memory:", base_dir=tmp_path)
         store.save(_log(attempt_number=1))

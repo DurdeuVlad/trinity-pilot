@@ -57,3 +57,17 @@ class TestTaskStoreListTasks:
     def test_list_tasks_empty_store(self):
         store = TaskStore()
         assert store.list_tasks() == []
+
+
+class TestTaskStoreSearch:
+    def test_search_finds_matching_task(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-search-1", user_request="open browser and navigate"))
+        results = store.search("browser")
+        assert "t-search-1" in results
+
+    def test_search_returns_empty_for_no_match(self):
+        store = TaskStore()
+        store.save_task(TaskRecord(task_id="t-search-2", user_request="open terminal"))
+        results = store.search("xyznonexistentquery123")
+        assert results == []

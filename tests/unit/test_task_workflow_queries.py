@@ -97,3 +97,18 @@ class TestTaskWorkflowCompletedObjectives:
     def test_current_objective_empty_at_init(self):
         wf = TaskWorkflow()
         assert wf.current_objective() == ""
+
+
+class TestTaskWorkflowCancelledResults:
+    def test_cancelled_sets_flag(self):
+        wf = TaskWorkflow()
+        assert wf._cancelled is False
+        wf.cancel()
+        assert wf._cancelled is True
+
+    def test_cancel_idempotent(self):
+        wf = TaskWorkflow()
+        wf.cancel()
+        wf.cancel()
+        assert wf._cancelled is True
+        assert wf.get_status() == "cancelled"
