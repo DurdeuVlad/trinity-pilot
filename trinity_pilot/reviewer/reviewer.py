@@ -17,7 +17,8 @@ def _extract_json(text: str) -> str:
     text = text.strip()
     match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
     if match:
-        return match.group(1).strip()
+        text = match.group(1).strip()
+    text = re.sub(r",\s*([}\]])", r"\1", text)
     return text
 
 

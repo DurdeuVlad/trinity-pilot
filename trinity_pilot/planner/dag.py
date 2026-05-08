@@ -11,6 +11,15 @@ class CyclicDependencyError(Exception):
 
 def resolve_execution_order(specs: list[ObjectiveSpec]) -> list[ObjectiveSpec]:
     """Topological sort (Kahn's algorithm) by ObjectiveSpec.dependencies."""
+    seen: set[str] = set()
+    duplicate_ids: list[str] = []
+    for spec in specs:
+        if spec.objective_id in seen:
+            duplicate_ids.append(spec.objective_id)
+        seen.add(spec.objective_id)
+    if duplicate_ids:
+        raise ValueError(f"Duplicate objective ids found: {duplicate_ids}")
+
     index = {s.objective_id: s for s in specs}
     in_degree: dict[str, int] = {s.objective_id: 0 for s in specs}
     adjacency: dict[str, list[str]] = {s.objective_id: [] for s in specs}

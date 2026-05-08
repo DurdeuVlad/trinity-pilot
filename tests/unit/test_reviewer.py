@@ -93,6 +93,22 @@ class TestObjectiveReviewer:
         result = await reviewer.review(_make_spec(), {})
         assert result.passed is True
 
+    async def test_strips_trailing_commas_from_llm_json(self):
+        payload = """
+        ```json
+        {
+          "passed": true,
+          "failure_reason": null,
+          "notes": "ok",
+        }
+        ```
+        """
+        reviewer = ObjectiveReviewer(StubProvider(payload))
+
+        result = await reviewer.review(_make_spec(), {})
+
+        assert result.passed is True
+
     async def test_recovery_hint_populated_on_failure(self):
         payload = json.dumps({
             "passed": False,

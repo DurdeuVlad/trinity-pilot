@@ -59,5 +59,10 @@ class TestResolveExecutionOrder:
         with pytest.raises(ValueError, match="unknown id"):
             resolve_execution_order(specs)
 
+    def test_duplicate_objective_id_raises(self):
+        specs = [_spec("a", []), _spec("a", [])]
+        with pytest.raises(ValueError, match="Duplicate objective ids"):
+            resolve_execution_order(specs)
+
     def test_empty_list_returns_empty(self):
         assert resolve_execution_order([]) == []

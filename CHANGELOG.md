@@ -1,5 +1,12 @@
 # Changelog
 
+## Pass 20 - Production glue hardening: provider env, reviewer JSON, DAG ids (2026-05-08)
+
+- workflow activities: reviewer provider now uses `GEMINI_WORKER_MODEL`; planner provider remains on `GEMINI_PLANNER_MODEL`
+- ObjectiveReviewer: fenced LLM JSON with trailing commas now parses like planner output
+- DAG resolver: duplicate objective ids now raise `ValueError` before ordering
+- 234 tests total
+
 ## Pass 19 - Final hardening: desktop fallback, DAG scale, provider/config/workflow edges (2026-05-08)
 
 - DesktopWorker: degraded-mode evidence when pywinauto and PyAutoGUI imports fail

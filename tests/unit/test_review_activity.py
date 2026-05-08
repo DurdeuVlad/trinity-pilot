@@ -52,7 +52,7 @@ def _ensure_temporalio_stubbed():
 _ensure_temporalio_stubbed()
 
 from trinity_pilot.core.types import DomainType, FailureReason, ObjectiveSpec, ReviewResult, RiskClass  # noqa: E402
-from trinity_pilot.workflow.activities import review_objective  # noqa: E402
+from trinity_pilot.workflow.activities import _reviewer_provider, review_objective  # noqa: E402
 
 
 def _spec_dict() -> dict:
@@ -115,3 +115,18 @@ class TestReviewObjectiveActivity:
         assert result["failure_reason"] == "wrong_output"
         assert result["notes"] == "output mismatch"
         assert result["recovery_hint"] == "check stdout"
+
+    def test_reviewer_provider_uses_worker_model_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEY": "fake-key",
+                "GEMINI_PLANNER_MODEL": "planner-model",
+                "GEMINI_WORKER_MODEL": "worker-model",
+            },
+            clear=True,
+        ):
+            with patch("trinity_pilot.workflow.activities.GeminiProvider") as provider:
+                _reviewer_provider()
+
+        provider.assert_called_once_with(api_key="fake-key", model="worker-model")

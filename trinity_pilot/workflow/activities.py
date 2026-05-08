@@ -23,7 +23,7 @@ def _planner_provider() -> GeminiProvider:
 def _reviewer_provider() -> GeminiProvider:
     return GeminiProvider(
         api_key=os.environ["GEMINI_API_KEY"],
-        model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
+        model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
     )
 
 

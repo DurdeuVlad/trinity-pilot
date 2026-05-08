@@ -55,7 +55,7 @@ def _ensure_temporalio_stubbed():
 
 _ensure_temporalio_stubbed()
 
-from trinity_pilot.workflow.activities import plan_objectives  # noqa: E402
+from trinity_pilot.workflow.activities import _planner_provider, plan_objectives  # noqa: E402
 
 
 class TestPlanObjectivesActivity:
@@ -88,3 +88,18 @@ class TestPlanObjectivesActivity:
                 with pytest.raises(ApplicationError) as exc_info:
                     await plan_objectives("anything")
         assert exc_info.value.non_retryable is True
+
+    def test_planner_provider_uses_planner_model_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEY": "fake-key",
+                "GEMINI_PLANNER_MODEL": "planner-model",
+                "GEMINI_WORKER_MODEL": "worker-model",
+            },
+            clear=True,
+        ):
+            with patch("trinity_pilot.workflow.activities.GeminiProvider") as provider:
+                _planner_provider()
+
+        provider.assert_called_once_with(api_key="fake-key", model="planner-model")
