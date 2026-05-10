@@ -46,7 +46,7 @@ class _WorkerThread(QThread):
             TaskWorkflow.run,
             self._user_request,
             id=self._task_id,
-            task_queue="trinity-pilot",
+            task_queue=__import__('os').environ.get('TRINITY_TASK_QUEUE', 'trinity-pilot'),
         )
         self._workflow_handle = handle
         self.log_message.emit(f"[TEMPORAL] Workflow started: {self._task_id}")
@@ -54,6 +54,10 @@ class _WorkerThread(QThread):
         while True:
             await asyncio.sleep(2)
             try:
+                # Check if workflow still running before querying
+                desc = await handle.describe()
+                if desc.status.name not in ("RUNNING",):
+                    break
                 status: str = await handle.query(TaskWorkflow.get_status)
                 self.status_changed.emit(status)
                 if status in ("cancelled",):
@@ -110,9 +114,78 @@ class WorkflowBridge(QObject):
         self._worker.start()
         return task_id
 
+    def plan_only(
+        self,
+        user_request: str,
+        on_planned: Callable[[list[dict]], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
+        """Run the planner in a background thread and return specs via callback.
+
+        Does NOT start a Temporal workflow. Call start_task() after confirmation.
+        """
+        import threading
+        import os
+
+        def _run() -> None:
+            try:
+                import asyncio
+                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.planner.planner import ObjectivePlanner
+
+                provider = GeminiProvider(
+                    api_key=os.environ["GEMINI_API_KEY"],
+                    model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
+                )
+                planner = ObjectivePlanner(provider=provider)
+                loop = asyncio.new_event_loop()
+                try:
+                    specs = loop.run_until_complete(planner.plan(user_request))
+                    spec_dicts = [s.to_dict() for s in specs]
+                    if on_planned:
+                        on_planned(spec_dicts)
+                except Exception as exc:  # noqa: BLE001
+                    if on_error:
+                        on_error(str(exc))
+                finally:
+                    loop.close()
+            except Exception as exc:  # noqa: BLE001
+                if on_error:
+                    on_error(str(exc))
+
+        t = threading.Thread(target=_run, daemon=True, name="trinity-planner")
+        t.start()
+
     def stop_task(self) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
+
+    def query_progress(self) -> dict:
+        """Return {current_objective, completed_objectives} from the active workflow.
+
+        Safe to call from the Qt main thread while a worker is running.
+        Returns an empty dict if no active workflow or loop is unavailable.
+        """
+        worker = self._worker
+        if not worker or not worker.isRunning():
+            return {}
+        loop = worker._loop
+        handle = worker._workflow_handle
+        if not loop or not handle:
+            return {}
+        try:
+            from trinity_pilot.workflow.task_workflow import TaskWorkflow
+            future_cur = asyncio.run_coroutine_threadsafe(
+                handle.query(TaskWorkflow.current_objective), loop
+            )
+            future_done = asyncio.run_coroutine_threadsafe(
+                handle.query(TaskWorkflow.completed_objectives), loop
+            )
+            current = future_cur.result(timeout=1.0)
+            completed = future_done.result(timeout=1.0)
+            return {"current_objective": current, "completed_objectives": completed}
+        except Exception:  # noqa: BLE001
+            return {}
 
     def _on_worker_finished(self, task_id: str, final_status: str) -> None:
         try:

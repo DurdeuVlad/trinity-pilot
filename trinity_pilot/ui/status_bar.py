@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel
+from PySide6.QtWidgets import QGroupBox, QHBoxLayout
+
+from trinity_pilot.ui.objective_chips import ObjectiveChipsWidget
 
 
 class ObjectiveProgressWidget(QGroupBox):
-    """Status bar widget showing current objective execution state."""
+    """Legacy status bar widget — delegates to ObjectiveChipsWidget internally.
+
+    Kept for backward compatibility. New code should use ObjectiveChipsWidget directly.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__("Progress", parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(4, 2, 4, 2)
+        self._chips = ObjectiveChipsWidget(self)
+        layout.addWidget(self._chips)
 
-        self._obj_label = QLabel("Objective: —")
-        self._attempt_label = QLabel("Attempt: —")
-        self._domain_label = QLabel("Domain: —")
-
-        for lbl in (self._obj_label, self._attempt_label, self._domain_label):
-            layout.addWidget(lbl)
-        layout.addStretch()
+        self._last_obj_id: str = ""
 
     def update_progress(
         self,
@@ -25,9 +26,12 @@ class ObjectiveProgressWidget(QGroupBox):
         attempt: int | str = "—",
         domain: str = "—",
     ) -> None:
-        self._obj_label.setText(f"Objective: {objective_id}")
-        self._attempt_label.setText(f"Attempt: {attempt}")
-        self._domain_label.setText(f"Domain: {domain}")
+        if objective_id and objective_id != "—":
+            if objective_id != self._last_obj_id:
+                self._chips.set_objectives([{"objective_id": objective_id}])
+                self._last_obj_id = objective_id
+            self._chips.mark_running(objective_id)
 
     def reset(self) -> None:
-        self.update_progress()
+        self._last_obj_id = ""
+        self._chips.reset()

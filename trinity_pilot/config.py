@@ -20,6 +20,7 @@ class Settings:
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
     db_path: str = "trinity_pilot.db"
+    debug_mode: bool = False
 
     def validate(self) -> None:
         if not self.gemini_api_key:
@@ -39,6 +40,7 @@ class Settings:
             temporal_host=os.getenv("TEMPORAL_HOST", "localhost:7233"),
             temporal_namespace=os.getenv("TEMPORAL_NAMESPACE", "default"),
             db_path=os.getenv("DB_PATH", "trinity_pilot.db"),
+            debug_mode=os.getenv("TRINITY_DEBUG_MODE", "false").strip().lower() in ("true", "1", "yes"),
         )
         settings.validate()
         return settings
