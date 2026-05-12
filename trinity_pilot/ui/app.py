@@ -230,7 +230,6 @@ class MainWindow(QMainWindow):
 
     def _toggle_dark(self, dark: bool) -> None:
         self._dark = dark
-        # qt-material must import after PySide6
         from qt_material import apply_stylesheet
         theme = "dark_teal.xml" if dark else "light_teal.xml"
         apply_stylesheet(
@@ -238,6 +237,10 @@ class MainWindow(QMainWindow):
             theme,
             extra={"QTextBrowser": {"background": "transparent"}},
         )
+        hbg, hborder = ("#1A1A1A", "#2A2A2A") if dark else ("#FFFFFF", "#E0E0E0")
+        ibg, iborder = ("#1A1A1A", "#2A2A2A") if dark else ("#FFFFFF", "#E0E0E0")
+        self._header.setStyleSheet(f"background:{hbg};border-bottom:1px solid {hborder};")
+        self._input_bar.setStyleSheet(f"background:{ibg};border-top:1px solid {iborder};")
         self._chat.set_dark(dark)
 
     def _wire_kill_paths(self) -> None:
