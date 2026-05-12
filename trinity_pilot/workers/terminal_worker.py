@@ -91,7 +91,8 @@ class TerminalWorker(DomainWorker):
         evidence: dict[str, Any],
     ) -> None:
         shell_raw = "shell_raw" in (spec.required_capabilities or [])
-        direct_cmd = self._extract_command(spec.goal)
+        metadata_cmd = str(spec.metadata.get("command", "")).strip()
+        direct_cmd = metadata_cmd if metadata_cmd else self._extract_command(spec.goal)
         if direct_cmd is None:
             raise WorkerError(
                 f"No runnable command found in goal: {spec.goal!r}"

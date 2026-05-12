@@ -74,7 +74,56 @@ class TestExecuteObjectiveActivity:
         assert result["domain"] == "terminal"
         mock_worker.execute.assert_called_once()
 
-    async def test_mixed_domain_raises_worker_error(self):
+    async def test_mixed_domain_returns_failed_evidence(self):
         execute_objective = _get_execute_objective()
-        with pytest.raises(WorkerError, match="MIXED"):
-            await execute_objective(_spec_dict("mixed"))
+        with patch("trinity_pilot.workflow.activities.ObjectiveReviewer") as mock_reviewer_cls:
+            mock_reviewer = AsyncMock()
+            mock_reviewer.review = AsyncMock(return_value=AsyncMock(
+                passed=False,
+                failure_reason=None,
+                notes="worker error",
+                recovery_hint="",
+            ))
+            mock_reviewer_cls.return_value = mock_reviewer
+            result = await execute_objective(_spec_dict("mixed"))
+        assert result["passed"] is False
+        assert "MIXED" in result["error"]
+
+    async def test_worker_error_returns_failed_evidence_dict(self):
+        mock_worker = AsyncMock()
+        mock_worker.execute = AsyncMock(side_effect=WorkerError("simulated failure"))
+
+        execute_objective = _get_execute_objective()
+
+        with patch.object(WorkerRouter, "route", return_value=mock_worker):
+            with patch("trinity_pilot.workflow.activities.ObjectiveReviewer") as mock_reviewer_cls:
+                mock_reviewer = AsyncMock()
+                mock_reviewer.review = AsyncMock(return_value=AsyncMock(
+                    passed=False,
+                    failure_reason=None,
+                    notes="execution error",
+                    recovery_hint="retry",
+                ))
+                mock_reviewer_cls.return_value = mock_reviewer
+                result = await execute_objective(_spec_dict("browser"))
+
+        assert result["passed"] is False
+        assert result["error"] == "simulated failure"
+        assert "objective_id" in result
+
+    async def test_worker_error_no_raise_to_temporal(self):
+        mock_worker = AsyncMock()
+        mock_worker.execute = AsyncMock(side_effect=WorkerError("fatal worker failure"))
+
+        execute_objective = _get_execute_objective()
+
+        with patch.object(WorkerRouter, "route", return_value=mock_worker):
+            with patch("trinity_pilot.workflow.activities.ObjectiveReviewer") as mock_reviewer_cls:
+                mock_reviewer_cls.return_value = AsyncMock()
+                mock_reviewer_cls.return_value.review = AsyncMock(
+                    side_effect=Exception("reviewer also failed")
+                )
+                result = await execute_objective(_spec_dict("terminal"))
+
+        assert result["passed"] is False
+        assert "fatal worker failure" in result["error"]

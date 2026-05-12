@@ -118,3 +118,37 @@ class TestBrowserWorker:
 
         with pytest.raises(WorkerError, match="[Tt]imeout"):
             await worker.execute(spec)
+
+    async def test_metadata_actions_dispatched_in_order(self):
+        from unittest.mock import AsyncMock as _AsyncMock
+        mock_ap_cm, mock_page, mock_browser = _make_mock_context()
+        dispatched: list = []
+
+        async def capture_dispatch(page, action):
+            dispatched.append(action)
+
+        with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
+            worker = BrowserWorker()
+            worker._dispatch_action = capture_dispatch  # type: ignore[assignment]
+            spec = _spec("browse to example")
+            spec.metadata["actions"] = [
+                {"type": "navigate", "url": "https://example.com"},
+                {"type": "click", "selector": "#btn"},
+            ]
+            await worker.execute(spec)
+
+        assert len(dispatched) == 2
+        assert dispatched[0]["type"] == "navigate"
+        assert dispatched[1]["type"] == "click"
+
+    async def test_metadata_actions_absent_falls_back_to_goal_dispatch(self):
+        mock_ap_cm, mock_page, mock_browser = _make_mock_context()
+
+        with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
+            worker = BrowserWorker()
+            spec = _spec("navigate to https://example.com")
+            # No metadata.actions — should fall back to goal-string keyword dispatch
+            evidence = await worker.execute(spec)
+
+        mock_page.goto.assert_called_once()
+        assert evidence["domain"] == "browser"

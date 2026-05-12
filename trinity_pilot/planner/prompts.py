@@ -27,8 +27,24 @@ ObjectiveSpec schema:
   "success_tests": ["list of observable pass criteria"],
   "evidence_bundle": ["screenshot | dom_snapshot | stdout | stderr | file_path | ..."],
   "max_attempts": 3,
-  "rollback_or_abort_rule": "string"
+  "rollback_or_abort_rule": "string",
+  "metadata": {}
 }
+
+Metadata rules (REQUIRED — always populate for these domains):
+- terminal domain: always set metadata.command to the exact shell command string to execute.
+  Example: "metadata": {"command": "echo hello-world"}
+  Do NOT put the command only in the goal string — put it in metadata.command.
+- browser domain: always set metadata.actions to a JSON array of action objects.
+  Each action: {"type": "navigate"|"click"|"fill"|"wait_for"|"read_text", ...fields}
+  navigate: {"type": "navigate", "url": "https://..."}
+  click:    {"type": "click", "selector": "CSS selector"}
+  fill:     {"type": "fill", "selector": "CSS selector", "value": "text"}
+  wait_for: {"type": "wait_for", "selector": "CSS selector"}
+  read_text:{"type": "read_text"}
+  Example: "metadata": {"actions": [{"type": "navigate", "url": "https://github.com"}, {"type": "fill", "selector": "input[name=q]", "value": "fastmcp"}]}
+  Group ALL browser steps for a task into ONE objective with a complete actions list.
+  Do NOT split multi-step browser tasks into separate objectives.
 """
 
 PLANNER_USER_TEMPLATE = """\

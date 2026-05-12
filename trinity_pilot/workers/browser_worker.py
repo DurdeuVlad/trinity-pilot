@@ -116,18 +116,27 @@ class BrowserWorker(DomainWorker):
         spec: ObjectiveSpec,
         evidence: dict[str, Any],
     ) -> None:
-        # Try structured JSON action list first: {"actions": [...]}
         actions_executed = False
-        json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
-        if json_match:
-            try:
-                action_data = json.loads(json_match.group(0))
-                actions = action_data.get("actions", [])
-                for action in actions:
-                    await self._dispatch_action(page, action)
-                actions_executed = True
-            except Exception:
-                pass  # fall through to keyword dispatch
+
+        # Structured action list from metadata takes priority
+        metadata_actions = spec.metadata.get("actions")
+        if metadata_actions and isinstance(metadata_actions, list) and len(metadata_actions) > 0:
+            for action in metadata_actions:
+                await self._dispatch_action(page, action)
+            actions_executed = True
+
+        # Try structured JSON action list embedded in goal string: {"actions": [...]}
+        if not actions_executed:
+            json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
+            if json_match:
+                try:
+                    action_data = json.loads(json_match.group(0))
+                    actions = action_data.get("actions", [])
+                    for action in actions:
+                        await self._dispatch_action(page, action)
+                    actions_executed = True
+                except Exception:
+                    pass  # fall through to keyword dispatch
 
         # Keyword dispatch fallback
         if not actions_executed:

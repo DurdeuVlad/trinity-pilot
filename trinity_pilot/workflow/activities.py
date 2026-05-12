@@ -10,6 +10,7 @@ from trinity_pilot.core.types import AttemptLog, FailureReason, ObjectiveSpec
 from trinity_pilot.llm.gemini import GeminiProvider
 from trinity_pilot.planner.planner import ObjectivePlanner, PlanningError
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
+from trinity_pilot.workers.base import WorkerError
 from trinity_pilot.workers.router import WorkerRouter
 
 
@@ -42,23 +43,37 @@ async def plan_objectives(user_request: str) -> list[dict[str, Any]]:
 async def execute_objective(spec_dict: dict[str, Any]) -> dict[str, Any]:
     spec = ObjectiveSpec.from_dict(spec_dict)
     router = WorkerRouter()
-    worker = router.route(spec)
-    return await worker.execute(spec)
+    try:
+        worker = router.route(spec)
+        evidence = await worker.execute(spec)
+    except WorkerError as exc:
+        evidence = {
+            "domain": spec.domain.value,
+            "objective_id": spec.objective_id,
+            "error": str(exc),
+            "passed": False,
+            "failure_reason": None,
+            "notes": "",
+            "recovery_hint": "",
+        }
+        try:
+            reviewer = ObjectiveReviewer(provider=_reviewer_provider())
+            result = await reviewer.review(spec=spec, evidence=evidence)
+            evidence["passed"] = result.passed
+            evidence["failure_reason"] = result.failure_reason.value if result.failure_reason else None
+            evidence["notes"] = result.notes
+            evidence["recovery_hint"] = result.recovery_hint
+        except Exception:
+            pass
+        return evidence
 
-
-@activity.defn
-async def review_objective(
-    spec_dict: dict[str, Any], evidence: dict[str, Any]
-) -> dict[str, Any]:
-    spec = ObjectiveSpec.from_dict(spec_dict)
     reviewer = ObjectiveReviewer(provider=_reviewer_provider())
     result = await reviewer.review(spec=spec, evidence=evidence)
-    return {
-        "passed": result.passed,
-        "failure_reason": result.failure_reason.value if result.failure_reason else None,
-        "notes": result.notes,
-        "recovery_hint": result.recovery_hint,
-    }
+    evidence["passed"] = result.passed
+    evidence["failure_reason"] = result.failure_reason.value if result.failure_reason else None
+    evidence["notes"] = result.notes
+    evidence["recovery_hint"] = result.recovery_hint
+    return evidence
 
 
 @activity.defn

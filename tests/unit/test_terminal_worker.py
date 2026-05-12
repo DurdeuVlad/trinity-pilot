@@ -117,3 +117,61 @@ class TestTerminalWorker:
         cmd = TerminalWorker._extract_command("run `   ` in workspace")
         # Stripped content is empty string, which is falsy
         assert not cmd  # either None or empty string is acceptable
+
+    async def test_metadata_command_used_when_present(self):
+        spec = ObjectiveSpec(
+            objective_id="obj-meta-cmd",
+            goal="Execute the command some vague prose in a terminal.",
+            dependencies=[],
+            domain=DomainType.TERMINAL,
+            required_capabilities=[],
+            risk_class=RiskClass.LOW,
+            preconditions=[],
+            success_tests=["exit code 0"],
+            evidence_bundle=["stdout"],
+            max_attempts=1,
+            rollback_or_abort_rule="abort",
+            metadata={"command": "echo metadata-marker"},
+        )
+        worker = TerminalWorker()
+        evidence = await worker.execute(spec)
+        assert "metadata-marker" in evidence["stdout"]
+        assert evidence["exit_code"] == 0
+
+    async def test_metadata_command_empty_falls_back_to_regex(self):
+        spec = ObjectiveSpec(
+            objective_id="obj-meta-empty",
+            goal="run `echo fallback-marker`",
+            dependencies=[],
+            domain=DomainType.TERMINAL,
+            required_capabilities=[],
+            risk_class=RiskClass.LOW,
+            preconditions=[],
+            success_tests=["exit code 0"],
+            evidence_bundle=["stdout"],
+            max_attempts=1,
+            rollback_or_abort_rule="abort",
+            metadata={"command": ""},
+        )
+        worker = TerminalWorker()
+        evidence = await worker.execute(spec)
+        assert "fallback-marker" in evidence["stdout"]
+
+    async def test_metadata_command_absent_falls_back_to_regex(self):
+        spec = ObjectiveSpec(
+            objective_id="obj-meta-absent",
+            goal="run `echo absent-marker`",
+            dependencies=[],
+            domain=DomainType.TERMINAL,
+            required_capabilities=[],
+            risk_class=RiskClass.LOW,
+            preconditions=[],
+            success_tests=["exit code 0"],
+            evidence_bundle=["stdout"],
+            max_attempts=1,
+            rollback_or_abort_rule="abort",
+            metadata={},
+        )
+        worker = TerminalWorker()
+        evidence = await worker.execute(spec)
+        assert "absent-marker" in evidence["stdout"]
