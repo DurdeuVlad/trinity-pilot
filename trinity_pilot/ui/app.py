@@ -589,9 +589,15 @@ def run_app() -> None:
     from qt_material import apply_stylesheet
     apply_stylesheet(
         app,
-        theme="light_teal.xml",
+        theme="dark_teal.xml",
         extra={"QTextBrowser": {"background": "transparent"}},
     )
+    window._dark = True
+    window._dark_btn.setChecked(True)
+    window._chat.set_dark(True)
+    hbg, hborder = "#1A1A1A", "#2A2A2A"
+    window._header.setStyleSheet(f"background:{hbg};border-bottom:1px solid {hborder};")
+    window._input_bar.setStyleSheet(f"background:{hbg};border-top:1px solid {hborder};")
 
     window.show()
     sys.exit(app.exec())
