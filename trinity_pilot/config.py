@@ -32,7 +32,8 @@ class Settings:
 
     @classmethod
     def from_env(cls, dotenv_path: str | None = None) -> "Settings":
-        load_dotenv(dotenv_path=dotenv_path, override=True)
+        if dotenv_path is not None:
+            load_dotenv(dotenv_path=dotenv_path, override=True)
         settings = cls(
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),

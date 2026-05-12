@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 
+# Light mode domain badge colors  (bg, fg)
 _DOMAIN_COLORS: dict[str, tuple[str, str]] = {
     "cli": ("#E3F2FD", "#1565C0"),
     "browser": ("#E8F5E9", "#2E7D32"),
@@ -9,13 +10,94 @@ _DOMAIN_COLORS: dict[str, tuple[str, str]] = {
 }
 _DOMAIN_DEFAULT = ("#F3E5F5", "#6A1B9A")
 
+# Dark mode domain badge colors  (bg, fg)
+_DOMAIN_COLORS_DARK: dict[str, tuple[str, str]] = {
+    "cli": ("#1A2C3D", "#64B5F6"),
+    "browser": ("#1A2E1A", "#81C784"),
+    "desktop": ("#3D1A1A", "#EF9A9A"),
+}
+_DOMAIN_DEFAULT_DARK = ("#2A1A3D", "#CE93D8")
+
+# ---------------------------------------------------------------------------
+# Theme color tables — all HTML hex tokens live here, NOT in function bodies
+# ---------------------------------------------------------------------------
+
+_LIGHT: dict[str, str] = {
+    # user bubble
+    "user_bg": "#FF6347",
+    "user_fg": "#FFFFFF",
+    # ai bubble
+    "ai_bg": "#F5F5F5",
+    "ai_fg": "#212121",
+    "ai_accent": "#FF6347",
+    # objectives card
+    "card_bg": "#FFFDE7",
+    "card_border": "#FFC107",
+    "header_fg": "#E65100",
+    "divider": "#EEEEEE",
+    "desc_fg": "#555555",
+    "obj_fg": "#212121",
+    # summary bubble
+    "summary_ok_bg": "#E8F5E9",
+    "summary_cancel_bg": "#FFF3E0",
+    "summary_fail_bg": "#FFEBEE",
+    "summary_fg": "#212121",
+    # summary borders (status-semantic, same in light/dark)
+    "summary_ok_border": "#4CAF50",
+    "summary_cancel_border": "#FF9800",
+    "summary_fail_border": "#F44336",
+    # system note
+    "system_fg": "#9E9E9E",
+    # execution row
+    "exec_running_bg": "#E3F2FD",
+    "exec_running_fg": "#1565C0",
+    "exec_done_fg": "#2E7D32",
+    "exec_failed_fg": "#C62828",
+    "exec_pending_fg": "#757575",
+}
+
+_DARK: dict[str, str] = {
+    # user bubble
+    "user_bg": "#D84315",
+    "user_fg": "#FFFFFF",
+    # ai bubble
+    "ai_bg": "#2A2A2A",
+    "ai_fg": "#E0E0E0",
+    "ai_accent": "#FF6347",
+    # objectives card
+    "card_bg": "#1E1A00",
+    "card_border": "#7A5C00",
+    "header_fg": "#FFD54F",
+    "divider": "#333333",
+    "desc_fg": "#AAAAAA",
+    "obj_fg": "#E0E0E0",
+    # summary bubble
+    "summary_ok_bg": "#0D2010",
+    "summary_cancel_bg": "#1E1500",
+    "summary_fail_bg": "#2D0A0A",
+    "summary_fg": "#E0E0E0",
+    # summary borders (status-semantic, same in light/dark)
+    "summary_ok_border": "#4CAF50",
+    "summary_cancel_border": "#FF9800",
+    "summary_fail_border": "#F44336",
+    # system note
+    "system_fg": "#757575",
+    # execution row
+    "exec_running_bg": "#1A2C3D",
+    "exec_running_fg": "#64B5F6",
+    "exec_done_fg": "#81C784",
+    "exec_failed_fg": "#EF9A9A",
+    "exec_pending_fg": "#9E9E9E",
+}
+
 
 def _esc(text: str) -> str:
     return html.escape(str(text))
 
 
-def user_bubble(text: str) -> str:
+def user_bubble(text: str, dark: bool = False) -> str:
     """Right-aligned user message bubble."""
+    c = _DARK if dark else _LIGHT
     return (
         "<div style='"
         "text-align:right;"
@@ -23,8 +105,8 @@ def user_bubble(text: str) -> str:
         "'>"
         "<span style='"
         "display:inline-block;"
-        "background:#FF6347;"
-        "color:white;"
+        f"background:{c['user_bg']};"
+        f"color:{c['user_fg']};"
         "padding:8px 14px;"
         "border-radius:16px 16px 4px 16px;"
         "font-size:13px;"
@@ -34,8 +116,9 @@ def user_bubble(text: str) -> str:
     )
 
 
-def ai_bubble(text: str) -> str:
+def ai_bubble(text: str, dark: bool = False) -> str:
     """Left-aligned AI message bubble."""
+    c = _DARK if dark else _LIGHT
     return (
         "<div style='"
         "text-align:left;"
@@ -43,11 +126,11 @@ def ai_bubble(text: str) -> str:
         "'>"
         "<span style='"
         "display:inline-block;"
-        "background:#F5F5F5;"
-        "color:#212121;"
+        f"background:{c['ai_bg']};"
+        f"color:{c['ai_fg']};"
         "padding:8px 14px;"
         "border-radius:16px 16px 16px 4px;"
-        "border-left:3px solid #FF6347;"
+        f"border-left:3px solid {c['ai_accent']};"
         "font-size:13px;"
         "line-height:1.4;"
         f"'>{_esc(text)}</span>"
@@ -55,36 +138,40 @@ def ai_bubble(text: str) -> str:
     )
 
 
-def objectives_card(specs: list[dict]) -> str:
+def objectives_card(specs: list[dict], dark: bool = False) -> str:
     """Numbered objectives list formatted as a card."""
+    c = _DARK if dark else _LIGHT
+    domain_map = _DOMAIN_COLORS_DARK if dark else _DOMAIN_COLORS
+    domain_default = _DOMAIN_DEFAULT_DARK if dark else _DOMAIN_DEFAULT
+
     rows = ""
     for i, spec in enumerate(specs, 1):
         domain = spec.get("domain", "cli")
         obj_id = _esc(spec.get("objective_id", f"objective_{i}"))
-        description = _esc(spec.get("description", spec.get("objective_id", "")))
-        bg, fg = _DOMAIN_COLORS.get(domain, _DOMAIN_DEFAULT)
+        description = _esc(spec.get("goal", spec.get("description", spec.get("objective_id", ""))))
+        bg, fg = domain_map.get(domain, domain_default)
         badge = (
             f"<span style='background:{bg};color:{fg};"
             f"padding:1px 7px;border-radius:10px;font-size:11px;"
             f"font-weight:600;margin-right:6px;'>{_esc(domain)}</span>"
         )
         rows += (
-            f"<div style='padding:5px 0;border-bottom:1px solid #EEEEEE;'>"
-            f"<b style='color:#FF6347;'>{i}.</b> {badge}"
-            f"<b>{obj_id}</b><br/>"
-            f"<span style='color:#555;font-size:12px;padding-left:18px;'>{description}</span>"
+            f"<div style='padding:5px 0;border-bottom:1px solid {c['divider']};'>"
+            f"<b style='color:{c['ai_accent']};'>{i}.</b>&nbsp;{badge}&nbsp;"
+            f"<b style='color:{c['obj_fg']};'>{obj_id}</b><br/>"
+            f"<span style='color:{c['desc_fg']};font-size:12px;margin-left:18px;'>{description}</span>"
             f"</div>"
         )
 
     return (
         "<div style='"
         "margin:8px 4px;"
-        "background:#FFFDE7;"
-        "border:1px solid #FFC107;"
+        f"background:{c['card_bg']};"
+        f"border:1px solid {c['card_border']};"
         "border-radius:8px;"
         "padding:10px 14px;"
         "'>"
-        "<div style='font-weight:700;color:#E65100;margin-bottom:6px;font-size:13px;'>"
+        f"<div style='font-weight:700;color:{c['header_fg']};margin-bottom:6px;font-size:13px;'>"
         "📋 Planned Objectives"
         "</div>"
         f"{rows}"
@@ -92,36 +179,42 @@ def objectives_card(specs: list[dict]) -> str:
     )
 
 
-def confirmation_prompt() -> str:
+def confirmation_prompt(dark: bool = False) -> str:
     """AI confirmation request after objectives card."""
     return ai_bubble(
         "Ready to run these objectives? "
-        "Type \u2018yes\u2019 to start, \u2018no\u2019 to cancel, "
-        "or describe what you\u2019d like to change."
+        "Type ‘yes’ to start, ‘no’ to cancel, "
+        "or describe what you’d like to change.",
+        dark=dark,
     )
 
 
-def summary_bubble(elapsed_s: float, status: str, results: dict) -> str:
+def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = False) -> str:
     """Completion summary bubble."""
+    c = _DARK if dark else _LIGHT
     total = len(results)
     passed = sum(1 for v in results.values() if v.get("status") == "passed")
-    failed = total - passed
+    failed = sum(1 for v in results.values() if v.get("status") == "failed")
+    not_run = sum(1 for v in results.values() if v.get("status") == "not_run")
 
     if status == "completed":
-        color = "#E8F5E9"
-        border = "#4CAF50"
-        icon = "\u2705"
+        color = c["summary_ok_bg"]
+        border = c["summary_ok_border"]
+        icon = "✅"
         msg = f"All {total} objective{'s' if total != 1 else ''} completed successfully in {elapsed_s:.1f}s."
     elif status == "cancelled":
-        color = "#FFF3E0"
-        border = "#FF9800"
-        icon = "\u23F9"
+        color = c["summary_cancel_bg"]
+        border = c["summary_cancel_border"]
+        icon = "⏹"
         msg = "Task was cancelled."
     else:
-        color = "#FFEBEE"
-        border = "#F44336"
-        icon = "\u274C"
-        msg = f"{passed}/{total} objectives passed. {failed} failed after {elapsed_s:.1f}s."
+        color = c["summary_fail_bg"]
+        border = c["summary_fail_border"]
+        icon = "❌"
+        msg = f"{passed}/{total} objectives passed. {failed} failed"
+        if not_run:
+            msg += f", {not_run} not run"
+        msg += f" after {elapsed_s:.1f}s."
 
     return (
         "<div style='"
@@ -131,6 +224,7 @@ def summary_bubble(elapsed_s: float, status: str, results: dict) -> str:
         "margin:8px 4px;"
         "padding:10px 14px;"
         "font-size:13px;"
+        f"color:{c['summary_fg']};"
         "'>"
         f"{icon} <b>{msg}</b>"
         "</div>"
@@ -156,13 +250,66 @@ def debug_block(label: str, content: str) -> str:
     )
 
 
-def system_note(text: str) -> str:
+def system_note(text: str, dark: bool = False) -> str:
     """Subtle system/info note line."""
+    c = _DARK if dark else _LIGHT
     return (
         "<div style='"
         "text-align:center;"
-        "color:#9E9E9E;"
+        f"color:{c['system_fg']};"
         "font-size:11px;"
         "margin:4px 0;"
         f"'>{_esc(text)}</div>"
+    )
+
+
+def execution_row(
+    label: str,
+    status: str,
+    indent_level: int = 0,
+    dark: bool = False,
+) -> str:
+    """Compact inline execution step row with status indicator.
+
+    Status values: "running", "done", "failed", "pending".
+    Unknown statuses fall back to "pending" style.
+    """
+    c = _DARK if dark else _LIGHT
+    padding_left = indent_level * 16
+
+    _STATUS_ICONS = {
+        "running": "⏳",  # hourglass / spinner-like
+        "done": "✓",     # check mark
+        "failed": "✗",   # ballot x
+        "pending": "–",  # en-dash
+    }
+    _STATUS_FG_KEYS = {
+        "running": "exec_running_fg",
+        "done": "exec_done_fg",
+        "failed": "exec_failed_fg",
+        "pending": "exec_pending_fg",
+    }
+
+    icon = _STATUS_ICONS.get(status, _STATUS_ICONS["pending"])
+    fg_key = _STATUS_FG_KEYS.get(status, "exec_pending_fg")
+    fg = c[fg_key]
+
+    # running gets a subtle background tint
+    if status == "running":
+        bg = c["exec_running_bg"]
+        bg_style = f"background:{bg};"
+    else:
+        bg_style = ""
+
+    return (
+        f"<div style='"
+        f"padding-left:{padding_left}px;"
+        f"padding-top:2px;padding-bottom:2px;"
+        f"font-size:12px;"
+        f"font-family:monospace;"
+        f"{bg_style}"
+        f"color:{fg};"
+        f"'>"
+        f"{icon}&nbsp;{_esc(label)}"
+        f"</div>"
     )

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,21 @@ from trinity_pilot.workers.base import DomainWorker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
 
 _PROFILE_DIR = Path.home() / ".trinity-pilot" / "browser-profile"
+
+_BROWSER_SYNTH_SYSTEM = """\
+You are a browser automation agent that has just navigated to a web page.
+Based on the original goal and the captured page data, output ONLY a JSON array
+of write_file actions to save the required information to disk.
+
+Each action: {"action":"write_file","path":"<absolute-path>","content":"<text>"}
+
+RULES:
+- Extract the data the goal asks for from PAGE TITLE and PAGE HTML.
+- Use the exact file path specified in the goal.
+- For JSON pages (like httpbin), parse the visible text to find the requested field.
+- The content should contain exactly what the goal asks to be saved — no extra commentary.
+- Return ONLY the JSON array. No markdown fences, no prose.
+"""
 
 
 class BrowserWorker(DomainWorker):
@@ -64,6 +82,9 @@ class BrowserWorker(DomainWorker):
                 page = browser.pages[0] if browser.pages else await browser.new_page()
 
                 await self._run_objective(page, spec, evidence)
+                # After navigation, synthesize file writes only when goal requires saving data
+                if any(kw in spec.goal.lower() for kw in ("save", "write", "download", "export", "store")):
+                    await self._synthesize_file_writes(spec, evidence)
 
             except WorkerError:
                 raise
@@ -95,16 +116,12 @@ class BrowserWorker(DomainWorker):
         spec: ObjectiveSpec,
         evidence: dict[str, Any],
     ) -> None:
-        import base64
-        import json as _json
-        import re
-
         # Try structured JSON action list first: {"actions": [...]}
         actions_executed = False
         json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
         if json_match:
             try:
-                action_data = _json.loads(json_match.group(0))
+                action_data = json.loads(json_match.group(0))
                 actions = action_data.get("actions", [])
                 for action in actions:
                     await self._dispatch_action(page, action)
@@ -143,6 +160,53 @@ class BrowserWorker(DomainWorker):
 
     @staticmethod
     def _extract_url(text: str) -> str | None:
-        import re
         match = re.search(r"https?://[^\s\"']+", text)
         return match.group(0) if match else None
+
+    async def _synthesize_file_writes(
+        self, spec: ObjectiveSpec, evidence: dict[str, Any]
+    ) -> None:
+        """After navigation, ask LLM to produce write_file actions from captured evidence."""
+        from trinity_pilot.llm.base import LLMMessage
+        from trinity_pilot.llm.gemini import GeminiProvider
+
+        page_title = evidence.get("page_title") or ""
+        page_url = evidence.get("page_url") or ""
+        dom_raw = evidence.get("dom_snapshot") or ""
+        # Strip HTML tags for a readable text preview
+        dom_text = re.sub(r"<[^>]+>", " ", dom_raw)
+        dom_text = re.sub(r"\s+", " ", dom_text).strip()[:4000]
+
+        provider = GeminiProvider(
+            api_key=os.environ["GEMINI_API_KEY"],
+            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+        )
+        user_msg = (
+            f"GOAL: {spec.goal}\n\n"
+            f"PAGE TITLE: {page_title}\n"
+            f"PAGE URL: {page_url}\n"
+            f"PAGE TEXT (first 4000 chars):\n{dom_text}\n\n"
+            "Generate the write_file JSON array now."
+        )
+        response = await provider.complete(
+            [LLMMessage(role="user", content=user_msg)],
+            system=_BROWSER_SYNTH_SYSTEM,
+        )
+        raw = response.content.strip()
+        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*(?:```|$)", raw)
+        if match:
+            raw = match.group(1).strip()
+        try:
+            actions = json.loads(raw)
+        except Exception as exc:
+            raise WorkerError(f"LLM produced invalid JSON for file writes: {exc}") from exc
+
+        for step in actions:
+            if step.get("action") == "write_file":
+                path = step["path"]
+                content = step["content"]
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_text(content, encoding="utf-8")
+                evidence.setdefault("action_log", []).append(
+                    f"Wrote file: {path} ({len(content)} chars)"
+                )

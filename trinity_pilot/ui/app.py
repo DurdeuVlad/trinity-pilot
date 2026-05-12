@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import signal
 import sys
 import time
 from typing import Any
 
 import pyautogui
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QTextBrowser,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,11 +39,60 @@ class _PlanningRelay(QObject):
     error = Signal(str)
 
 
+class _DebugDrawer(QWidget):
+    """Read-only state inspector panel. Shows ChatState, pending specs, request, progress."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(180)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(0)
+
+        self._browser = QTextBrowser()
+        self._browser.setReadOnly(True)
+        mono = QFont("Consolas", 10)
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self._browser.setFont(mono)
+        self._browser.setStyleSheet(
+            "QTextBrowser{background:#212121;color:#80CBC4;"
+            "font-family:Consolas,monospace;font-size:10px;"
+            "border:none;padding:4px;}"
+        )
+        layout.addWidget(self._browser)
+
+    def update(  # type: ignore[override]
+        self,
+        state: ChatState,
+        pending_specs: list,
+        pending_request: str,
+        progress: dict | None,
+    ) -> None:
+        """Populate the panel with a formatted state dump."""
+        lines: list[str] = []
+        lines.append(f"ChatState: {state.name}")
+        lines.append(f"Pending request: {pending_request!r}")
+        lines.append(f"Pending specs ({len(pending_specs)}):")
+        for i, spec in enumerate(pending_specs):
+            obj_id = spec.get("objective_id", f"obj_{i}")
+            domain = spec.get("domain", "?")
+            lines.append(f"  [{i}] objective_id={obj_id} domain={domain}")
+        if pending_specs:
+            lines.append("")
+            try:
+                lines.append(json.dumps(pending_specs, indent=2))
+            except (TypeError, ValueError):
+                lines.append(str(pending_specs))
+        lines.append(f"Last progress: {progress!r}")
+        self._browser.setPlainText("\n".join(lines))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, debug_mode: bool = False) -> None:
         super().__init__()
         self._bridge: Any = None
         self._debug_mode = debug_mode
+        self._dark = False
         self._settings: Any = None
         self._stream_worker: StreamWorker | None = None
         self._pending_specs: list[dict] = []
@@ -48,6 +100,12 @@ class MainWindow(QMainWindow):
         self._planning_relay = _PlanningRelay(self)
         self._planning_relay.planned.connect(self._on_planning_done)
         self._planning_relay.error.connect(self._on_planning_error)
+
+        # Debug drawer — only instantiated when debug_mode=True
+        if self._debug_mode:
+            self._debug_drawer: _DebugDrawer | None = _DebugDrawer()
+        else:
+            self._debug_drawer = None
 
         self.setWindowTitle("Trinity Pilot")
         self.resize(960, 720)
@@ -73,10 +131,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         # Header bar
-        header = QWidget()
-        header.setStyleSheet("background:#FFFFFF;border-bottom:1px solid #E0E0E0;")
-        header.setFixedHeight(44)
-        hrow = QHBoxLayout(header)
+        self._header = QWidget()
+        self._header.setStyleSheet("background:#FFFFFF;border-bottom:1px solid #E0E0E0;")
+        self._header.setFixedHeight(44)
+        hrow = QHBoxLayout(self._header)
         hrow.setContentsMargins(12, 0, 12, 0)
         title = QLabel("Trinity Pilot")
         title.setStyleSheet("color:#FF6347;font-weight:700;font-size:15px;")
@@ -92,19 +150,57 @@ class MainWindow(QMainWindow):
                 "background:#FFF3E0;padding:2px 8px;border-radius:8px;"
             )
             hrow.addWidget(dbg)
-        layout.addWidget(header)
+        # Dark mode toggle
+        self._dark_btn = QToolButton()
+        self._dark_btn.setText("\U0001f319")
+        self._dark_btn.setCheckable(True)
+        self._dark_btn.setToolTip("Toggle dark mode")
+        self._dark_btn.setStyleSheet(
+            "QToolButton{border:none;font-size:16px;padding:2px 6px;"
+            "background:transparent;border-radius:4px;}"
+            "QToolButton:hover{background:#F0F0F0;}"
+            "QToolButton:checked{background:#2A2A2A;}"
+        )
+        self._dark_btn.toggled.connect(self._toggle_dark)
+        hrow.addWidget(self._dark_btn)
+
+        # Debug drawer toggle button (only in debug_mode)
+        if self._debug_mode and self._debug_drawer is not None:
+            self._debug_btn = QToolButton()
+            self._debug_btn.setText("🛠")
+            self._debug_btn.setToolTip("Toggle debug drawer (Ctrl+Shift+D)")
+            self._debug_btn.setStyleSheet(
+                "QToolButton{border:none;font-size:16px;padding:2px 6px;"
+                "background:transparent;border-radius:4px;}"
+                "QToolButton:hover{background:#F0F0F0;}"
+            )
+            self._debug_btn.clicked.connect(self._toggle_debug_drawer)
+            hrow.addWidget(self._debug_btn)
+
+        layout.addWidget(self._header)
+
+        # Debug drawer (hidden by default, inserted between header and chat)
+        if self._debug_mode and self._debug_drawer is not None:
+            self._debug_drawer.setParent(root)
+            self._debug_drawer.hide()
+            layout.addWidget(self._debug_drawer)
 
         # Chat widget (takes remaining space)
         self._chat = ChatWidget(debug_mode=self._debug_mode, parent=root)
         layout.addWidget(self._chat, stretch=1)
 
+        # Wire ConfirmBar signals
+        self._chat._confirm_bar.approved.connect(self._execute_confirmed)
+        self._chat._confirm_bar.rejected.connect(self._on_confirm_rejected)
+        self._chat._confirm_bar.edit_requested.connect(self._handle_confirmation)
+
         # Input row
-        input_bar = QWidget()
-        input_bar.setStyleSheet(
+        self._input_bar = QWidget()
+        self._input_bar.setStyleSheet(
             "background:#FFFFFF;border-top:1px solid #E0E0E0;"
         )
-        input_bar.setFixedHeight(52)
-        row = QHBoxLayout(input_bar)
+        self._input_bar.setFixedHeight(52)
+        row = QHBoxLayout(self._input_bar)
         row.setContentsMargins(10, 8, 10, 8)
         row.setSpacing(8)
 
@@ -113,7 +209,7 @@ class MainWindow(QMainWindow):
         self._input.returnPressed.connect(self._handle_submit)
         self._input.setStyleSheet(
             "QLineEdit{border:1px solid #E0E0E0;border-radius:18px;"
-            "padding:6px 14px;font-size:13px;background:#F9F9F9;}"
+            "padding:6px 14px;font-size:13px;background:#F9F9F9;color:#212121;}"
             "QLineEdit:focus{border-color:#FF6347;background:white;}"
         )
         row.addWidget(self._input)
@@ -130,12 +226,50 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled{color:#BDBDBD;background:#F5F5F5;border-color:#E0E0E0;}"
         )
         row.addWidget(self._stop_btn)
-        layout.addWidget(input_bar)
+        layout.addWidget(self._input_bar)
+
+    def _toggle_dark(self, dark: bool) -> None:
+        self._dark = dark
+        # qt-material must import after PySide6
+        from qt_material import apply_stylesheet
+        theme = "dark_teal.xml" if dark else "light_teal.xml"
+        apply_stylesheet(
+            QApplication.instance(),
+            theme,
+            extra={"QTextBrowser": {"background": "transparent"}},
+        )
+        self._chat.set_dark(dark)
 
     def _wire_kill_paths(self) -> None:
         # Kill path 2: global hotkey Ctrl+Shift+Q
         shortcut = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
         shortcut.activated.connect(self._handle_emergency_stop)
+
+        # Debug drawer shortcut (only in debug_mode)
+        if self._debug_mode and self._debug_drawer is not None:
+            debug_shortcut = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+            debug_shortcut.activated.connect(self._toggle_debug_drawer)
+
+    # ------------------------------------------------------------------
+    # Debug drawer
+    # ------------------------------------------------------------------
+
+    def _toggle_debug_drawer(self) -> None:
+        if self._debug_drawer is None:
+            return
+        self._refresh_debug_drawer()
+        self._debug_drawer.setVisible(not self._debug_drawer.isVisible())
+
+    def _refresh_debug_drawer(self) -> None:
+        if self._debug_drawer is None:
+            return
+        progress = self._bridge.query_progress() if self._bridge else None
+        self._debug_drawer.update(
+            state=self._chat.get_state(),
+            pending_specs=self._pending_specs,
+            pending_request=self._pending_request,
+            progress=progress,
+        )
 
     # ------------------------------------------------------------------
     # Public API (used by run_app and tests)
@@ -211,21 +345,15 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_confirmation(self, text: str) -> None:
+        """Handle free-text confirmation input or edit_requested signal text."""
         lower = text.lower().strip()
+        self._chat.hide_confirm_bar()
         if lower in _CONFIRM_YES:
             self._chat.add_user_message(text)
             self._execute_confirmed()
         elif lower in _CONFIRM_NO:
             self._chat.add_user_message(text)
-            self._chat.add_ai_message(
-                "Got it, cancelling. Let me know when you want to try again.",
-                thought_prompt="User cancelled.",
-            )
-            self._chat.set_state(ChatState.IDLE)
-            self._input.setEnabled(True)
-            self._input.setPlaceholderText("Describe your task…")
-            self._stop_btn.setEnabled(False)
-            self.set_status("Ready")
+            self._on_confirm_rejected()
         else:
             # Treat as amended request — re-plan
             amended = f"{self._pending_request}. {text}"
@@ -236,7 +364,21 @@ class MainWindow(QMainWindow):
             )
             self._handle_new_task(amended)
 
+    def _on_confirm_rejected(self) -> None:
+        """Cancel the current plan, return to IDLE."""
+        self._chat.hide_confirm_bar()
+        self._chat.add_ai_message(
+            "Got it, cancelling. Let me know when you want to try again.",
+            thought_prompt="User cancelled.",
+        )
+        self._chat.set_state(ChatState.IDLE)
+        self._input.setEnabled(True)
+        self._input.setPlaceholderText("Describe your task…")
+        self._stop_btn.setEnabled(False)
+        self.set_status("Ready")
+
     def _execute_confirmed(self) -> None:
+        self._chat.hide_confirm_bar()
         self._chat.add_ai_message(
             "Starting execution now. I'll keep you updated as each objective completes.",
             thought_prompt="User confirmed plan. Starting Temporal workflow execution.",
@@ -267,8 +409,9 @@ class MainWindow(QMainWindow):
         self._pending_specs = list(specs)
         self._chat.show_objectives_card(self._pending_specs)
         self._chat.set_state(ChatState.AWAITING_CONFIRM)
+        self._chat.show_confirm_bar()
         self._input.setEnabled(True)
-        self._input.setPlaceholderText("yes / no / describe changes…")
+        self._input.setPlaceholderText("or type your amendment above…")
         self.set_status("Awaiting confirmation")
 
     def _on_planning_error(self, error: str) -> None:
@@ -283,12 +426,29 @@ class MainWindow(QMainWindow):
         self._stop_btn.setEnabled(False)
         self.set_status("Planning failed")
 
-    def _on_task_done(self, final_status: str) -> None:
+    def _on_task_done(self, final_result: dict) -> None:
         self._chat.thinking.stop()
+        if isinstance(final_result, dict):
+            final_status = str(final_result.get("status", "unknown"))
+            workflow_results = final_result.get("results") or {}
+            if final_result.get("error"):
+                self.log(f"[ERROR] {final_result.get('error')}")
+        else:
+            final_status = str(final_result)
+            workflow_results = {}
+
+        results = {}
+        for i, spec in enumerate(self._pending_specs):
+            obj_id = spec.get("objective_id", f"obj_{i}")
+            entry = dict(workflow_results.get(obj_id, {"status": "not_run"}))
+            status = str(entry.get("status", "unknown"))
+            if status.startswith("attempt_") and status.endswith("_failed"):
+                entry["status"] = "failed"
+            results[obj_id] = entry
+
         self._chat.show_completion(
             status=final_status,
-            results={s.get("objective_id", f"obj_{i}"): {"status": "passed" if final_status == "completed" else "failed"}
-                     for i, s in enumerate(self._pending_specs)},
+            results=results,
         )
         terminal = ChatState.DONE if final_status == "completed" else ChatState.ERROR
         self._chat.set_state(terminal)
@@ -421,6 +581,14 @@ def run_app() -> None:
 
     t = threading.Thread(target=_worker_thread, daemon=True, name="trinity-worker")
     t.start()
+
+    # qt-material must import after PySide6
+    from qt_material import apply_stylesheet
+    apply_stylesheet(
+        app,
+        theme="light_teal.xml",
+        extra={"QTextBrowser": {"background": "transparent"}},
+    )
 
     window.show()
     sys.exit(app.exec())
