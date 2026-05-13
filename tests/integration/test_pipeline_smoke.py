@@ -2,7 +2,7 @@
 
 Exercises: planner → terminal worker → reviewer → evidence store → reflection store
 LLM calls mocked. TerminalWorker runs a real echo subprocess.
-No Temporal server needed.
+No external workflow server needed.
 """
 from __future__ import annotations
 

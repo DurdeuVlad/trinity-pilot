@@ -1,121 +1,94 @@
 # Trinity Pilot
 
-LLM-orchestrated desktop automation agent. Accepts a natural-language task, decomposes it into typed objectives, executes them via browser/terminal/desktop workers, reviews each result, and retries on failure — all orchestrated by Temporal for durability.
+LLM-orchestrated desktop automation agent. Accepts a natural-language task, decomposes it into typed objectives, executes them via browser/terminal/desktop workers, reviews each result, and retries on failure through a local asyncio orchestration engine.
 
 ## Architecture
 
-```
-PySide6 UI  →  WorkflowBridge  →  Temporal TaskWorkflow
-                                       │
-                              ObjectivePlanner (Gemini)
-                                       │
-                              ObjectiveSpec DAG (typed)
-                                       │
-                    ┌──────────────────┼──────────────────┐
-               BrowserWorker    TerminalWorker    DesktopWorker
-               (Playwright)     (asyncio exec)   (pywinauto UIA)
-                                       │
-                              ObjectiveReviewer (Gemini)
-                                       │
-                              SQLite evidence + reflection store
+```text
+PySide6 UI -> WorkflowBridge -> AsyncTaskOrchestrator
+                                      |
+                             ObjectivePlanner (Gemini)
+                                      |
+                             ObjectiveSpec DAG (typed)
+                                      |
+                 BrowserWorker  TerminalWorker  DesktopWorker
+                 (Playwright)   (asyncio exec)  (pywinauto UIA)
+                                      |
+                             ObjectiveReviewer (Gemini)
+                                      |
+                             SQLite WAL state + evidence stores
 ```
 
 ## Requirements
 
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) package manager
-- [Temporal CLI](https://docs.temporal.io/cli) (for workflow execution)
-- Gemini API key (get one at [aistudio.google.com](https://aistudio.google.com))
-- Playwright browsers (installed via CLI, see below)
+- Gemini API key from [Google AI Studio](https://aistudio.google.com)
+- Playwright browsers
 
 ## Setup
 
 ```bash
-# Install dependencies (including dev extras for testing)
 uv sync --extra dev
-
-# Install Playwright browsers
 uv run playwright install chromium
-
-# Copy env template and fill in your API key
 cp .env.example .env
-# Edit .env — set GEMINI_API_KEY at minimum
-
-# Start Temporal dev server
-temporal server start-dev
 ```
 
-### .env.example
+Set at least `GEMINI_API_KEY` in `.env`.
+
+### `.env.example`
 
 ```dotenv
 GEMINI_API_KEY=your-key-here
 GEMINI_PLANNER_MODEL=gemini-2.0-flash
 GEMINI_WORKER_MODEL=gemini-2.0-flash
-TEMPORAL_HOST=localhost:7233
-TEMPORAL_NAMESPACE=default
 DB_PATH=trinity_pilot.db
 ```
 
 ## Run
 
 ```bash
-# Launch the desktop UI
 uv run python -m trinity_pilot
-
-# Start the Temporal worker (separate terminal)
-uv run python -m trinity_pilot --worker
 ```
 
 ## Tests
 
 ```bash
-# Unit + integration (no external services required)
 uv run pytest tests/unit tests/integration -v
-
-# With coverage
 uv run pytest tests/unit tests/integration --cov=trinity_pilot --cov-report=term-missing
-
-# Real tests (require GEMINI_API_KEY in env or .env)
 uv run pytest tests/real -v -m real
 ```
 
-Current test count: 127 unit/integration + 10 real tests.
+Real tests require `GEMINI_API_KEY`.
 
-## Project layout
+## Project Layout
 
-```
+```text
 trinity_pilot/
   core/types.py          ObjectiveSpec, enums, ReviewResult, AttemptLog
-  llm/                   LLMProvider ABC + GeminiProvider (gemini-2.0-flash)
-  planner/               ObjectivePlanner — JSON plan → ObjectiveSpec list
-  reviewer/              ObjectiveReviewer — evidence → ReviewResult
-  workers/
-    browser_worker.py    Playwright automation, timeout guard, evidence validation
-    terminal_worker.py   asyncio subprocess, timeout guard, evidence validation
-    desktop_worker.py    pywinauto UIA, timeout guard, evidence validation
-    worker_router.py     Domain → worker dispatch
-    evidence_schema.py   Per-domain required-key validation
-  memory/
-    store.py             TaskStore — task + attempt SQLite records
-    evidence_store.py    EvidenceStore — JSON evidence files, injectable base_dir
-    reflection.py        ReflectionStore — reflections SQLite table
-  workflow/
-    task_workflow.py     Temporal TaskWorkflow — plan, execute, retry, review
-    activities.py        Temporal activities wrapping workers + planner
-  mcp/                   FastMCP boundary servers (browser, terminal, desktop)
-  ui/                    PySide6 MainWindow + WorkflowBridge (lazy import)
+  llm/                   LLMProvider ABC + async GeminiProvider
+  planner/               ObjectivePlanner JSON plan to ObjectiveSpec list
+  reviewer/              ObjectiveReviewer evidence to ReviewResult
+  orchestrator/
+    engine.py            Local async task orchestration
+    fsm.py               Objective state machine
+    budget.py            Objective execution budget
+    signals.py           Typed orchestration signals
+  workers/               Browser, terminal, and desktop execution backends
+  memory/                SQLite task, attempt, objective, evidence, reflection stores
+  mcp/                   FastMCP boundary servers
+  ui/                    PySide6 MainWindow + WorkflowBridge
   config.py              Settings dataclass + from_env()
-  worker_runner.py       Temporal worker entry point (lazy temporalio import)
-  __main__.py            CLI entry: --worker flag, --version, --help
+  __main__.py            CLI entry
 ```
 
-## Key design decisions
+## Key Design Decisions
 
-- **Temporal for durability**: workflow state survives crashes; workers are stateless activities
-- **Lazy imports**: PySide6 and temporalio are imported only at runtime to keep tests fast
-- **Evidence schema validation**: every worker validates its output dict before returning
-- **Reflections**: failed attempts produce structured reflections used in retry prompts
-- **Injectable stores**: `EvidenceStore(base_dir=...)` and `ReflectionStore(db_path=...)` for clean test isolation
+- **Local async orchestration**: objective execution, review, retry, cancellation, and signals run in-process.
+- **Async-only Gemini calls**: `google.genai` async client is used directly.
+- **SQLite state**: WAL mode, task records, attempts, and objective state tracking.
+- **Evidence schema validation**: workers validate output dicts before returning.
+- **Reflections**: failed attempts produce structured reflections used in retry prompts.
 
 ## License
 

@@ -2,87 +2,84 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Callable
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QThread, Signal
 
 from trinity_pilot.config import Settings
-from trinity_pilot.core.types import TaskRecord, TaskStatus
+from trinity_pilot.core.types import ObjectiveSpec, TaskRecord, TaskStatus
 from trinity_pilot.memory.store import TaskStore
+from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 
 
 class _WorkerThread(QThread):
     status_changed = Signal(str)
     log_message = Signal(str)
-    task_finished = Signal(str, str)  # task_id, final_status
+    task_finished = Signal(str, object)  # task_id, result dict
 
-    def __init__(self, user_request: str, task_id: str, settings: Settings) -> None:
+    def __init__(
+        self,
+        user_request: str,
+        task_id: str,
+        settings: Settings,
+        db_path: str,
+        objectives: list[ObjectiveSpec] | None = None,
+    ) -> None:
         super().__init__()
         self._user_request = user_request
         self._task_id = task_id
         self._settings = settings
+        self._db_path = db_path
+        self._objectives = objectives
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._workflow_handle = None
+        self._orchestrator: AsyncTaskOrchestrator | None = None
+        self._cancel_requested = False
 
     def run(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            result = self._loop.run_until_complete(self._run_workflow())
-            self.task_finished.emit(self._task_id, result.get("status", "unknown"))
+            result = self._loop.run_until_complete(self._run_orchestrator())
+            self.task_finished.emit(self._task_id, result)
         except Exception as exc:
             self.log_message.emit(f"[ERROR] {exc}")
-            self.task_finished.emit(self._task_id, "error")
+            self.task_finished.emit(self._task_id, {"task_id": self._task_id, "status": "failed", "error": str(exc)})
         finally:
             self._loop.close()
 
-    async def _run_workflow(self) -> dict:
-        from temporalio.client import Client
-
-        from trinity_pilot.workflow.task_workflow import TaskWorkflow
-
-        client = await Client.connect(self._settings.temporal_host)
-        handle = await client.start_workflow(
-            TaskWorkflow.run,
-            self._user_request,
-            id=self._task_id,
-            task_queue=__import__('os').environ.get('TRINITY_TASK_QUEUE', 'trinity-pilot'),
+    async def _run_orchestrator(self) -> dict:
+        self._orchestrator = AsyncTaskOrchestrator(
+            self._settings,
+            db_path=self._db_path,
         )
-        self._workflow_handle = handle
-        self.log_message.emit(f"[TEMPORAL] Workflow started: {self._task_id}")
-
-        while True:
-            await asyncio.sleep(2)
-            try:
-                # Check if workflow still running before querying
-                desc = await handle.describe()
-                if desc.status.name not in ("RUNNING",):
-                    break
-                status: str = await handle.query(TaskWorkflow.get_status)
-                self.status_changed.emit(status)
-                if status in ("cancelled",):
-                    return {"status": status}
-            except Exception:
-                break
-
-        result = await handle.result()
-        return result
+        if self._cancel_requested:
+            self._orchestrator.cancel()
+        self.log_message.emit(f"[ORCHESTRATOR] Task started: {self._task_id}")
+        run_task = asyncio.create_task(
+            self._orchestrator.run(
+                self._user_request,
+                task_id=self._task_id,
+                objectives=self._objectives,
+            )
+        )
+        while not run_task.done():
+            await asyncio.sleep(0.25)
+            self.status_changed.emit(self._orchestrator.snapshot.status.value)
+        return await run_task
 
     def request_cancel(self) -> None:
-        if self._workflow_handle and self._loop:
-            from trinity_pilot.workflow.task_workflow import TaskWorkflow
-            asyncio.run_coroutine_threadsafe(
-                self._workflow_handle.signal(TaskWorkflow.cancel),
-                self._loop,
-            )
+        self._cancel_requested = True
+        if self._loop and self._orchestrator:
+            self._loop.call_soon_threadsafe(self._orchestrator.cancel)
 
 
 class WorkflowBridge(QObject):
-    """Connects MainWindow submit/stop events to Temporal workflow execution."""
+    """Connects MainWindow submit/stop events to local asyncio orchestration."""
 
     def __init__(self, settings: Settings, db_path: str = "trinity_pilot.db") -> None:
         super().__init__()
         self._settings = settings
+        self._store_path = db_path
         self._store = TaskStore(db_path)
         self._worker: _WorkerThread | None = None
 
@@ -91,24 +88,33 @@ class WorkflowBridge(QObject):
         user_request: str,
         on_log: Callable[[str], None] | None = None,
         on_status: Callable[[str], None] | None = None,
-        on_done: Callable[[str], None] | None = None,
+        on_done: Callable[[dict[str, Any]], None] | None = None,
+        objectives: list[dict] | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())
+        objective_specs = [ObjectiveSpec.from_dict(o) for o in objectives] if objectives else []
         record = TaskRecord(
             task_id=task_id,
             user_request=user_request,
+            objectives=objective_specs,
             status=TaskStatus.RUNNING,
         )
         self._store.save_task(record)
 
-        self._worker = _WorkerThread(user_request, task_id, self._settings)
+        self._worker = _WorkerThread(
+            user_request,
+            task_id,
+            self._settings,
+            self._store_path,
+            objective_specs or None,
+        )
         if on_log:
             self._worker.log_message.connect(on_log)
         if on_status:
             self._worker.status_changed.connect(on_status)
         if on_done:
             self._worker.task_finished.connect(
-                lambda tid, s: on_done(s)
+                lambda tid, result: on_done(result)
             )
         self._worker.task_finished.connect(self._on_worker_finished)
         self._worker.start()
@@ -120,10 +126,7 @@ class WorkflowBridge(QObject):
         on_planned: Callable[[list[dict]], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
-        """Run the planner in a background thread and return specs via callback.
-
-        Does NOT start a Temporal workflow. Call start_task() after confirmation.
-        """
+        """Run the planner in a background thread and return specs via callback."""
         import threading
         import os
 
@@ -161,33 +164,25 @@ class WorkflowBridge(QObject):
             self._worker.request_cancel()
 
     def query_progress(self) -> dict:
-        """Return {current_objective, completed_objectives} from the active workflow.
+        """Return {current_objective, completed_objectives} from the active orchestrator.
 
         Safe to call from the Qt main thread while a worker is running.
-        Returns an empty dict if no active workflow or loop is unavailable.
+        Returns an empty dict if no active orchestrator is available.
         """
         worker = self._worker
         if not worker or not worker.isRunning():
             return {}
-        loop = worker._loop
-        handle = worker._workflow_handle
-        if not loop or not handle:
+        orchestrator = worker._orchestrator
+        if not orchestrator:
             return {}
-        try:
-            from trinity_pilot.workflow.task_workflow import TaskWorkflow
-            future_cur = asyncio.run_coroutine_threadsafe(
-                handle.query(TaskWorkflow.current_objective), loop
-            )
-            future_done = asyncio.run_coroutine_threadsafe(
-                handle.query(TaskWorkflow.completed_objectives), loop
-            )
-            current = future_cur.result(timeout=1.0)
-            completed = future_done.result(timeout=1.0)
-            return {"current_objective": current, "completed_objectives": completed}
-        except Exception:  # noqa: BLE001
-            return {}
+        snapshot = orchestrator.snapshot
+        return {
+            "current_objective": snapshot.current_objective,
+            "completed_objectives": snapshot.completed_objectives,
+        }
 
-    def _on_worker_finished(self, task_id: str, final_status: str) -> None:
+    def _on_worker_finished(self, task_id: str, result: object) -> None:
+        final_status = result.get("status", "failed") if isinstance(result, dict) else str(result)
         try:
             status = TaskStatus(final_status)
         except ValueError:

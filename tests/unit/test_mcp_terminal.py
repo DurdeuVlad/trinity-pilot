@@ -66,7 +66,7 @@ class TestMcpTerminalRun:
         with pytest.raises(ValueError):
             # RiskClass("not-a-valid-class") should raise immediately at spec creation
             import asyncio
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 terminal_run(
                     objective_id="obj-1",
                     goal="echo hi",

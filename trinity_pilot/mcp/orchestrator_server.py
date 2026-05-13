@@ -7,16 +7,15 @@ Exposes: submit_task, get_task_status, cancel_task, list_tasks,
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import uuid
-from datetime import timedelta
 
 from fastmcp import FastMCP
 
 from trinity_pilot.config import ConfigError, Settings
 from trinity_pilot.core.types import TaskRecord, TaskStatus
 from trinity_pilot.memory.store import AttemptStore, TaskStore
+from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 
 # ---------------------------------------------------------------------------
 # Settings — fail fast if env is misconfigured
@@ -55,16 +54,6 @@ def version() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _temporal_reachable(host: str) -> bool:
-    """Return True if the Temporal gRPC port is open."""
-    try:
-        addr, port_str = host.rsplit(":", 1)
-        with socket.create_connection((addr, int(port_str)), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
 def _get_stores() -> tuple[TaskStore, AttemptStore]:
     """Return (TaskStore, AttemptStore) both pointed at settings.db_path."""
     return TaskStore(_settings.db_path), AttemptStore(_settings.db_path)
@@ -78,6 +67,7 @@ def _error(error_code: str, message: str, task_id: str | None = None) -> dict:
 
 
 _TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+_RUNNING: dict[str, AsyncTaskOrchestrator] = {}
 
 # ---------------------------------------------------------------------------
 # Story 2: submit_task
@@ -86,45 +76,9 @@ _TERMINAL_STATUSES = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCEL
 
 @mcp.tool()
 async def submit_task(user_request: str, task_id: str | None = None) -> dict:
-    """Submit a new task to the Trinity Pilot workflow engine.
-
-    Creates a TaskRecord in SQLite and starts a Temporal TaskWorkflow.
-    Returns task_id and status="running" on success.
-    """
-    import temporalio.client
-
+    """Submit a new task to the local asyncio orchestration engine."""
     if task_id is None:
         task_id = str(uuid.uuid4())
-
-    if not _temporal_reachable(_settings.temporal_host):
-        return _error(
-            "TEMPORAL_NOT_REACHABLE",
-            (
-                f"Cannot reach Temporal at {_settings.temporal_host}. "
-                "Start the Trinity Pilot UI (which launches Temporal) with: "
-                "python app_control_cli.py start-ui"
-            ),
-            task_id,
-        )
-
-    # Start Temporal workflow
-    try:
-        client = await temporalio.client.Client.connect(
-            _settings.temporal_host, namespace=_settings.temporal_namespace
-        )
-        await client.start_workflow(
-            "TaskWorkflow",
-            user_request,
-            id=task_id,
-            task_queue="trinity-pilot",
-            execution_timeout=timedelta(minutes=30),
-        )
-    except Exception as exc:
-        return _error(
-            "WORKFLOW_START_FAILED",
-            f"Temporal start_workflow raised: {exc}",
-            task_id,
-        )
 
     # Persist in SQLite
     try:
@@ -137,17 +91,28 @@ async def submit_task(user_request: str, task_id: str | None = None) -> dict:
                 status=TaskStatus.RUNNING,
             )
         )
+        orchestrator = AsyncTaskOrchestrator(_settings)
+        _RUNNING[task_id] = orchestrator
+
+        async def _run() -> None:
+            try:
+                await orchestrator.run(user_request, task_id=task_id)
+            finally:
+                _RUNNING.pop(task_id, None)
+
+        import asyncio
+
+        asyncio.create_task(_run())
     except Exception as exc:
         return _error(
             "DB_WRITE_FAILED",
-            f"Workflow started but SQLite write failed: {exc}",
+            f"Task start failed: {exc}",
             task_id,
         )
 
     return {
         "task_id": task_id,
         "status": "running",
-        "temporal_host": _settings.temporal_host,
     }
 
 
@@ -158,9 +123,7 @@ async def submit_task(user_request: str, task_id: str | None = None) -> dict:
 
 @mcp.tool()
 async def get_task_status(task_id: str) -> dict:
-    """Get current status of a task, combining SQLite and live Temporal queries."""
-    import temporalio.client
-    from temporalio.exceptions import WorkflowAlreadyStartedError
+    """Get current status of a task from SQLite and objective state rows."""
 
     task_store, attempt_store = _get_stores()
     task = task_store.get_task(task_id)
@@ -170,20 +133,10 @@ async def get_task_status(task_id: str) -> dict:
     current_objective: str | None = None
     completed_objectives: list[str] = []
     last_attempt_status: str | None = None
-
-    # Query Temporal for live context (best-effort)
-    if _temporal_reachable(_settings.temporal_host):
-        try:
-            client = await temporalio.client.Client.connect(
-                _settings.temporal_host, namespace=_settings.temporal_namespace
-            )
-            handle = client.get_workflow_handle(task_id)
-            current_objective = await handle.query("current_objective")
-            completed_objectives = await handle.query("completed_objectives")
-        except Exception:
-            # Workflow is terminal or unreachable — leave as None/[]
-            current_objective = None
-            completed_objectives = []
+    if orchestrator := _RUNNING.get(task_id):
+        snapshot = orchestrator.snapshot
+        current_objective = snapshot.current_objective
+        completed_objectives = snapshot.completed_objectives
 
     # Latest attempt status from SQLite
     try:
@@ -209,8 +162,7 @@ async def get_task_status(task_id: str) -> dict:
 
 @mcp.tool()
 async def cancel_task(task_id: str) -> dict:
-    """Cancel a running task by sending a cancel signal to Temporal and updating SQLite."""
-    import temporalio.client
+    """Cancel a running task by updating SQLite state."""
 
     task_store, _ = _get_stores()
     task = task_store.get_task(task_id)
@@ -224,26 +176,8 @@ async def cancel_task(task_id: str) -> dict:
             task_id,
         )
 
-    if not _temporal_reachable(_settings.temporal_host):
-        return _error(
-            "TEMPORAL_NOT_REACHABLE",
-            f"Cannot reach Temporal at {_settings.temporal_host}",
-            task_id,
-        )
-
-    try:
-        client = await temporalio.client.Client.connect(
-            _settings.temporal_host, namespace=_settings.temporal_namespace
-        )
-        handle = client.get_workflow_handle(task_id)
-        await handle.signal("cancel")
-    except Exception as exc:
-        return _error(
-            "SIGNAL_FAILED",
-            f"Temporal signal 'cancel' raised: {exc}",
-            task_id,
-        )
-
+    if orchestrator := _RUNNING.get(task_id):
+        orchestrator.cancel()
     task_store.update_status(task_id, TaskStatus.CANCELLED)
 
     return {"task_id": task_id, "status": "cancelled"}
@@ -369,7 +303,7 @@ async def reset_session(confirm: bool = False) -> dict:
     """Reset all session data (tasks, attempts, reflections).
 
     If confirm=False, returns a dry-run summary.
-    If confirm=True, cancels running Temporal workflows and deletes all SQLite rows.
+    If confirm=True, cancels running local tasks and deletes all SQLite session rows.
     """
     from trinity_pilot.memory.db import open_db
 
@@ -388,31 +322,17 @@ async def reset_session(confirm: bool = False) -> dict:
             "message": "Call with confirm=true to delete.",
         }
 
-    # Cancel running Temporal workflows (best-effort)
     warnings: list[str] = []
-    if _temporal_reachable(_settings.temporal_host):
-        try:
-            import temporalio.client
-
-            client = await temporalio.client.Client.connect(
-                _settings.temporal_host, namespace=_settings.temporal_namespace
-            )
-            async for wf in client.list_workflows(
-                'TaskQueue="trinity-pilot" AND ExecutionStatus="Running"'
-            ):
-                try:
-                    handle = client.get_workflow_handle(wf.id)
-                    await handle.signal("cancel")
-                except Exception as exc:
-                    warnings.append(f"{wf.id}: {exc}")
-        except Exception as exc:
-            warnings.append(f"list_workflows failed: {exc}")
+    for orchestrator in list(_RUNNING.values()):
+        orchestrator.cancel()
+    _RUNNING.clear()
 
     # Delete all rows from SQLite
     conn = open_db(_settings.db_path)
     try:
         conn.execute("DELETE FROM attempt_logs")
         conn.execute("DELETE FROM reflections")
+        conn.execute("DELETE FROM objective_states")
         conn.execute("DELETE FROM tasks")
         conn.commit()
         deleted_tasks = tasks_count

@@ -100,6 +100,8 @@ def test_user_bubble_escapes_html():
 # Group 2: ChatState — state machine logic (no Qt)
 # ---------------------------------------------------------------------------
 
+pytest.importorskip("PySide6")
+
 from trinity_pilot.ui.chat_widget import ChatState
 
 

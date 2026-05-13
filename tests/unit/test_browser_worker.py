@@ -40,14 +40,17 @@ def _make_mock_context():
     mock_tracing.start = AsyncMock()
     mock_tracing.stop = AsyncMock()
 
+    mock_context = MagicMock()
+    mock_context.tracing = mock_tracing
+    mock_context.new_page = AsyncMock(return_value=mock_page)
+    mock_context.close = AsyncMock()
+
     mock_browser = MagicMock()
-    mock_browser.pages = [mock_page]
-    mock_browser.tracing = mock_tracing
-    mock_browser.new_page = AsyncMock(return_value=mock_page)
+    mock_browser.new_context = AsyncMock(return_value=mock_context)
     mock_browser.close = AsyncMock()
 
     mock_chromium = MagicMock()
-    mock_chromium.launch_persistent_context = AsyncMock(return_value=mock_browser)
+    mock_chromium.launch = AsyncMock(return_value=mock_browser)
 
     mock_pw = MagicMock()
     mock_pw.chromium = mock_chromium

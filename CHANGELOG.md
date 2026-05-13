@@ -1,5 +1,14 @@
 # Changelog
 
+## Pass 21 - Async orchestration redesign, Temporal removal (2026-05-13)
+
+- Replaced Temporal workflow runtime with `AsyncTaskOrchestrator` using local asyncio execution.
+- Added orchestrator FSM, queue-backed signals, objective budgets, and SQLite `objective_states`.
+- Migrated Gemini provider to native `google.genai` async calls with timeout and token-count reporting.
+- Rewired UI bridge and MCP orchestrator server to local task execution, status, and cancellation.
+- Removed legacy worker runner, workflow activities, TaskWorkflow, and obsolete tests.
+- 282 tests passed, 16 skipped.
+
 ## Pass 20 - Production glue hardening: provider env, reviewer JSON, DAG ids (2026-05-08)
 
 - workflow activities: reviewer provider now uses `GEMINI_WORKER_MODEL`; planner provider remains on `GEMINI_PLANNER_MODEL`

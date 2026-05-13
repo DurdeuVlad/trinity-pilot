@@ -17,7 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--worker",
         action="store_true",
-        help="Start the Temporal activity worker instead of the UI",
+        help="Deprecated no-op; orchestration now runs in-process.",
     )
     parser.add_argument(
         "--version",
@@ -32,8 +32,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.worker:
-        from trinity_pilot.worker_runner import run_worker
-        run_worker()
+        print("--worker is deprecated; orchestration now runs in-process.", file=sys.stderr)
     else:
         try:
             from trinity_pilot.ui.app import run_app

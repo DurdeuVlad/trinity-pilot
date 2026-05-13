@@ -13,6 +13,7 @@ from trinity_pilot.core.types import (
     TaskStatus,
 )
 from trinity_pilot.memory.db import open_db
+from trinity_pilot.orchestrator.fsm import ObjectiveState
 
 
 class TaskStore:
@@ -145,6 +146,64 @@ class AttemptStore:
                 )
             )
         return result
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+class ObjectiveStateStore:
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        self._conn: sqlite3.Connection = open_db(db_path)
+        self._lock = threading.Lock()
+
+    def upsert(
+        self,
+        task_id: str,
+        objective_id: str,
+        state: ObjectiveState,
+        *,
+        step_count: int = 0,
+        token_count: int = 0,
+        user_question: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO objective_states
+                    (task_id, objective_id, state, step_count, token_count, user_question, failure_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id, objective_id) DO UPDATE SET
+                    state=excluded.state,
+                    step_count=excluded.step_count,
+                    token_count=excluded.token_count,
+                    user_question=excluded.user_question,
+                    failure_reason=excluded.failure_reason,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    task_id,
+                    objective_id,
+                    state.value,
+                    step_count,
+                    token_count,
+                    user_question,
+                    failure_reason,
+                ),
+            )
+            self._conn.commit()
+
+    def get(self, task_id: str, objective_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM objective_states WHERE task_id=? AND objective_id=?",
+            (task_id, objective_id),
+        ).fetchone()
+
+    def list_by_task(self, task_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM objective_states WHERE task_id=? ORDER BY updated_at, objective_id",
+            (task_id,),
+        ).fetchall()
 
     def close(self) -> None:
         self._conn.close()

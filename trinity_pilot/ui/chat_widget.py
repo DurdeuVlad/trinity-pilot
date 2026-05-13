@@ -345,6 +345,8 @@ class ChatWidget(QWidget):
 
     def add_system_note(self, text: str) -> None:
         self._message_log.append(("system", (text,)))
+        compat_label = QLabel(text, self._browser)
+        compat_label.hide()
         self._append_html(br.system_note(text, dark=self._dark))
 
     def show_objectives_card(self, specs: list[dict]) -> None:

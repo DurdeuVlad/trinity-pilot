@@ -16,6 +16,7 @@ class LLMResponse:
     content: str
     raw: Any = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    token_count: int = 0
 
 
 class LLMProvider(ABC):

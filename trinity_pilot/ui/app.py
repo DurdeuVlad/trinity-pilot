@@ -384,13 +384,14 @@ class MainWindow(QMainWindow):
         self._chat.hide_confirm_bar()
         self._chat.add_ai_message(
             "Starting execution now. I'll keep you updated as each objective completes.",
-            thought_prompt="User confirmed plan. Starting Temporal workflow execution.",
+            thought_prompt="User confirmed plan. Starting local orchestration.",
         )
         task_id = self._bridge.start_task(
             user_request=self._pending_request,
             on_log=self.log,
             on_status=lambda s: self.set_status(f"Status: {s}"),
             on_done=self._on_task_done,
+            objectives=self._pending_specs,
         ) if self._bridge else None
 
         if task_id:
@@ -511,79 +512,21 @@ class MainWindow(QMainWindow):
         self._handle_stop()
 
 
-def _temporal_reachable(host: str) -> bool:
-    """Return True if Temporal gRPC port is open."""
-    import socket
-    try:
-        addr, port_str = host.rsplit(":", 1)
-        with socket.create_connection((addr, int(port_str)), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
-def _start_temporal_if_needed(host: str) -> None:
-    """Spawn `temporal server start-dev` in a detached process if not reachable."""
-    import shutil
-    import subprocess
-
-    if _temporal_reachable(host):
-        return
-    exe = shutil.which("temporal")
-    if not exe:
-        return
-    subprocess.Popen(
-        [exe, "server", "start-dev"],
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-        close_fds=True,
-    )
-    # Give it a moment to bind
-    import time
-    for _ in range(20):
-        time.sleep(0.5)
-        if _temporal_reachable(host):
-            break
-
-
 def run_app() -> None:
-    import asyncio
-    import threading
-
     from trinity_pilot.config import Settings
     from trinity_pilot.ui.bridge import WorkflowBridge
-    from trinity_pilot.worker_runner import run_worker_async
 
     app = QApplication(sys.argv)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     settings = Settings.from_env()
 
-    _start_temporal_if_needed(settings.temporal_host)
-
     bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)
 
     window = MainWindow(debug_mode=settings.debug_mode)
     window.set_bridge(bridge)
     window.set_settings(settings)
-    window.log("[SYSTEM] Starting worker…")
-
-    def _worker_thread() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(
-                run_worker_async(
-                    settings.temporal_host,
-                    on_ready=lambda msg: window.log(f"[WORKER] {msg}"),
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            window.log(f"[WORKER] Failed to start: {exc}")
-        finally:
-            loop.close()
-
-    t = threading.Thread(target=_worker_thread, daemon=True, name="trinity-worker")
-    t.start()
+    window.log("[SYSTEM] Local orchestrator ready.")
 
     # qt-material must import after PySide6
     from qt_material import apply_stylesheet

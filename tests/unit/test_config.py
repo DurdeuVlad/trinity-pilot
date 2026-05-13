@@ -1,4 +1,4 @@
-"""Config unit tests — Settings validation."""
+"""Config unit tests -- Settings validation."""
 import os
 import tempfile
 from pathlib import Path
@@ -34,32 +34,18 @@ class TestSettings:
             s = Settings.from_env()
         assert s.gemini_planner_model == "gemini-2.0-flash"
         assert s.gemini_worker_model == "gemini-2.0-flash"
-        assert s.temporal_host == "localhost:7233"
-        assert s.temporal_namespace == "default"
         assert s.db_path == "trinity_pilot.db"
 
     def test_from_env_respects_overrides(self):
         env = {
             "GEMINI_API_KEY": "my-key",
             "GEMINI_PLANNER_MODEL": "gemini-2.0-pro",
-            "TEMPORAL_HOST": "myhost:7233",
             "DB_PATH": "/tmp/test.db",
         }
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
         assert s.gemini_planner_model == "gemini-2.0-pro"
-        assert s.temporal_host == "myhost:7233"
         assert s.db_path == "/tmp/test.db"
-
-    def test_from_env_loads_temporal_namespace_override(self):
-        env = {
-            "GEMINI_API_KEY": "my-key",
-            "TEMPORAL_NAMESPACE": "thesis-defense",
-        }
-        with patch.dict(os.environ, env, clear=True):
-            s = Settings.from_env()
-
-        assert s.temporal_namespace == "thesis-defense"
 
     def test_from_env_loads_worker_model_override(self):
         env = {
@@ -74,16 +60,6 @@ class TestSettings:
     def test_config_error_is_exception(self):
         assert issubclass(ConfigError, Exception)
 
-    def test_validate_raises_on_empty_temporal_namespace(self):
-        s = Settings(gemini_api_key="key", temporal_namespace="")
-        with pytest.raises(ConfigError, match="TEMPORAL_NAMESPACE"):
-            s.validate()
-
-    def test_validate_raises_on_empty_temporal_host(self):
-        s = Settings(gemini_api_key="key", temporal_host="")
-        with pytest.raises(ConfigError, match="TEMPORAL_HOST"):
-            s.validate()
-
     def test_from_env_loads_dotenv_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             env_file = Path(tmpdir) / ".env"
@@ -92,3 +68,34 @@ class TestSettings:
             with patch.dict(os.environ, {}, clear=True):
                 s = Settings.from_env(dotenv_path=str(env_file))
             assert s.gemini_api_key == "dotenv-loaded-key"
+
+    def test_from_env_succeeds_with_only_api_key(self):
+        """No temporal env vars needed -- server starts cleanly with just GEMINI_API_KEY."""
+        env = {"GEMINI_API_KEY": "only-key"}
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.gemini_api_key == "only-key"
+
+    def test_gemini_timeout_seconds_defaults_to_30(self):
+        env = {"GEMINI_API_KEY": "test-key"}
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.gemini_timeout_seconds == 30.0
+
+    def test_stuck_threshold_steps_defaults_to_5(self):
+        env = {"GEMINI_API_KEY": "test-key"}
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.stuck_threshold_steps == 5
+
+    def test_gemini_timeout_seconds_env_override(self):
+        env = {"GEMINI_API_KEY": "test-key", "GEMINI_TIMEOUT_SECONDS": "60"}
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.gemini_timeout_seconds == 60.0
+
+    def test_stuck_threshold_steps_env_override(self):
+        env = {"GEMINI_API_KEY": "test-key", "STUCK_THRESHOLD_STEPS": "10"}
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+        assert s.stuck_threshold_steps == 10

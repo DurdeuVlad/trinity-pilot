@@ -254,7 +254,7 @@ class DesktopWorker(DomainWorker):
 
             import pyautogui
             img = pyautogui.screenshot()
-            # Shrink to thumbnail to stay well under Temporal's 512KB payload limit
+            # Shrink to thumbnail to keep evidence payloads small.
             img.thumbnail((640, 360))
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=40)

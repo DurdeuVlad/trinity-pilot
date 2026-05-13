@@ -1,4 +1,4 @@
-"""WorkflowBridge unit tests — mocked Temporal client."""
+"""WorkflowBridge unit tests."""
 import pytest
 
 PySide6 = pytest.importorskip("PySide6", reason="PySide6 not installed")

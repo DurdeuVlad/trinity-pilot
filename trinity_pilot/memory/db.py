@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS reflections (
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS objective_states (
+    objective_id   TEXT NOT NULL,
+    task_id        TEXT NOT NULL,
+    state          TEXT NOT NULL DEFAULT 'pending',
+    step_count     INTEGER NOT NULL DEFAULT 0,
+    token_count    INTEGER NOT NULL DEFAULT 0,
+    user_question  TEXT,
+    failure_reason TEXT,
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id, objective_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS task_fts USING fts5(
     task_id,
     user_request,
@@ -65,6 +77,7 @@ END;
 
 def open_db(path: str | Path = ":memory:") -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
