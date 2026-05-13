@@ -121,3 +121,12 @@ async def save_reflection_activity(
         notes=notes,
         recovery_hint=recovery_hint,
     )
+
+
+@activity.defn
+async def update_task_status_activity(task_id: str, status_str: str) -> None:
+    """Write the final task status back to the SQLite task store."""
+    from trinity_pilot.core.types import TaskStatus
+    from trinity_pilot.memory.store import TaskStore
+    store = TaskStore(db_path=os.getenv("DB_PATH", "trinity_pilot.db"))
+    store.update_status(task_id, TaskStatus(status_str))

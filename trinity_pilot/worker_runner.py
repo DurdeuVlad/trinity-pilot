@@ -10,7 +10,7 @@ import asyncio
 _TASK_QUEUE = "trinity-pilot"
 
 
-async def run_worker_async(temporal_host: str) -> None:
+async def run_worker_async(temporal_host: str, on_ready=None) -> None:
     from temporalio.client import Client
     from temporalio.worker import Worker
 
@@ -18,8 +18,8 @@ async def run_worker_async(temporal_host: str) -> None:
         execute_objective,
         persist_attempt,
         plan_objectives,
-        review_objective,
         save_reflection_activity,
+        update_task_status_activity,
     )
     from trinity_pilot.workflow.task_workflow import TaskWorkflow
 
@@ -31,12 +31,14 @@ async def run_worker_async(temporal_host: str) -> None:
         activities=[
             plan_objectives,
             execute_objective,
-            review_objective,
             persist_attempt,
             save_reflection_activity,
+            update_task_status_activity,
         ],
     )
-    print(f"Worker started on queue '{_TASK_QUEUE}' → {temporal_host}")
+    print(f"Worker started on queue '{_TASK_QUEUE}' -> {temporal_host}")
+    if on_ready is not None:
+        on_ready("Worker connected and running")
     await worker.run()
 
 

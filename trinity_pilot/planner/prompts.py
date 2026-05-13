@@ -35,6 +35,8 @@ Metadata rules (REQUIRED — always populate for these domains):
 - terminal domain: always set metadata.command to the exact shell command string to execute.
   Example: "metadata": {"command": "echo hello-world"}
   Do NOT put the command only in the goal string — put it in metadata.command.
+  The terminal domain is ONLY for commands that run in a console/CMD/PowerShell window without a GUI.
+  Do NOT use terminal domain for launching GUI applications.
 - browser domain: always set metadata.actions to a JSON array of action objects.
   Each action: {"type": "navigate"|"click"|"fill"|"wait_for"|"read_text", ...fields}
   navigate: {"type": "navigate", "url": "https://..."}
@@ -45,6 +47,11 @@ Metadata rules (REQUIRED — always populate for these domains):
   Example: "metadata": {"actions": [{"type": "navigate", "url": "https://github.com"}, {"type": "fill", "selector": "input[name=q]", "value": "fastmcp"}]}
   Group ALL browser steps for a task into ONE objective with a complete actions list.
   Do NOT split multi-step browser tasks into separate objectives.
+- desktop domain: use for launching GUI applications (Notepad, Calculator, Paint, File Explorer,
+  Microsoft Word, etc.), clicking buttons or UI elements in application windows, typing text into
+  application windows, or capturing desktop screenshots. ALWAYS use desktop domain for GUI app
+  launches — never use terminal domain for these. Examples: "open Notepad", "launch Calculator",
+  "type text in Notepad", "take a screenshot of the desktop".
 """
 
 PLANNER_USER_TEMPLATE = """\

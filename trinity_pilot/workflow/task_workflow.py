@@ -10,14 +10,13 @@ with workflow.unsafe.imports_passed_through():
         execute_objective,
         persist_attempt,
         plan_objectives,
-        review_objective,
         save_reflection_activity,
+        update_task_status_activity,
     )
 
 _MAX_ATTEMPTS = 3
 _PLAN_TIMEOUT = timedelta(minutes=5)
 _EXECUTE_TIMEOUT = timedelta(minutes=10)
-_REVIEW_TIMEOUT = timedelta(minutes=2)
 _PERSIST_TIMEOUT = timedelta(seconds=30)
 _NO_RETRY = RetryPolicy(maximum_attempts=1)
 
@@ -55,6 +54,12 @@ class TaskWorkflow:
             for attempt in range(1, max_attempts + 1):
                 if self._cancelled:
                     results[obj_id] = {"status": "cancelled"}
+                    await workflow.execute_activity(
+                        update_task_status_activity,
+                        args=[task_id, "cancelled"],
+                        start_to_close_timeout=_PERSIST_TIMEOUT,
+                        retry_policy=_NO_RETRY,
+                    )
                     return {"status": "cancelled", "results": results}
 
                 # Inject retry context from prior reflections
@@ -70,12 +75,9 @@ class TaskWorkflow:
                     retry_policy=_NO_RETRY,
                 )
 
-                review: dict = await workflow.execute_activity(
-                    review_objective,
-                    args=[spec_dict, evidence],
-                    start_to_close_timeout=_REVIEW_TIMEOUT,
-                    retry_policy=_NO_RETRY,
-                )
+                # execute_objective already embeds review results (passed, failure_reason,
+                # notes, recovery_hint) into evidence. Use evidence directly as the review dict.
+                review: dict = evidence
 
                 # Persist attempt evidence
                 await workflow.execute_activity(
@@ -126,12 +128,24 @@ class TaskWorkflow:
                 }
 
             if not passed:
+                await workflow.execute_activity(
+                    update_task_status_activity,
+                    args=[task_id, "failed"],
+                    start_to_close_timeout=_PERSIST_TIMEOUT,
+                    retry_policy=_NO_RETRY,
+                )
                 return {
                     "status": "failed",
                     "failed_objective": obj_id,
                     "results": results,
                 }
 
+        await workflow.execute_activity(
+            update_task_status_activity,
+            args=[task_id, "completed"],
+            start_to_close_timeout=_PERSIST_TIMEOUT,
+            retry_policy=_NO_RETRY,
+        )
         return {"status": "completed", "results": results}
 
     @workflow.signal

@@ -13,8 +13,6 @@ from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import DomainWorker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
 
-_PROFILE_DIR = Path.home() / ".trinity-pilot" / "browser-profile"
-
 _BROWSER_SYNTH_SYSTEM = """\
 You are a browser automation agent that has just navigated to a web page.
 Based on the original goal and the captured page data, output ONLY a JSON array
@@ -67,19 +65,15 @@ class BrowserWorker(DomainWorker):
         except ImportError as exc:
             raise WorkerError("playwright not installed") from exc
 
-        _PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         trace_dir = Path(tempfile.mkdtemp(prefix="trinity-trace-"))
         trace_path = str(trace_dir / "trace.zip")
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch_persistent_context(
-                user_data_dir=str(_PROFILE_DIR),
-                headless=False,
-                args=["--no-sandbox"],
-            )
+            browser = await pw.chromium.launch(headless=False, args=["--no-sandbox"])
+            context = await browser.new_context()
             try:
-                await browser.tracing.start(screenshots=True, snapshots=True)
-                page = browser.pages[0] if browser.pages else await browser.new_page()
+                await context.tracing.start(screenshots=True, snapshots=True)
+                page = await context.new_page()
 
                 await self._run_objective(page, spec, evidence)
                 # After navigation, synthesize file writes only when goal requires saving data
@@ -104,10 +98,11 @@ class BrowserWorker(DomainWorker):
                 ) from exc
             finally:
                 try:
-                    await browser.tracing.stop(path=trace_path)
+                    await context.tracing.stop(path=trace_path)
                     evidence["trace_path"] = trace_path
                 except Exception:
                     pass
+                await context.close()
                 await browser.close()
 
     async def _run_objective(

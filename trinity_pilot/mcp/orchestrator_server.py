@@ -458,8 +458,13 @@ def get_artifact_bundle(task_id: str) -> dict:
             task_id,
         )
 
-    passed_count = sum(1 for a in attempts if a.status == "passed")
-    failed_count = sum(1 for a in attempts if a.status == "failed")
+    # Aggregate by objective_id: keep only the last attempt per objective.
+    last_attempt: dict = {}
+    for a in attempts:
+        if a.objective_id not in last_attempt or a.attempt_number > last_attempt[a.objective_id].attempt_number:
+            last_attempt[a.objective_id] = a
+    passed_count = sum(1 for a in last_attempt.values() if a.status == "passed")
+    failed_count = sum(1 for a in last_attempt.values() if a.status == "failed")
     overall_passed = task.status == TaskStatus.COMPLETED and failed_count == 0
 
     attempt_dicts = []
@@ -480,7 +485,7 @@ def get_artifact_bundle(task_id: str) -> dict:
         "user_request": task.user_request,
         "status": task.status.value,
         "summary": {
-            "total_objectives": len(task.objectives) if task.objectives else len(attempts),
+            "total_objectives": len(last_attempt),
             "passed": passed_count,
             "failed": failed_count,
             "overall_passed": overall_passed,
