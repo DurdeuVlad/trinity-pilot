@@ -116,6 +116,22 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             "prefer relative paths (e.g. '.\\\\file.txt') over absolute."
         )
 
+    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
+        workspace = evidence.get("workspace", "")
+        exit_code = evidence.get("exit_code")
+        action_log = evidence.get("action_log", [])
+        last_action = action_log[-1] if action_log else "none"
+        try:
+            file_count = len(os.listdir(workspace)) if workspace else 0
+        except OSError:
+            file_count = 0
+        return "\n".join([
+            f"workspace={workspace}",
+            f"exit_code={exit_code}",
+            f"files_in_workspace={file_count}",
+            f"last_action={last_action}",
+        ])
+
     def _worker_tools(self) -> list[genai_types.Tool]:
         return [_make_tool([_run_command_decl, _write_file_decl, _finish_decl, _report_blocking_decl])]
 

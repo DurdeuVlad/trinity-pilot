@@ -133,6 +133,11 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             lines.append("  (Browser just started — no page loaded yet. Navigate to target URL first.)")
         return "\n".join(lines)
 
+    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
+        url = evidence.get("page_url") or "about:blank"
+        title = evidence.get("page_title") or "unknown"
+        return f"current_url={url}\npage_title={title}"
+
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
         evidence: dict[str, Any] = {

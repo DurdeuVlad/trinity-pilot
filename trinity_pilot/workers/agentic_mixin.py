@@ -103,6 +103,16 @@ class AgenticWorkerMixin:
         """
         return ""
 
+    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:
+        """Return a compact snapshot of current domain state after each tool dispatch.
+
+        Called in run_loop after every domain tool call. Subclasses override to
+        inject live environment state (workspace files, page URL, active window)
+        into the observation message so the LLM stays oriented between steps.
+        Returns empty string if no state to report (default).
+        """
+        return ""
+
     def _worker_initial_message(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
         """Build the first user message for the ReAct loop."""
         steering = spec.metadata.get("steering_context", "")
@@ -232,6 +242,9 @@ class AgenticWorkerMixin:
 
             # Domain tool
             observation = await self._dispatch_tool(tool_name, args, evidence)
+            snapshot = self._worker_state_snapshot(evidence)
+            if snapshot:
+                observation = f"{observation}\n\n[STATE]\n{snapshot}"
             messages.append(
                 LLMMessage(role="user", content=f"[observation]: {observation}")
             )

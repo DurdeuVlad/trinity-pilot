@@ -203,6 +203,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             lines.append("  Active window: unknown")
         return "\n".join(lines)
 
+    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
+        active = self._get_active_window_title() or "unknown"
+        action_log = evidence.get("action_log", [])
+        last_action = action_log[-1] if action_log else "none"
+        return f"active_window={active!r}\nlast_action={last_action}"
+
     @staticmethod
     def _get_active_window_title() -> str | None:
         try:
