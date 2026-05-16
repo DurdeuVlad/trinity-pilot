@@ -83,14 +83,27 @@ _REVIEW_FAIL_JSON = json.dumps({
 
 
 class MockLLMProvider(LLMProvider):
-    def __init__(self, responses: list[str]) -> None:
+    """Flexible mock: accepts either plain strings or LLMResponse objects."""
+
+    def __init__(self, responses: list) -> None:
         self._responses = iter(responses)
 
-    async def complete(self, messages: list[LLMMessage], system: str = "") -> LLMResponse:
-        return LLMResponse(content=next(self._responses))
+    def _next(self) -> LLMResponse:
+        r = next(self._responses)
+        if isinstance(r, LLMResponse):
+            return r
+        return LLMResponse(content=r)
 
-    async def complete_with_tools(self, messages, tools, system="") -> LLMResponse:
-        return LLMResponse(content=next(self._responses))
+    async def complete(self, messages: list[LLMMessage], system: str = "", **kwargs) -> LLMResponse:
+        return self._next()
+
+    async def complete_with_tools(self, messages, tools, system="", **kwargs) -> LLMResponse:
+        return self._next()
+
+
+def _worker_tool_responses(*tool_calls: dict) -> list[LLMResponse]:
+    """Build LLMResponse sequence for worker agentic loop tool calls."""
+    return [LLMResponse(content="", tool_calls=[tc]) for tc in tool_calls]
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +125,14 @@ class TestPipelineSmoke:
         spec = specs[0]
         assert spec.domain == DomainType.TERMINAL
 
-        # Execute via TerminalWorker (real subprocess)
-        worker = TerminalWorker()
+        # Execute via TerminalWorker (real subprocess via agentic loop)
+        worker_llm = MockLLMProvider(
+            _worker_tool_responses(
+                {"name": "run_command", "args": {"command": "echo hello-smoke"}},
+                {"name": "finish", "args": {"status": "success", "summary": "echo ran"}},
+            )
+        )
+        worker = TerminalWorker(llm=worker_llm)
         evidence = await worker.execute(spec)
 
         assert evidence["exit_code"] == 0
@@ -148,8 +167,14 @@ class TestPipelineSmoke:
         task_id = str(uuid.uuid4())
         spec = _terminal_spec()
 
-        # Simulate worker returning valid evidence
-        worker = TerminalWorker()
+        # Simulate worker returning valid evidence via agentic loop
+        worker_llm = MockLLMProvider(
+            _worker_tool_responses(
+                {"name": "run_command", "args": {"command": "echo hello-smoke"}},
+                {"name": "finish", "args": {"status": "success", "summary": "done"}},
+            )
+        )
+        worker = TerminalWorker(llm=worker_llm)
         evidence = await worker.execute(spec)
 
         # Reviewer returns failure

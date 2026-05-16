@@ -7,9 +7,54 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
+from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 from trinity_pilot.workers.base import WorkerError
 from trinity_pilot.workers.browser_worker import BrowserWorker
 
+
+# ---------------------------------------------------------------------------
+# Mock LLM
+# ---------------------------------------------------------------------------
+
+class _MockLLM(LLMProvider):
+    def __init__(self, responses):
+        self._responses = iter(responses)
+
+    async def complete(self, messages, system="", **kwargs):
+        raise NotImplementedError
+
+    async def complete_with_tools(self, messages, tools, system="", **kwargs):
+        return next(self._responses)
+
+    @property
+    def model(self):
+        return "mock"
+
+
+def _finish(status="success", summary="done"):
+    return LLMResponse(
+        content="",
+        tool_calls=[{"name": "finish", "args": {"status": status, "summary": summary}}],
+    )
+
+
+def _navigate(url):
+    return LLMResponse(
+        content="",
+        tool_calls=[{"name": "navigate", "args": {"url": url}}],
+    )
+
+
+def _read_page():
+    return LLMResponse(
+        content="",
+        tool_calls=[{"name": "read_page", "args": {}}],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spec helpers
+# ---------------------------------------------------------------------------
 
 def _spec(goal: str = "navigate to https://example.com") -> ObjectiveSpec:
     return ObjectiveSpec(
@@ -67,9 +112,14 @@ def _make_mock_context():
 class TestBrowserWorker:
     async def test_returns_expected_evidence_keys(self):
         mock_ap_cm, mock_page, mock_browser = _make_mock_context()
+        llm = _MockLLM([
+            _navigate("https://example.com"),
+            _read_page(),
+            _finish("success", "navigated"),
+        ])
 
         with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
-            worker = BrowserWorker()
+            worker = BrowserWorker(llm=llm)
             evidence = await worker.execute(_spec())
 
         assert "screenshot" in evidence
@@ -81,9 +131,13 @@ class TestBrowserWorker:
 
     async def test_navigate_calls_page_goto(self):
         mock_ap_cm, mock_page, mock_browser = _make_mock_context()
+        llm = _MockLLM([
+            _navigate("https://example.com"),
+            _finish("success", "navigated"),
+        ])
 
         with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
-            worker = BrowserWorker()
+            worker = BrowserWorker(llm=llm)
             await worker.execute(_spec("navigate to https://example.com"))
 
         mock_page.goto.assert_called_once()
@@ -93,9 +147,13 @@ class TestBrowserWorker:
     async def test_screenshot_base64_encoded(self):
         mock_ap_cm, mock_page, mock_browser = _make_mock_context()
         mock_page.screenshot = AsyncMock(return_value=b"raw-bytes")
+        llm = _MockLLM([
+            _read_page(),
+            _finish("success", "read page"),
+        ])
 
         with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
-            worker = BrowserWorker()
+            worker = BrowserWorker(llm=llm)
             evidence = await worker.execute(_spec())
 
         expected = base64.b64encode(b"raw-bytes").decode()
@@ -113,7 +171,8 @@ class TestBrowserWorker:
         async def slow_inner(spec, evidence):
             await asyncio.sleep(999)
 
-        worker = BrowserWorker()
+        llm = _MockLLM([])
+        worker = BrowserWorker(llm=llm)
         worker._execute_inner = slow_inner  # type: ignore
 
         spec = _spec()
@@ -122,36 +181,36 @@ class TestBrowserWorker:
         with pytest.raises(WorkerError, match="[Tt]imeout"):
             await worker.execute(spec)
 
-    async def test_metadata_actions_dispatched_in_order(self):
-        from unittest.mock import AsyncMock as _AsyncMock
+    async def test_navigate_and_read_page_updates_evidence(self):
+        """Navigating then reading page captures title, url, dom and screenshot."""
         mock_ap_cm, mock_page, mock_browser = _make_mock_context()
-        dispatched: list = []
-
-        async def capture_dispatch(page, action):
-            dispatched.append(action)
+        mock_page.title = AsyncMock(return_value="Example Domain")
+        mock_page.url = "https://example.com"
+        mock_page.content = AsyncMock(return_value="<html><body>Hello</body></html>")
+        mock_page.screenshot = AsyncMock(return_value=b"png-bytes")
+        llm = _MockLLM([
+            _navigate("https://example.com"),
+            _read_page(),
+            _finish("success", "done"),
+        ])
 
         with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
-            worker = BrowserWorker()
-            worker._dispatch_action = capture_dispatch  # type: ignore[assignment]
-            spec = _spec("browse to example")
-            spec.metadata["actions"] = [
-                {"type": "navigate", "url": "https://example.com"},
-                {"type": "click", "selector": "#btn"},
-            ]
-            await worker.execute(spec)
+            worker = BrowserWorker(llm=llm)
+            evidence = await worker.execute(_spec("navigate to https://example.com"))
 
-        assert len(dispatched) == 2
-        assert dispatched[0]["type"] == "navigate"
-        assert dispatched[1]["type"] == "click"
+        assert evidence["page_title"] == "Example Domain"
+        assert evidence["page_url"] == "https://example.com"
+        assert evidence["dom_snapshot"] is not None
+        assert evidence["screenshot"] == base64.b64encode(b"png-bytes").decode()
 
-    async def test_metadata_actions_absent_falls_back_to_goal_dispatch(self):
+    async def test_finish_success_sets_worker_result_status(self):
+        """execute() stores run_loop WorkerResult status in evidence."""
         mock_ap_cm, mock_page, mock_browser = _make_mock_context()
+        llm = _MockLLM([_finish("success", "all done")])
 
         with patch("playwright.async_api.async_playwright", return_value=mock_ap_cm):
-            worker = BrowserWorker()
-            spec = _spec("navigate to https://example.com")
-            # No metadata.actions — should fall back to goal-string keyword dispatch
-            evidence = await worker.execute(spec)
+            worker = BrowserWorker(llm=llm)
+            evidence = await worker.execute(_spec())
 
-        mock_page.goto.assert_called_once()
-        assert evidence["domain"] == "browser"
+        assert evidence["worker_result_status"] == "success"
+        assert evidence["worker_result_summary"] == "all done"

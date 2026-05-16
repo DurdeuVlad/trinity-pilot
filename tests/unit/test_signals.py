@@ -2,7 +2,7 @@
 import time
 from trinity_pilot.orchestrator.signals import (
     ObjectiveStarted, StepCompleted, StuckSignal, BudgetWarning,
-    ObjectiveDone, ObjectiveFailed, SteeringMessage, Signal
+    ObjectiveDone, ObjectiveFailed, SteeringMessage, WorkerStepSignal, Signal
 )
 import typing
 
@@ -34,7 +34,7 @@ def test_signal_union_covers_all_types():
     type_args = typing.get_args(Signal)
     expected = {
         ObjectiveStarted, StepCompleted, StuckSignal, BudgetWarning,
-        ObjectiveDone, ObjectiveFailed, SteeringMessage
+        ObjectiveDone, ObjectiveFailed, SteeringMessage, WorkerStepSignal
     }
     assert set(type_args) == expected, f"Signal union missing types: {expected - set(type_args)}"
 

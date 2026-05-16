@@ -9,8 +9,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from google.genai import types as genai_types
+
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
-from trinity_pilot.workers.base import DomainWorker, WorkerError
+from trinity_pilot.llm.base import LLMProvider
+from trinity_pilot.workers.agentic_mixin import (
+    AgenticWorkerMixin,
+    _finish_decl,
+    _make_tool,
+    _report_blocking_decl,
+)
+from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
 
 _BROWSER_SYNTH_SYSTEM = """\
@@ -28,12 +37,90 @@ RULES:
 - Return ONLY the JSON array. No markdown fences, no prose.
 """
 
+_BROWSER_AGENT_SYSTEM = """\
+You are a browser automation agent using Playwright on a live browser.
+Use the available tools to accomplish the goal step by step.
 
-class BrowserWorker(DomainWorker):
-    """Playwright-backed browser worker. One context per attempt, closed in finally."""
+Available tools:
+- navigate: Navigate to a URL.
+- click: Click a CSS selector on the current page.
+- fill: Fill an input field on the current page.
+- read_page: Read the current page title, URL, and DOM text preview.
+- finish: Signal that the objective is complete or definitively failed.
+- report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
-    def __init__(self) -> None:
-        super().__init__()
+RULES:
+- Always navigate to a URL first before interacting with elements.
+- Call finish when done or if the objective is definitively impossible.
+- Call report_blocking only if you genuinely cannot proceed without external input.
+"""
+
+# Domain tool declarations
+_navigate_decl = genai_types.FunctionDeclaration(
+    name="navigate",
+    description="Navigate the browser to a URL.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "url": genai_types.Schema(type=genai_types.Type.STRING, description="The URL to navigate to."),
+        },
+        required=["url"],
+    ),
+)
+
+_click_decl = genai_types.FunctionDeclaration(
+    name="click",
+    description="Click a CSS selector on the current page.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "selector": genai_types.Schema(type=genai_types.Type.STRING, description="CSS selector to click."),
+        },
+        required=["selector"],
+    ),
+)
+
+_fill_decl = genai_types.FunctionDeclaration(
+    name="fill",
+    description="Fill an input field on the current page.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "selector": genai_types.Schema(type=genai_types.Type.STRING, description="CSS selector to fill."),
+            "value": genai_types.Schema(type=genai_types.Type.STRING, description="Value to fill."),
+        },
+        required=["selector", "value"],
+    ),
+)
+
+_read_page_decl = genai_types.FunctionDeclaration(
+    name="read_page",
+    description="Returns current page title, URL, and DOM text preview.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={},
+    ),
+)
+
+
+class BrowserWorker(AgenticWorkerMixin, DomainWorker):
+    """Playwright-backed browser worker using ReAct loop."""
+
+    def __init__(self, llm: LLMProvider | None = None) -> None:
+        if llm is None:
+            from trinity_pilot.llm.gemini import GeminiProvider
+            llm = GeminiProvider(
+                api_key=os.environ.get("GEMINI_API_KEY", ""),
+                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+            )
+        super().__init__(llm=llm)
+        self._page: Any = None
+
+    def _worker_system_prompt(self) -> str:
+        return _BROWSER_AGENT_SYSTEM
+
+    def _worker_tools(self) -> list[genai_types.Tool]:
+        return [_make_tool([_navigate_decl, _click_decl, _fill_decl, _read_page_decl, _finish_decl, _report_blocking_decl])]
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
@@ -56,6 +143,8 @@ class BrowserWorker(DomainWorker):
             raise WorkerError(
                 f"Browser timeout after {timeout_seconds}s for '{spec.objective_id}'"
             )
+        except WorkerBlocker:
+            raise
         validate_evidence(DomainType.BROWSER, evidence)
         return evidence
 
@@ -74,17 +163,18 @@ class BrowserWorker(DomainWorker):
             try:
                 await context.tracing.start(screenshots=True, snapshots=True)
                 page = await context.new_page()
+                self._page = page
 
-                await self._run_objective(page, spec, evidence)
-                # After navigation, synthesize file writes only when goal requires saving data
-                if any(kw in spec.goal.lower() for kw in ("save", "write", "download", "export", "store")):
-                    await self._synthesize_file_writes(spec, evidence)
+                result = await self.run_loop(spec, evidence)
+                evidence["worker_result_status"] = result.status
+                evidence["worker_result_summary"] = result.summary
 
+            except WorkerBlocker:
+                raise
             except WorkerError:
                 raise
             except Exception as exc:
                 evidence["error"] = str(exc)
-                # Capture failure evidence
                 try:
                     screenshot_bytes = await page.screenshot()
                     evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
@@ -97,6 +187,7 @@ class BrowserWorker(DomainWorker):
                     f"Browser execution failed for '{spec.objective_id}': {exc}"
                 ) from exc
             finally:
+                self._page = None
                 try:
                     await context.tracing.stop(path=trace_path)
                     evidence["trace_path"] = trace_path
@@ -104,6 +195,50 @@ class BrowserWorker(DomainWorker):
                     pass
                 await context.close()
                 await browser.close()
+
+    async def _dispatch_tool(
+        self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]
+    ) -> str:
+        page = self._page
+        if page is None:
+            raise WorkerError("_dispatch_tool called with no active browser page")
+
+        if tool_name == "navigate":
+            url = args["url"]
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            evidence["page_url"] = page.url
+            return f"Navigated to {url}"
+
+        elif tool_name == "click":
+            selector = args["selector"]
+            await page.click(selector, timeout=10_000)
+            return f"Clicked {selector}"
+
+        elif tool_name == "fill":
+            selector = args["selector"]
+            value = args["value"]
+            await page.fill(selector, value, timeout=10_000)
+            return f"Filled {selector} with {value!r}"
+
+        elif tool_name == "read_page":
+            title = await page.title()
+            url = page.url
+            dom_raw = await page.content()
+            dom_text = re.sub(r"<[^>]+>", " ", dom_raw)
+            dom_text = re.sub(r"\s+", " ", dom_text).strip()[:2000]
+            evidence["page_title"] = title
+            evidence["page_url"] = url
+            evidence["dom_snapshot"] = dom_raw
+            screenshot_bytes = await page.screenshot()
+            evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
+            return f"title={title!r} url={url}\ntext={dom_text}"
+
+        else:
+            return await super()._dispatch_tool(tool_name, args, evidence)
+
+    # ------------------------------------------------------------------
+    # Backward-compatible helpers
+    # ------------------------------------------------------------------
 
     async def _run_objective(
         self,
@@ -113,14 +248,12 @@ class BrowserWorker(DomainWorker):
     ) -> None:
         actions_executed = False
 
-        # Structured action list from metadata takes priority
         metadata_actions = spec.metadata.get("actions")
         if metadata_actions and isinstance(metadata_actions, list) and len(metadata_actions) > 0:
             for action in metadata_actions:
                 await self._dispatch_action(page, action)
             actions_executed = True
 
-        # Try structured JSON action list embedded in goal string: {"actions": [...]}
         if not actions_executed:
             json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
             if json_match:
@@ -131,9 +264,8 @@ class BrowserWorker(DomainWorker):
                         await self._dispatch_action(page, action)
                     actions_executed = True
                 except Exception:
-                    pass  # fall through to keyword dispatch
+                    pass
 
-        # Keyword dispatch fallback
         if not actions_executed:
             goal_lower = spec.goal.lower()
             if "navigate" in goal_lower or "open" in goal_lower or "go to" in goal_lower:
@@ -141,7 +273,6 @@ class BrowserWorker(DomainWorker):
                 if url:
                     await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
-        # Collect evidence
         screenshot_bytes = await page.screenshot()
         evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
         evidence["dom_snapshot"] = await page.content()
@@ -160,7 +291,7 @@ class BrowserWorker(DomainWorker):
         elif kind == "wait_for":
             await page.wait_for_selector(action["selector"], timeout=10_000)
         elif kind == "read_text":
-            pass  # evidence collected separately via dom_snapshot
+            pass
 
     @staticmethod
     def _extract_url(text: str) -> str | None:
@@ -170,14 +301,12 @@ class BrowserWorker(DomainWorker):
     async def _synthesize_file_writes(
         self, spec: ObjectiveSpec, evidence: dict[str, Any]
     ) -> None:
-        """After navigation, ask LLM to produce write_file actions from captured evidence."""
         from trinity_pilot.llm.base import LLMMessage
         from trinity_pilot.llm.gemini import GeminiProvider
 
         page_title = evidence.get("page_title") or ""
         page_url = evidence.get("page_url") or ""
         dom_raw = evidence.get("dom_snapshot") or ""
-        # Strip HTML tags for a readable text preview
         dom_text = re.sub(r"<[^>]+>", " ", dom_raw)
         dom_text = re.sub(r"\s+", " ", dom_text).strip()[:4000]
 

@@ -63,6 +63,16 @@ class SteeringMessage:
     ts: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True)
+class WorkerStepSignal:
+    task_id: str
+    objective_id: str
+    step_num: int
+    tool_name: str
+    tokens_this_step: int
+    ts: float = field(default_factory=time.time)
+
+
 Signal = Union[
     ObjectiveStarted,
     StepCompleted,
@@ -71,4 +81,5 @@ Signal = Union[
     ObjectiveDone,
     ObjectiveFailed,
     SteeringMessage,
+    WorkerStepSignal,
 ]
