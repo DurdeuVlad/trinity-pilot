@@ -105,6 +105,17 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
     def _worker_system_prompt(self) -> str:
         return _TERMINAL_SYSTEM
 
+    def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
+        workspace = evidence.get("workspace", "")
+        if not workspace:
+            return ""
+        return (
+            f"WORKSPACE DIRECTORY: {workspace}\n"
+            "Use this path for all file operations. "
+            "run_command CWD is already set to this directory — "
+            "prefer relative paths (e.g. '.\\\\file.txt') over absolute."
+        )
+
     def _worker_tools(self) -> list[genai_types.Tool]:
         return [_make_tool([_run_command_decl, _write_file_decl, _finish_decl, _report_blocking_decl])]
 
@@ -251,10 +262,11 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             )
         else:
             if sys.platform == "win32":
-                shell_exe = os.environ.get("ComSpec", "cmd.exe")
                 proc = await asyncio.create_subprocess_exec(
-                    shell_exe,
-                    "/c",
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
                     command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

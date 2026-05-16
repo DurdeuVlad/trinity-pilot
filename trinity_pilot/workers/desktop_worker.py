@@ -191,6 +191,30 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             _report_blocking_decl,
         ])]
 
+    def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
+        import sys as _sys
+        platform_name = "Windows" if _sys.platform == "win32" else _sys.platform
+        active_title = self._get_active_window_title()
+        lines = ["DESKTOP STATE:"]
+        lines.append(f"  Platform: {platform_name}")
+        if active_title:
+            lines.append(f"  Active window: {active_title!r}")
+        else:
+            lines.append("  Active window: unknown")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _get_active_window_title() -> str | None:
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+            return buf.value or None
+        except Exception:
+            return None
+
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         evidence: dict[str, Any] = {
             "domain": "desktop",

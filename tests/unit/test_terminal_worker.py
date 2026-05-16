@@ -88,7 +88,8 @@ class TestTerminalWorker:
         ])
         worker = TerminalWorker(llm=llm)
         evidence = await worker.execute(_spec("run `echo hello world`"))
-        assert "hello world" in evidence["stdout"]
+        # PowerShell echo splits args onto separate lines; check both words present
+        assert "hello" in evidence["stdout"] and "world" in evidence["stdout"]
         assert evidence["exit_code"] == 0
 
     async def test_exit_code_nonzero_run_command_returns_error_observation(self):

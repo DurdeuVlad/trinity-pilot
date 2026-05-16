@@ -79,6 +79,10 @@ class GeminiProvider(LLMProvider):
                 if fn := getattr(part, "function_call", None):
                     tool_calls.append({"name": fn.name, "args": dict(fn.args)})
 
-        text = getattr(response, "text", "") or ""
+        # Only access .text when no function_calls — avoids SDK warning about
+        # "non-text parts in response: ['function_call']"
+        text = ""
+        if not tool_calls:
+            text = getattr(response, "text", "") or ""
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
         return LLMResponse(content=text, raw=response, tool_calls=tool_calls, token_count=token_count)

@@ -91,7 +91,7 @@ class TestTerminalSecurity:
         assert len(exec_calls) == 1, "exec should be called"
         assert len(shell_calls) == 0, "shell must NOT be called by default"
 
-    async def test_windows_builtin_uses_cmd_via_exec_not_shell(self, monkeypatch):
+    async def test_windows_builtin_uses_powershell_via_exec_not_shell(self, monkeypatch):
         exec_calls = []
 
         async def fake_exec(*args, **kwargs):
@@ -105,7 +105,6 @@ class TestTerminalSecurity:
             "trinity_pilot.workers.terminal_worker.sys.platform",
             "win32",
         )
-        monkeypatch.setenv("ComSpec", "cmd.exe")
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec), \
              patch("asyncio.create_subprocess_shell", side_effect=AssertionError("shell should not be called")):
@@ -114,7 +113,8 @@ class TestTerminalSecurity:
                 cwd=".",
             )
 
-        assert exec_calls == [("cmd.exe", "/c", "echo hello")]
+        # Windows now uses PowerShell (not cmd.exe) to match the system prompt
+        assert exec_calls == [("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "echo hello")]
         assert "hello" in stdout
         assert stderr == ""
         assert exit_code == 0

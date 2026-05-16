@@ -96,6 +96,28 @@ class AgenticWorkerMixin:
         """Handle domain-specific tool calls. Subclasses implement this. Returns observation string."""
         raise NotImplementedError(f"Unknown tool: {tool_name}")
 
+    def _worker_environment_context(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
+        """Return domain-specific environment context injected before GOAL in the initial message.
+        Subclasses override to inject workspace path, page URL, active window title, etc.
+        Returns empty string if no context available.
+        """
+        return ""
+
+    def _worker_initial_message(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
+        """Build the first user message for the ReAct loop."""
+        steering = spec.metadata.get("steering_context", "")
+        if isinstance(steering, dict):
+            steering = steering.get("latest_recovery_hint", "")
+        parts: list[str] = []
+        env_ctx = self._worker_environment_context(spec, evidence)
+        if env_ctx:
+            parts.append(env_ctx)
+        parts.append(f"GOAL: {spec.goal}")
+        if steering:
+            parts.append(f"STEERING CONTEXT: {steering}")
+        parts.append("Begin.")
+        return "\n\n".join(parts)
+
     async def run_loop(
         self,
         spec: ObjectiveSpec,
@@ -113,15 +135,8 @@ class AgenticWorkerMixin:
         effective_signals = signals if signals is not None else self._signals_queue
         task_id = self._task_id or spec.objective_id
 
-        # Build initial messages
-        steering = spec.metadata.get("steering_context", "")
-        if isinstance(steering, dict):
-            steering = steering.get("latest_recovery_hint", "")
         messages: list[LLMMessage] = [
-            LLMMessage(
-                role="user",
-                content=f"GOAL: {spec.goal}\n\nSTEERING CONTEXT: {steering}\n\nBegin.",
-            )
+            LLMMessage(role="user", content=self._worker_initial_message(spec, evidence))
         ]
 
         steps_taken = 0
@@ -137,9 +152,31 @@ class AgenticWorkerMixin:
 
             # Case: empty response (no tool calls, no content)
             if not response.tool_calls and not response.content:
-                raise WorkerError(
-                    f"LLM returned empty response at step {steps_taken}"
+                if steps_taken == 0:
+                    raise WorkerError(
+                        f"LLM returned empty response at step {steps_taken}"
+                    )
+                messages.append(
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "[observation]: empty model response. "
+                            "If the objective is complete, call finish. Otherwise call the next tool."
+                        ),
+                    )
                 )
+                steps_taken += 1
+                if effective_signals is not None:
+                    await effective_signals.put(
+                        WorkerStepSignal(
+                            task_id=task_id,
+                            objective_id=spec.objective_id,
+                            step_num=steps_taken,
+                            tool_name="(empty)",
+                            tokens_this_step=response.token_count,
+                        )
+                    )
+                continue
 
             # Case: text-only response (no tool calls)
             if not response.tool_calls:

@@ -122,6 +122,17 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
     def _worker_tools(self) -> list[genai_types.Tool]:
         return [_make_tool([_navigate_decl, _click_decl, _fill_decl, _read_page_decl, _finish_decl, _report_blocking_decl])]
 
+    def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
+        page_url = evidence.get("page_url") or "about:blank"
+        page_title = evidence.get("page_title") or ""
+        lines = ["BROWSER STATE:"]
+        lines.append(f"  Current URL: {page_url}")
+        if page_title:
+            lines.append(f"  Page title: {page_title!r}")
+        if page_url == "about:blank":
+            lines.append("  (Browser just started — no page loaded yet. Navigate to target URL first.)")
+        return "\n".join(lines)
+
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
         evidence: dict[str, Any] = {
