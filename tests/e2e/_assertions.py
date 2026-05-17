@@ -4,9 +4,28 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from trinity_pilot.memory.store import TaskStore, ObjectiveStateStore
 from trinity_pilot.orchestrator.signals import ObjectiveDone, StuckSignal
 from trinity_pilot.core.types import TaskStatus
+
+
+def skip_if_quota_exhausted(result: dict, obj_id: str) -> None:
+    """Skip the test (not fail) if the Gemini API returned 429 RESOURCE_EXHAUSTED.
+
+    429 means the monthly spend cap was hit — not a code bug.  Tests should be
+    re-run when quota resets rather than being counted as failures.
+    """
+    error: str = (
+        (result.get("results", {}).get(obj_id, {}).get("evidence", {}) or {})
+        .get("error", "") or ""
+    )
+    if "429" in error or "RESOURCE_EXHAUSTED" in error:
+        pytest.skip(
+            f"Gemini API quota exhausted (429) — re-run when quota resets. "
+            f"obj={obj_id} error={error[:160]}"
+        )
 
 
 def assert_file_exists(path: Path, msg: str | None = None) -> None:

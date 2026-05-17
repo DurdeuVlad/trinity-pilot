@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e._assertions import assert_db_completed, assert_db_not_completed
+from tests.e2e._assertions import assert_db_completed, assert_db_not_completed, skip_if_quota_exhausted
 from tests.e2e._scenario import BridgeTestHarness
 
 
@@ -90,6 +90,7 @@ def test_browser_wikipedia_romania(bridge_harness: BridgeTestHarness, tmp_db_pat
 
     result = bridge_harness.last_result
     assert result is not None
+    skip_if_quota_exhausted(result, "obj-wiki-romania")
     db_status = bridge_harness.get_db_status(task_id)
     assert db_status == "completed", (
         f"Expected 'completed' but got '{db_status}'. Result: {result}"
@@ -126,6 +127,7 @@ def test_browser_check_url_status(bridge_harness: BridgeTestHarness, tmp_db_path
 
     result = bridge_harness.last_result
     assert result is not None
+    skip_if_quota_exhausted(result, "obj-check-url")
     db_status = bridge_harness.get_db_status(task_id)
     assert db_status == "completed", (
         f"Expected 'completed' but got '{db_status}'. Result: {result}"

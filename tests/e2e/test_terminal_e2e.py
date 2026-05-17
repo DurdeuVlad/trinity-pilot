@@ -22,6 +22,7 @@ from tests.e2e._assertions import (
     assert_db_not_completed,
     assert_file_exists,
     assert_signal_in_queue,
+    skip_if_quota_exhausted,
 )
 from tests.e2e._scenario import BridgeTestHarness
 from trinity_pilot.memory.store import ObjectiveStateStore
@@ -80,14 +81,12 @@ def test_terminal_create_venv_and_install_flask(bridge_harness: BridgeTestHarnes
 
     result = bridge_harness.last_result
     assert result is not None, "last_result must be set after done event fires"
-    status = result.get("status", "")
+    skip_if_quota_exhausted(result, "obj-venv-flask")
 
     # Cleanup regardless of outcome
     if (_E2E_TMP / "myapp").exists():
         shutil.rmtree(_E2E_TMP / "myapp", ignore_errors=True)
 
-    # The venv directory should have been created if the task succeeded
-    # We assert on the DB status for a deterministic check
     db_status = bridge_harness.get_db_status(task_id)
     assert db_status == "completed", (
         f"Expected DB status 'completed' but got '{db_status}'. Result: {result}"
@@ -131,6 +130,7 @@ def test_terminal_compress_folder(bridge_harness: BridgeTestHarness, tmp_db_path
         pytest.fail(f"Task stalled after 120s")
 
     result = bridge_harness.last_result
+    skip_if_quota_exhausted(result, "obj-compress")
 
     # Cleanup
     shutil.rmtree(reports_dir, ignore_errors=True)
@@ -183,6 +183,7 @@ def test_terminal_find_large_files(bridge_harness: BridgeTestHarness, tmp_db_pat
         pytest.fail(f"Task stalled after 120s")
 
     result = bridge_harness.last_result
+    skip_if_quota_exhausted(result, "obj-find-large")
     db_status = bridge_harness.get_db_status(task_id)
     assert db_status == "completed", (
         f"Expected 'completed' but got '{db_status}'. Result: {result}"
