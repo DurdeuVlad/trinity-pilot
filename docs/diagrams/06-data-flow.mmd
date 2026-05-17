@@ -1,0 +1,18 @@
+flowchart TD
+    A["📝 user_request\n(string)"]
+
+    A -->|ObjectivePlanner| B
+
+    B["📋 ObjectiveSpec\n─────────────\nobjective_id\ngoal\ndomain\nrequired_capabilities\nrisk_class  ·  max_attempts\nsuccess_tests  ·  evidence_bundle"]
+
+    B -->|Worker executes| C
+
+    C["🗂 Evidence Dict\n─────────────\nstdout / stderr\nscreenshot bytes\naction_log\nlaunched_pids\nwritten_files\nerror"]
+
+    C -->|Reviewer checks| D
+
+    D["✅ ReviewResult\n─────────────\npassed: bool\nfailure_reason\nsteering_message"]
+
+    D -->|Orchestrator persists| E
+
+    E["💾 TaskRecord + DB\n─────────────\ntask_id\nstatus: RUNNING → DONE\nobjective results\nevidence"]

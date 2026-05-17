@@ -1,0 +1,47 @@
+graph TB
+    subgraph UI["UI Layer (PySide6 / Qt)"]
+        MW[MainWindow]
+        WB[WorkflowBridge]
+        WT[_WorkerThread\nasyncio loop in QThread]
+    end
+
+    subgraph Orchestration["Orchestration Layer"]
+        PL[ObjectivePlanner\nbreaks task into objectives]
+        OR[AsyncTaskOrchestrator\nruns objectives in order]
+        RV[Reviewer\npass / fail / steer]
+    end
+
+    subgraph Workers["Domain Workers  —  ReAct Loop"]
+        TW[TerminalWorker\nshell / PowerShell]
+        BW[BrowserWorker\nPlaywright]
+        DW[DesktopWorker\npywinauto / pyautogui]
+    end
+
+    subgraph LLM["LLM Layer"]
+        GM[GeminiProvider\ngemini-2.5-flash]
+    end
+
+    subgraph Memory["Memory Layer"]
+        TS[TaskStore\nSQLite]
+        OS[ObjectiveStateStore\nSQLite]
+    end
+
+    subgraph Signals["Signal Bus  asyncio.Queue"]
+        SG[ObjectiveDone\nObjectiveFailed\nStuckSignal\nSteeringMessage\nBudgetWarning]
+    end
+
+    MW -->|user submits task| WB
+    WB -->|start_task| WT
+    WT -->|run| OR
+    OR -->|plan| PL
+    PL -->|LLM call| GM
+    PL -->|ObjectiveSpec list| OR
+    OR -->|dispatch objective| TW & BW & DW
+    TW & BW & DW -->|LLM calls| GM
+    TW & BW & DW -->|evidence dict| RV
+    RV -->|LLM call| GM
+    RV -->|pass / fail / steer| OR
+    OR -->|write status| TS & OS
+    OR -->|emit| SG
+    SG -->|forwarded| WB
+    WB -->|on_done callback| MW

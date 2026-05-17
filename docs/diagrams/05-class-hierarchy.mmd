@@ -1,0 +1,50 @@
+classDiagram
+    class DomainWorker {
+        <<abstract>>
+        +execute(spec) dict
+        +domain() DomainType
+    }
+
+    class AgenticWorkerMixin {
+        <<mixin>>
+        -llm LLMProvider
+        -messages list
+        +run_loop(spec, evidence, tools, max_steps)
+        #_dispatch_tool(name, args, evidence)
+        #_worker_tools() list
+        #_worker_system_prompt() str
+        #_worker_state_snapshot(evidence) str
+    }
+
+    class TerminalWorker {
+        +domain = terminal
+        +execute(spec)
+        #_dispatch_tool()
+    }
+
+    class BrowserWorker {
+        +domain = browser
+        +execute(spec)
+        #_dispatch_tool()
+    }
+
+    class DesktopWorker {
+        +domain = desktop
+        -_target_window str
+        +execute(spec)
+        #_dispatch_tool()
+        #_ensure_target_focused()
+    }
+
+    class GeminiProvider {
+        +complete_with_tools(messages, tools)
+        -_build_contents()
+    }
+
+    DomainWorker <|-- TerminalWorker
+    DomainWorker <|-- BrowserWorker
+    DomainWorker <|-- DesktopWorker
+    AgenticWorkerMixin <|-- TerminalWorker
+    AgenticWorkerMixin <|-- BrowserWorker
+    AgenticWorkerMixin <|-- DesktopWorker
+    AgenticWorkerMixin --> GeminiProvider : uses

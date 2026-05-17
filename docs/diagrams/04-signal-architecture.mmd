@@ -1,0 +1,28 @@
+graph LR
+    subgraph WorkerThread["asyncio thread  QThread"]
+        OR[Orchestrator]
+        WK[Worker]
+        OR -->|await signals.put| Q[(asyncio.Queue)]
+    end
+
+    subgraph SignalTypes["Signal Types"]
+        direction TB
+        S1[ObjectiveStarted]
+        S2[StepCompleted]
+        S3[ObjectiveDone]
+        S4[ObjectiveFailed]
+        S5[StuckSignal\nuser_question]
+        S6[SteeringMessage]
+        S7[BudgetWarning]
+    end
+
+    Q --> S1 & S2 & S3 & S4 & S5 & S6 & S7
+
+    subgraph UIThread["UI Thread"]
+        CB[on_done callback\nDirectConnection]
+        MW[MainWindow\nupdate UI]
+    end
+
+    S3 & S4 -->|task done| CB
+    S5 -->|needs user input| MW
+    CB --> MW
