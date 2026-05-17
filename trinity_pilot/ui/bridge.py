@@ -168,9 +168,16 @@ class WorkflowBridge(QObject):
         t = threading.Thread(target=_run, daemon=True, name="trinity-planner")
         t.start()
 
-    def stop_task(self) -> None:
+    def stop_task(self, wait_ms: int = 5000) -> None:
+        """Request cancellation and wait for the worker thread to finish.
+
+        wait_ms: max milliseconds to wait for the thread to exit (default 5 s).
+        Waiting is essential in tests so the COM apartment from the previous
+        worker is fully torn down before the next test creates a new one.
+        """
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
+            self._worker.wait(wait_ms)  # blocks until thread exits or timeout
 
     def query_progress(self) -> dict:
         """Return {current_objective, completed_objectives} from the active orchestrator.
