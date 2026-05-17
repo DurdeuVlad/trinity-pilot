@@ -103,14 +103,55 @@ def bridge_harness(qapp, e2e_settings: Settings, tmp_db_path: str):
 # Marker: desktop_available — skip if not on Windows with a visible desktop
 # ---------------------------------------------------------------------------
 
+# Processes the desktop worker is allowed to launch during tests.
+# These are killed in teardown so they don't leak between tests.
+_DESKTOP_TEST_PROCS = {
+    "notepad.exe",
+    "calc.exe",
+    "calculatorapp.exe",   # Win10/11 modern Calculator (lowercase for case-insensitive match)
+    "mspaint.exe",
+    "wordpad.exe",
+    "write.exe",
+}
+
+
+def _kill_desktop_test_procs() -> None:
+    """Kill any known desktop-test processes still running.
+
+    Uses psutil first; falls back to `taskkill /F /IM <name>` for UWP apps
+    (e.g. CalculatorApp.exe) that psutil cannot terminate due to app-container
+    sandboxing.
+    """
+    import subprocess as _sp
+    import psutil
+
+    killed: set[str] = set()
+    for proc in psutil.process_iter(["name", "pid"]):
+        try:
+            name = (proc.info["name"] or "").lower()
+            if name in _DESKTOP_TEST_PROCS:
+                try:
+                    proc.kill()
+                    killed.add(proc.info["name"])
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    # Fallback: taskkill handles UWP sandbox processes
+                    _sp.run(
+                        ["taskkill", "/F", "/IM", proc.info["name"]],
+                        capture_output=True,
+                    )
+                    killed.add(proc.info["name"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
 @pytest.fixture()
 def desktop_available():
-    """Skip the test if we are not on a visible Windows desktop."""
+    """Skip if not on a visible Windows desktop. Kill test apps on teardown."""
     if sys.platform != "win32":
         pytest.skip("Desktop tests require Windows")
-    # On Windows in CI without a display, DISPLAY may not be set, but we rely
-    # on Windows always having a desktop in a normal session.
     yield
+    # Teardown: kill any apps the worker opened during the test
+    _kill_desktop_test_procs()
 
 
 # ---------------------------------------------------------------------------
