@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from google import genai
@@ -10,13 +11,48 @@ from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 
 
 def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
+    """Convert LLMMessage list to Gemini Content objects.
+
+    Supported roles:
+      "user"        → user text Part
+      "model"       → model text Part
+      "tool_call"   → model FunctionCall Part  (content = JSON {"name":..,"args":..})
+      "tool_result" → user FunctionResponse Part (content = JSON {"name":..,"result":..})
+
+    Using proper FunctionCall/FunctionResponse parts ensures the model sees its
+    tool invocations in the correct Gemini multi-turn format and does not
+    imitate the "[tool_call]:" text pattern from conversation history.
+    """
     contents = []
     for msg in messages:
-        role = "model" if msg.role == "model" else "user"
-        contents.append(genai_types.Content(
-            role=role,
-            parts=[genai_types.Part(text=msg.content)]
-        ))
+        if msg.role == "tool_call":
+            data = json.loads(msg.content)
+            contents.append(genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        name=data["name"],
+                        args=data["args"],
+                    )
+                )]
+            ))
+        elif msg.role == "tool_result":
+            data = json.loads(msg.content)
+            contents.append(genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(
+                    function_response=genai_types.FunctionResponse(
+                        name=data["name"],
+                        response={"result": data["result"]},
+                    )
+                )]
+            ))
+        else:
+            role = "model" if msg.role == "model" else "user"
+            contents.append(genai_types.Content(
+                role=role,
+                parts=[genai_types.Part(text=msg.content)]
+            ))
     return contents
 
 

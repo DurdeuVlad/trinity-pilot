@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from typing import Any, cast
 
 from google.genai import types as genai_types
@@ -13,7 +15,25 @@ from trinity_pilot.workers.base import WorkerError, WorkerBlocker
 from trinity_pilot.workers.worker_result import WorkerResult
 
 # ---------------------------------------------------------------------------
-# Shared tool declarations (Story 3)
+# Control-flow signals returned by _dispatch_tool
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _FinishSignal:
+    """Returned by _dispatch_tool when the model calls finish()."""
+    status: str   # "success" | "failure"
+    summary: str
+
+
+@dataclass
+class _BlockerSignal:
+    """Returned by _dispatch_tool when the model calls report_blocking()."""
+    reason: str
+    attempted: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Shared tool declarations (Gemini FunctionDeclaration — tells the LLM the schema)
 # ---------------------------------------------------------------------------
 
 _finish_decl = genai_types.FunctionDeclaration(
@@ -74,6 +94,17 @@ class AgenticWorkerMixin:
     """Mixin that provides the ReAct loop for domain workers.
 
     MRO: class TerminalWorker(AgenticWorkerMixin, DomainWorker)
+
+    Tool dispatch contract
+    ----------------------
+    _dispatch_tool() handles ALL tool names including "finish" and "report_blocking"
+    at the base level. Subclasses handle domain tools and fall through to super()
+    for anything they don't own.
+
+    Return types from _dispatch_tool:
+      str           → observation string; loop continues
+      _FinishSignal → objective complete; run_loop returns WorkerResult
+      _BlockerSignal → unresolvable blocker; run_loop raises WorkerBlocker
     """
 
     def __init__(self, llm: LLMProvider, **kwargs: Any) -> None:
@@ -92,25 +123,32 @@ class AgenticWorkerMixin:
 
     async def _dispatch_tool(
         self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]
-    ) -> str:
-        """Handle domain-specific tool calls. Subclasses implement this. Returns observation string."""
+    ) -> str | _FinishSignal | _BlockerSignal:
+        """Dispatch a tool call. Returns observation string or a control-flow signal.
+
+        Base handles "finish" and "report_blocking". Subclasses handle domain tools
+        and delegate unknown names to super().
+        """
+        if tool_name == "finish":
+            status = args.get("status", "success")
+            if status not in ("success", "failure"):
+                status = "failure"
+            return _FinishSignal(status=status, summary=args.get("summary", ""))
+
+        if tool_name == "report_blocking":
+            return _BlockerSignal(
+                reason=args.get("reason", "unspecified blocker"),
+                attempted=args.get("attempted", ""),
+            )
+
         raise NotImplementedError(f"Unknown tool: {tool_name}")
 
     def _worker_environment_context(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
-        """Return domain-specific environment context injected before GOAL in the initial message.
-        Subclasses override to inject workspace path, page URL, active window title, etc.
-        Returns empty string if no context available.
-        """
+        """Return domain-specific environment context injected before GOAL in the initial message."""
         return ""
 
     def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:
-        """Return a compact snapshot of current domain state after each tool dispatch.
-
-        Called in run_loop after every domain tool call. Subclasses override to
-        inject live environment state (workspace files, page URL, active window)
-        into the observation message so the LLM stays oriented between steps.
-        Returns empty string if no state to report (default).
-        """
+        """Return a compact snapshot of current domain state after each domain tool dispatch."""
         return ""
 
     def _worker_initial_message(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
@@ -136,12 +174,16 @@ class AgenticWorkerMixin:
         max_steps: int | None = None,
         signals: asyncio.Queue | None = None,
     ) -> WorkerResult:
-        """Execute the ReAct loop until the LLM calls finish/report_blocking or steps are exhausted."""
-        # Resolve max_steps
+        """Execute the ReAct loop until finish/report_blocking or step budget exhausted.
+
+        All tool calls — including finish and report_blocking — are dispatched through
+        _dispatch_tool(). Control-flow signals (_FinishSignal, _BlockerSignal) are checked
+        after every dispatch. Proper Gemini FunctionCall/FunctionResponse message parts are
+        used for tool turns so the model never sees "[tool_call]:" text in its history.
+        """
         if max_steps is None:
             max_steps = int(spec.metadata.get("max_agent_steps", 20))
 
-        # Use injected signals queue if not passed explicitly
         effective_signals = signals if signals is not None else self._signals_queue
         task_id = self._task_id or spec.objective_id
 
@@ -160,7 +202,7 @@ class AgenticWorkerMixin:
             )
             tokens_used += response.token_count
 
-            # Case: empty response (no tool calls, no content)
+            # Case: empty response
             if not response.tool_calls and not response.content:
                 if steps_taken == 0:
                     raise WorkerError(
@@ -170,7 +212,7 @@ class AgenticWorkerMixin:
                     LLMMessage(
                         role="user",
                         content=(
-                            "[observation]: empty model response. "
+                            "Empty model response. "
                             "If the objective is complete, call finish. Otherwise call the next tool."
                         ),
                     )
@@ -192,7 +234,10 @@ class AgenticWorkerMixin:
             if not response.tool_calls:
                 messages.append(LLMMessage(role="model", content=response.content))
                 messages.append(
-                    LLMMessage(role="user", content="[observation]: no tool called, continue.")
+                    LLMMessage(
+                        role="user",
+                        content="You must call a tool. Call finish, report_blocking, or a domain tool.",
+                    )
                 )
                 steps_taken += 1
                 if effective_signals is not None:
@@ -212,42 +257,51 @@ class AgenticWorkerMixin:
             tool_name: str = tool_call["name"]
             args: dict[str, Any] = tool_call.get("args", {})
 
+            # Emit proper FunctionCall part (model turn) — NOT "[tool_call]:" text
             messages.append(
-                LLMMessage(role="model", content=f"[tool_call]: {tool_name}({args})")
+                LLMMessage(
+                    role="tool_call",
+                    content=json.dumps({"name": tool_name, "args": args}),
+                )
             )
 
-            if tool_name == "finish":
-                status = args.get("status", "success")
-                if status not in ("success", "failure"):
-                    status = "failure"
-                summary = args.get("summary", "")
+            # Dispatch through unified tool routing (finish/blocking handled at base)
+            dispatch_result = await self._dispatch_tool(tool_name, args, evidence)
+
+            # Control-flow signals
+            if isinstance(dispatch_result, _FinishSignal):
                 return WorkerResult(
-                    status=status,
-                    summary=summary,
+                    status=dispatch_result.status,
+                    summary=dispatch_result.summary,
                     evidence=evidence,
                     steps_taken=steps_taken + 1,
                     tokens_used=tokens_used,
                 )
 
-            if tool_name == "report_blocking":
-                reason = args.get("reason", "unspecified blocker")
-                result = WorkerResult(
+            if isinstance(dispatch_result, _BlockerSignal):
+                wr = WorkerResult(
                     status="partial_blocker",
-                    summary=reason,
+                    summary=dispatch_result.reason,
                     evidence=evidence,
                     steps_taken=steps_taken + 1,
                     tokens_used=tokens_used,
                 )
-                raise WorkerBlocker(reason, result)
+                raise WorkerBlocker(dispatch_result.reason, wr)
 
-            # Domain tool
-            observation = await self._dispatch_tool(tool_name, args, evidence)
+            # Domain tool: observation string
+            observation: str = dispatch_result
             snapshot = self._worker_state_snapshot(evidence)
             if snapshot:
                 observation = f"{observation}\n\n[STATE]\n{snapshot}"
+
+            # Emit proper FunctionResponse part (user turn)
             messages.append(
-                LLMMessage(role="user", content=f"[observation]: {observation}")
+                LLMMessage(
+                    role="tool_result",
+                    content=json.dumps({"name": tool_name, "result": observation}),
+                )
             )
+
             steps_taken += 1
             if effective_signals is not None:
                 await effective_signals.put(

@@ -45,6 +45,9 @@ class _ConcreteWorker(AgenticWorkerMixin, DomainWorker):
         ...  # not used in mixin tests
 
     async def _dispatch_tool(self, tool_name, args, evidence):
+        # finish and report_blocking are handled by base class
+        if tool_name in ("finish", "report_blocking"):
+            return await super()._dispatch_tool(tool_name, args, evidence)
         return f"ok: {tool_name}"
 
 
@@ -152,11 +155,25 @@ async def test_loop_handles_empty_text_response_without_tool():
 
 @pytest.mark.asyncio
 async def test_loop_raises_on_fully_empty_llm_response():
-    """Fully empty response (no tool calls, no content) raises WorkerError."""
+    """Fully empty first response (no tool calls, no content) raises WorkerError."""
     llm = MockLLMProvider([LLMResponse(content="", tool_calls=[])])
     worker = _ConcreteWorker(llm)
     with pytest.raises(WorkerError):
         await worker.run_loop(_spec(), {})
+
+
+@pytest.mark.asyncio
+async def test_loop_recovers_from_empty_response_after_tool_call():
+    """An empty turn after a tool call gets a bounded nudge, then can finish."""
+    llm = MockLLMProvider([
+        _domain_tool_response("run_command"),
+        LLMResponse(content="", tool_calls=[]),
+        _finish_response("success", "done after empty turn"),
+    ])
+    worker = _ConcreteWorker(llm)
+    result = await worker.run_loop(_spec(), {}, max_steps=5)
+    assert result.status == "success"
+    assert result.summary == "done after empty turn"
 
 
 @pytest.mark.asyncio

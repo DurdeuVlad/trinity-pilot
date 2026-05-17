@@ -70,12 +70,15 @@ async def test_state_appended_to_observation_when_non_empty():
     worker = TerminalWorker(llm=llm)
     spec = _spec("run `echo hi`")
     await worker.execute(spec)
-    # Second call to complete_with_tools receives messages including the observation
+    # Second call receives messages including the tool_result with STATE
     assert len(llm.sent_messages) >= 2
     second_call_messages = llm.sent_messages[1]
-    obs_messages = [m for m in second_call_messages if m.role == "user" and "[observation]" in m.content]
-    assert obs_messages, "No observation message found"
-    assert "[STATE]" in obs_messages[-1].content
+    # tool_result role carries the observation JSON
+    import json as _json
+    tool_results = [m for m in second_call_messages if m.role == "tool_result"]
+    assert tool_results, "No tool_result message found"
+    result_content = _json.loads(tool_results[-1].content).get("result", "")
+    assert "[STATE]" in result_content
 
 
 # AC-03: empty snapshot does not inject [STATE]
@@ -83,14 +86,15 @@ async def test_state_appended_to_observation_when_non_empty():
 async def test_no_state_injected_when_snapshot_empty():
     llm = _RunThenFinishLLM()
     worker = TerminalWorker(llm=llm)
-    # Patch _worker_state_snapshot to return ""
     with patch.object(worker, "_worker_state_snapshot", return_value=""):
         spec = _spec("run `echo hi`")
         await worker.execute(spec)
+    import json as _json
     second_call_messages = llm.sent_messages[1]
-    obs_messages = [m for m in second_call_messages if m.role == "user" and "[observation]" in m.content]
-    assert obs_messages
-    assert "[STATE]" not in obs_messages[-1].content
+    tool_results = [m for m in second_call_messages if m.role == "tool_result"]
+    assert tool_results
+    result_content = _json.loads(tool_results[-1].content).get("result", "")
+    assert "[STATE]" not in result_content
 
 
 # AC-04: TerminalWorker snapshot has required fields including file names
