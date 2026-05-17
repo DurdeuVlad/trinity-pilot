@@ -56,6 +56,7 @@ class BridgeTestHarness:
         self._log_lines: list[str] = []
         self._task_id: str | None = None
         self._bridge = WorkflowBridge(settings, db_path=db_path)
+        self._pids_at_submit: set[int] = set()  # snapshot before task starts
 
     def submit(
         self,
@@ -67,6 +68,7 @@ class BridgeTestHarness:
         self._done_event.clear()
         self._last_result = None
         self._log_lines = []
+        self._pids_at_submit = self._current_pids()
 
         def _on_log(msg: str) -> None:
             self._log_lines.append(msg)
@@ -123,8 +125,58 @@ class BridgeTestHarness:
         return record.status.value if record else None
 
     def dispose(self) -> None:
-        """Stop any running worker."""
+        """Stop any running worker and kill apps the desktop worker launched."""
         try:
             self._bridge.stop_task()
         except Exception:
             pass
+        self._kill_launched_apps()
+
+    @staticmethod
+    def _current_pids() -> set[int]:
+        try:
+            import psutil
+            return {p.pid for p in psutil.process_iter(["pid"])}
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _kill_pid(pid: int) -> None:
+        import subprocess as _sp
+        try:
+            import psutil
+            psutil.Process(pid).kill()
+        except Exception:
+            _sp.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+
+    def _kill_launched_apps(self) -> None:
+        """Kill apps the desktop worker launched.
+
+        Pass 1: kill exact PIDs recorded in evidence["launched_pids"].
+        Pass 2: after 500 ms, sweep any process whose PID wasn't present
+                before submit() was called.  This catches UWP re-spawns
+                (Windows restarts CalculatorApp.exe after it is killed)
+                and any children the worker spawned outside launch_app.
+        """
+        try:
+            import psutil  # noqa: F401
+        except ImportError:
+            return
+
+        for pid in self._collect_launched_pids():
+            self._kill_pid(pid)
+
+        import time
+        time.sleep(0.5)
+        for pid in self._current_pids() - self._pids_at_submit:
+            self._kill_pid(pid)
+
+    def _collect_launched_pids(self) -> list[int]:
+        """Extract all launched_pids from every objective's evidence in last_result."""
+        if not self._last_result:
+            return []
+        pids: list[int] = []
+        for obj_result in self._last_result.get("results", {}).values():
+            evidence = (obj_result or {}).get("evidence", {}) or {}
+            pids.extend(int(p) for p in evidence.get("launched_pids", []))
+        return pids

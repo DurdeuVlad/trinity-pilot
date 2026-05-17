@@ -103,53 +103,12 @@ def bridge_harness(qapp, e2e_settings: Settings, tmp_db_path: str):
 # Marker: desktop_available — skip if not on Windows with a visible desktop
 # ---------------------------------------------------------------------------
 
-def _snapshot_pids() -> set[int]:
-    """Return the set of all currently running PIDs."""
-    import psutil
-    return {p.pid for p in psutil.process_iter(["pid"])}
-
-
-def _kill_new_procs(before: set[int]) -> None:
-    """Kill every process whose PID wasn't present in *before*.
-
-    This catches any application the desktop worker launched during the test,
-    regardless of its name.  Uses psutil.kill() with a taskkill /F fallback
-    for UWP app-container processes that psutil cannot terminate directly.
-    """
-    import subprocess as _sp
-    import psutil
-
-    for proc in psutil.process_iter(["pid", "name"]):
-        if proc.pid in before:
-            continue
-        try:
-            proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            # UWP / protected processes need taskkill
-            name = proc.info.get("name") or ""
-            if name:
-                _sp.run(
-                    ["taskkill", "/F", "/PID", str(proc.pid)],
-                    capture_output=True,
-                )
-        except Exception:
-            pass
-
-
 @pytest.fixture()
 def desktop_available():
-    """Skip if not on a visible Windows desktop.
-
-    Snapshots all running PIDs before the test; after the test kills every
-    process that wasn't there at the start.  This automatically cleans up
-    any application the desktop worker launched, regardless of its name.
-    """
+    """Skip if not on a visible Windows desktop."""
     if sys.platform != "win32":
         pytest.skip("Desktop tests require Windows")
-    pids_before = _snapshot_pids()
     yield
-    # Teardown: kill anything the worker spawned
-    _kill_new_procs(pids_before)
 
 
 # ---------------------------------------------------------------------------

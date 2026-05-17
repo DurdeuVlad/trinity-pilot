@@ -246,3 +246,4 @@ def test_desktop_calculator(
     assert "100" in summary, (
         f"Worker summary does not confirm result is 100. summary={summary!r}"
     )
+

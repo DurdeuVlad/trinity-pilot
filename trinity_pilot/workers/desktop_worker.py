@@ -23,6 +23,15 @@ from trinity_pilot.workers.agentic_mixin import (
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
 
+def _snapshot_pids() -> set[int]:
+    """Return the set of all currently running PIDs (best-effort, never raises)."""
+    try:
+        import psutil
+        return {p.pid for p in psutil.process_iter(["pid"])}
+    except Exception:
+        return set()
+
+
 _ACTION_SYSTEM = """\
 You are a desktop automation agent on Windows.
 Given a goal, output ONLY a JSON array of action steps to accomplish it.
@@ -263,6 +272,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             "typed_text": "",
             "visible_text": "",
             "written_files": [],
+            "launched_pids": [],   # PIDs of every process spawned via launch_app
             "degraded_mode": False,
             "error": None,
         }
@@ -300,11 +310,20 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             raw_args = args.get("args", "")
             app_args = raw_args.split() if raw_args else []
             app_args = [a.replace("/", "\\") if isinstance(a, str) else a for a in app_args]
-            subprocess.Popen([app, *app_args])
+            pids_before = _snapshot_pids()
+            proc = subprocess.Popen([app, *app_args])
             wait = float(args.get("wait", 1.5))
             await asyncio.sleep(wait)
-            evidence["action_log"].append(f"Launched: {app}")
-            return f"Launched {app}"
+            # Record the direct PID plus any processes spawned during the wait
+            # window (covers UWP stubs like calc.exe that spawn CalculatorApp.exe
+            # as a separate process and then exit).
+            new_pids = _snapshot_pids() - pids_before
+            new_pids.add(proc.pid)
+            evidence.setdefault("launched_pids", []).extend(sorted(new_pids))
+            evidence["action_log"].append(
+                f"Launched: {app} (pids={sorted(new_pids)})"
+            )
+            return f"Launched {app} (pids={sorted(new_pids)})"
 
         elif tool_name == "focus_window":
             title_re = args["title_re"]
@@ -453,10 +472,16 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 if act == "launch":
                     app = step["app"]
                     args = [a.replace("/", "\\") if isinstance(a, str) else a for a in step.get("args", [])]
-                    subprocess.Popen([app, *args])
+                    pids_before = _snapshot_pids()
+                    proc = subprocess.Popen([app, *args])
                     wait = float(step.get("wait", 1.5))
                     await asyncio.sleep(wait)
-                    evidence["action_log"].append(f"Launched: {app}")
+                    new_pids = _snapshot_pids() - pids_before
+                    new_pids.add(proc.pid)
+                    evidence.setdefault("launched_pids", []).extend(sorted(new_pids))
+                    evidence["action_log"].append(
+                        f"Launched: {app} (pids={sorted(new_pids)})"
+                    )
 
                 elif act == "focus":
                     title_re = step["title_re"]
