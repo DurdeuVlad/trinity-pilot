@@ -35,6 +35,9 @@ config/secrets/
 # Runtime & temp
 _runtime/
 sessions/
+.audit-runs/
+*.pid
+example_title.txt
 trinity_pilot.db
 trinity_pilot.db-shm
 trinity_pilot.db-wal

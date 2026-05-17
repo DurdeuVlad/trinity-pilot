@@ -47,7 +47,10 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["real: mark test as requiring live environment"]
+markers = [
+    "real: mark test as requiring live environment",
+    "live_audit: live audit tests write structured skip records before skipping",
+]
 
 [tool.mypy]
 python_version = "3.11"
