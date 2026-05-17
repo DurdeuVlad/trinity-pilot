@@ -138,7 +138,7 @@ class WorkflowBridge(QObject):
 
                 provider = GeminiProvider(
                     api_key=os.environ["GEMINI_API_KEY"],
-                    model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
+                    model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash"),
                 )
                 planner = ObjectivePlanner(provider=provider)
                 loop = asyncio.new_event_loop()

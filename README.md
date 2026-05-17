@@ -40,8 +40,8 @@ Set at least `GEMINI_API_KEY` in `.env`.
 
 ```dotenv
 GEMINI_API_KEY=your-key-here
-GEMINI_PLANNER_MODEL=gemini-2.0-flash
-GEMINI_WORKER_MODEL=gemini-2.0-flash
+GEMINI_PLANNER_MODEL=gemini-2.5-flash
+GEMINI_WORKER_MODEL=gemini-2.5-flash
 DB_PATH=trinity_pilot.db
 ```
 

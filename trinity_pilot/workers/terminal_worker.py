@@ -98,7 +98,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             from trinity_pilot.llm.gemini import GeminiProvider
             llm = GeminiProvider(
                 api_key=os.environ.get("GEMINI_API_KEY", ""),
-                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
             )
         super().__init__(llm=llm)
 
@@ -348,7 +348,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
 
         provider = GeminiProvider(
             api_key=os.environ["GEMINI_API_KEY"],
-            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
         )
         response = await provider.complete(
             [LLMMessage(role="user", content=f"GOAL: {goal}\n\nGenerate the action list now.")],

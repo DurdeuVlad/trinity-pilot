@@ -26,7 +26,7 @@ def _terminal_spec() -> ObjectiveSpec:
 
 
 async def test_reviewer_returns_result_for_passing_evidence(gemini_api_key):
-    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
+    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.5-flash")
     reviewer = ObjectiveReviewer(provider=provider)
 
     evidence = {
@@ -48,7 +48,7 @@ async def test_reviewer_returns_result_for_passing_evidence(gemini_api_key):
 
 
 async def test_reviewer_returns_result_for_failing_evidence(gemini_api_key):
-    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
+    provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.5-flash")
     reviewer = ObjectiveReviewer(provider=provider)
 
     evidence = {

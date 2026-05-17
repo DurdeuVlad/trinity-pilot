@@ -19,7 +19,7 @@ async def test_real_terminal_pipeline_passes(gemini_api_key, tmp_path: Path):
     """Live Gemini plans + real echo subprocess + live reviewer → passed result."""
     task_id = str(uuid.uuid4())
 
-    planner_provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
+    planner_provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.5-flash")
     planner = ObjectivePlanner(provider=planner_provider)
 
     specs = await planner.plan("Run `echo pipeline-smoke-ok` in a terminal")
@@ -35,7 +35,7 @@ async def test_real_terminal_pipeline_passes(gemini_api_key, tmp_path: Path):
 
     assert evidence["exit_code"] == 0
 
-    reviewer_provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.0-flash")
+    reviewer_provider = GeminiProvider(api_key=gemini_api_key, model="gemini-2.5-flash")
     reviewer = ObjectiveReviewer(provider=reviewer_provider)
     result = await reviewer.review(spec=spec, evidence=evidence)
 

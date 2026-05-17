@@ -111,7 +111,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             from trinity_pilot.llm.gemini import GeminiProvider
             llm = GeminiProvider(
                 api_key=os.environ.get("GEMINI_API_KEY", ""),
-                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
             )
         super().__init__(llm=llm)
         self._page: Any = None
@@ -332,7 +332,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
 
         provider = GeminiProvider(
             api_key=os.environ["GEMINI_API_KEY"],
-            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
         )
         user_msg = (
             f"GOAL: {spec.goal}\n\n"

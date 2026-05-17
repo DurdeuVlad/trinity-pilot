@@ -15,8 +15,8 @@ class ConfigError(Exception):
 @dataclass
 class Settings:
     gemini_api_key: str
-    gemini_planner_model: str = "gemini-2.0-flash"
-    gemini_worker_model: str = "gemini-2.0-flash"
+    gemini_planner_model: str = "gemini-2.5-flash"
+    gemini_worker_model: str = "gemini-2.5-flash"
     gemini_timeout_seconds: float = 30.0
     stuck_threshold_steps: int = 5
     db_path: str = "trinity_pilot.db"
@@ -32,8 +32,8 @@ class Settings:
             load_dotenv(dotenv_path=dotenv_path, override=True)
         settings = cls(
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.0-flash"),
-            gemini_worker_model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.0-flash"),
+            gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash"),
+            gemini_worker_model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
             gemini_timeout_seconds=float(os.getenv("GEMINI_TIMEOUT_SECONDS", "30.0")),
             stuck_threshold_steps=int(os.getenv("STUCK_THRESHOLD_STEPS", "5")),
             db_path=os.getenv("DB_PATH", "trinity_pilot.db"),

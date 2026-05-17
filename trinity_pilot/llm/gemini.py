@@ -21,7 +21,7 @@ def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
         self._client = genai.Client(api_key=api_key)
         self._model_name = model
 
