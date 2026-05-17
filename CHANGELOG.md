@@ -1,5 +1,14 @@
 # Changelog
 
+## Pass 22 - Automated E2E test harness with behavioral quality assertions (2026-05-17)
+
+- Added `tests/e2e/` two-tier harness: infrastructure helpers (_scenario, _assertions, _runner, conftest) plus four test suites covering terminal, browser, desktop, and behavioral quality gates.
+- BehavioralAssertions class enforces no-hallucinated-paths, no-stale-retries, tool-sequence-sane, and cancellation-contract policies across all scenarios.
+- DirectOrchestrator fixture drives AsyncTaskOrchestrator headlessly, bypassing Qt WorkflowBridge for deterministic CI runs.
+- Production fix in `trinity_pilot/ui/bridge.py`: added `signals_queue` parameter to `_WorkerThread` / `WorkflowBridge.run()` and switched `task_finished` connections to `Qt.ConnectionType.DirectConnection` to prevent missed signals on thread exit.
+- Registered `e2e`, `desktop`, and `slow` pytest markers in `pyproject.toml`.
+- 20+ E2E test functions across 4 suites.
+
 ## Pass 21 - Async orchestration redesign, Temporal removal (2026-05-13)
 
 - Replaced Temporal workflow runtime with `AsyncTaskOrchestrator` using local asyncio execution.
