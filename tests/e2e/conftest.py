@@ -103,55 +103,53 @@ def bridge_harness(qapp, e2e_settings: Settings, tmp_db_path: str):
 # Marker: desktop_available — skip if not on Windows with a visible desktop
 # ---------------------------------------------------------------------------
 
-# Processes the desktop worker is allowed to launch during tests.
-# These are killed in teardown so they don't leak between tests.
-_DESKTOP_TEST_PROCS = {
-    "notepad.exe",
-    "calc.exe",
-    "calculatorapp.exe",   # Win10/11 modern Calculator (lowercase for case-insensitive match)
-    "mspaint.exe",
-    "wordpad.exe",
-    "write.exe",
-}
+def _snapshot_pids() -> set[int]:
+    """Return the set of all currently running PIDs."""
+    import psutil
+    return {p.pid for p in psutil.process_iter(["pid"])}
 
 
-def _kill_desktop_test_procs() -> None:
-    """Kill any known desktop-test processes still running.
+def _kill_new_procs(before: set[int]) -> None:
+    """Kill every process whose PID wasn't present in *before*.
 
-    Uses psutil first; falls back to `taskkill /F /IM <name>` for UWP apps
-    (e.g. CalculatorApp.exe) that psutil cannot terminate due to app-container
-    sandboxing.
+    This catches any application the desktop worker launched during the test,
+    regardless of its name.  Uses psutil.kill() with a taskkill /F fallback
+    for UWP app-container processes that psutil cannot terminate directly.
     """
     import subprocess as _sp
     import psutil
 
-    killed: set[str] = set()
-    for proc in psutil.process_iter(["name", "pid"]):
+    for proc in psutil.process_iter(["pid", "name"]):
+        if proc.pid in before:
+            continue
         try:
-            name = (proc.info["name"] or "").lower()
-            if name in _DESKTOP_TEST_PROCS:
-                try:
-                    proc.kill()
-                    killed.add(proc.info["name"])
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    # Fallback: taskkill handles UWP sandbox processes
-                    _sp.run(
-                        ["taskkill", "/F", "/IM", proc.info["name"]],
-                        capture_output=True,
-                    )
-                    killed.add(proc.info["name"])
+            proc.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # UWP / protected processes need taskkill
+            name = proc.info.get("name") or ""
+            if name:
+                _sp.run(
+                    ["taskkill", "/F", "/PID", str(proc.pid)],
+                    capture_output=True,
+                )
+        except Exception:
             pass
 
 
 @pytest.fixture()
 def desktop_available():
-    """Skip if not on a visible Windows desktop. Kill test apps on teardown."""
+    """Skip if not on a visible Windows desktop.
+
+    Snapshots all running PIDs before the test; after the test kills every
+    process that wasn't there at the start.  This automatically cleans up
+    any application the desktop worker launched, regardless of its name.
+    """
     if sys.platform != "win32":
         pytest.skip("Desktop tests require Windows")
+    pids_before = _snapshot_pids()
     yield
-    # Teardown: kill any apps the worker opened during the test
-    _kill_desktop_test_procs()
+    # Teardown: kill anything the worker spawned
+    _kill_new_procs(pids_before)
 
 
 # ---------------------------------------------------------------------------
