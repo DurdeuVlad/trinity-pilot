@@ -136,7 +136,9 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
     def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
         url = evidence.get("page_url") or "about:blank"
         title = evidence.get("page_title") or "unknown"
-        return f"current_url={url}\npage_title={title}"
+        status = evidence.get("page_http_status")
+        status_str = str(status) if status is not None else "unknown"
+        return f"current_url={url}\npage_title={title}\npage_status={status_str}"
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
@@ -221,9 +223,11 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
 
         if tool_name == "navigate":
             url = args["url"]
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             evidence["page_url"] = page.url
-            return f"Navigated to {url}"
+            evidence["page_http_status"] = response.status if response is not None else None
+            status_info = f" (HTTP {response.status})" if response is not None else ""
+            return f"Navigated to {url}{status_info}"
 
         elif tool_name == "click":
             selector = args["selector"]

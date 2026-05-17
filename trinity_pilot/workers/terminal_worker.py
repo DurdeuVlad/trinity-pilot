@@ -121,16 +121,35 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
         exit_code = evidence.get("exit_code")
         action_log = evidence.get("action_log", [])
         last_action = action_log[-1] if action_log else "none"
+
+        # File listing: names up to cap, overflow summary
+        _FILE_CAP = 20
         try:
-            file_count = len(os.listdir(workspace)) if workspace else 0
+            names = sorted(os.listdir(workspace)) if workspace else []
         except OSError:
-            file_count = 0
-        return "\n".join([
+            names = []
+        if len(names) > _FILE_CAP:
+            overflow = len(names) - _FILE_CAP
+            files_str = f"[{', '.join(names[:_FILE_CAP])}, ...+{overflow} more]"
+        else:
+            files_str = f"[{', '.join(names)}]"
+
+        lines = [
             f"workspace={workspace}",
             f"exit_code={exit_code}",
-            f"files_in_workspace={file_count}",
+            f"files={files_str}",
             f"last_action={last_action}",
-        ])
+        ]
+
+        # stdout/stderr snippets (last 200 chars each, only when non-empty)
+        stdout = evidence.get("stdout", "")
+        if stdout:
+            lines.append(f"last_stdout={stdout[-200:]!r}")
+        stderr = evidence.get("stderr", "")
+        if stderr:
+            lines.append(f"last_stderr={stderr[-200:]!r}")
+
+        return "\n".join(lines)
 
     def _worker_tools(self) -> list[genai_types.Tool]:
         return [_make_tool([_run_command_decl, _write_file_decl, _finish_decl, _report_blocking_decl])]

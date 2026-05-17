@@ -207,7 +207,38 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         active = self._get_active_window_title() or "unknown"
         action_log = evidence.get("action_log", [])
         last_action = action_log[-1] if action_log else "none"
-        return f"active_window={active!r}\nlast_action={last_action}"
+        windows = self._get_open_windows()
+        windows_str = f"[{', '.join(windows)}]" if windows else "[]"
+        return "\n".join([
+            f"active_window={active!r}",
+            f"open_windows={windows_str}",
+            f"last_action={last_action}",
+        ])
+
+    @staticmethod
+    def _get_open_windows() -> list[str]:
+        """Enumerate visible top-level window titles (Windows only, caps at 10)."""
+        _WIN_CAP = 10
+        try:
+            import ctypes
+            titles: list[str] = []
+
+            def _callback(hwnd: int, _: int) -> bool:
+                if ctypes.windll.user32.IsWindowVisible(hwnd):
+                    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title = buf.value.strip()
+                        if title:
+                            titles.append(title)
+                return True
+
+            _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+            ctypes.windll.user32.EnumWindows(_WNDENUMPROC(_callback), 0)
+            return titles[:_WIN_CAP]
+        except Exception:
+            return []
 
     @staticmethod
     def _get_active_window_title() -> str | None:

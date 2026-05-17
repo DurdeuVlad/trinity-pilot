@@ -93,7 +93,7 @@ async def test_no_state_injected_when_snapshot_empty():
     assert "[STATE]" not in obs_messages[-1].content
 
 
-# AC-04: TerminalWorker snapshot has required fields
+# AC-04: TerminalWorker snapshot has required fields including file names
 def test_terminal_snapshot_fields():
     w = TerminalWorker(llm=_FinishLLM())
     evidence = {
@@ -101,40 +101,99 @@ def test_terminal_snapshot_fields():
         "exit_code": 0,
         "action_log": ["run_command: exit=0 cmd=echo hi"],
         "stdout": "hi",
+        "stderr": "",
     }
     snap = w._worker_state_snapshot(evidence)
     assert "workspace=C:/tmp/ws" in snap
     assert "exit_code=0" in snap
-    assert "files_in_workspace=" in snap
+    assert "files=[" in snap          # names list, not count
     assert "last_action=" in snap
 
 
-# AC-05: BrowserWorker snapshot has URL and title
+# AC-08: Terminal snapshot includes last_stdout when stdout non-empty
+def test_terminal_snapshot_includes_stdout():
+    w = TerminalWorker(llm=_FinishLLM())
+    evidence = {
+        "workspace": "",
+        "exit_code": 0,
+        "action_log": [],
+        "stdout": "hello world",
+        "stderr": "",
+    }
+    snap = w._worker_state_snapshot(evidence)
+    assert "last_stdout=" in snap
+    assert "hello world" in snap
+
+
+# AC-09: Terminal snapshot omits last_stdout when stdout empty
+def test_terminal_snapshot_omits_empty_stdout():
+    w = TerminalWorker(llm=_FinishLLM())
+    evidence = {
+        "workspace": "",
+        "exit_code": None,
+        "action_log": [],
+        "stdout": "",
+        "stderr": "",
+    }
+    snap = w._worker_state_snapshot(evidence)
+    assert "last_stdout" not in snap
+    assert "last_stderr" not in snap
+
+
+# AC-10: Terminal snapshot caps file list at 20 with overflow indicator
+def test_terminal_snapshot_file_cap():
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(25):
+            open(os.path.join(tmp, f"file{i:02d}.txt"), "w").close()
+        w = TerminalWorker(llm=_FinishLLM())
+        evidence = {"workspace": tmp, "exit_code": None, "action_log": [], "stdout": "", "stderr": ""}
+        snap = w._worker_state_snapshot(evidence)
+    assert "...+5 more]" in snap
+
+
+# AC-05: BrowserWorker snapshot has URL, title, and HTTP status
 def test_browser_snapshot_fields():
     w = BrowserWorker(llm=_FinishLLM())
-    evidence = {"page_url": "https://example.com", "page_title": "Example Domain"}
+    evidence = {
+        "page_url": "https://example.com",
+        "page_title": "Example Domain",
+        "page_http_status": 200,
+    }
     snap = w._worker_state_snapshot(evidence)
     assert "current_url=https://example.com" in snap
     assert "page_title=Example Domain" in snap
+    assert "page_status=200" in snap
 
 
-# AC-05b: BrowserWorker snapshot defaults to about:blank when no URL
+# AC-05b: BrowserWorker snapshot defaults to about:blank / unknown / unknown status
 def test_browser_snapshot_defaults():
     w = BrowserWorker(llm=_FinishLLM())
     snap = w._worker_state_snapshot({})
     assert "about:blank" in snap
     assert "unknown" in snap
+    assert "page_status=unknown" in snap
 
 
-# AC-06: DesktopWorker snapshot has active_window and last_action
+# AC-06: DesktopWorker snapshot has active_window, open_windows, and last_action
 def test_desktop_snapshot_fields():
     w = DesktopWorker(llm=_FinishLLM())
     evidence = {"action_log": ["Launched: notepad.exe"]}
-    with patch.object(DesktopWorker, "_get_active_window_title", return_value="Notepad"):
+    with patch.object(DesktopWorker, "_get_active_window_title", return_value="Notepad"), \
+         patch.object(DesktopWorker, "_get_open_windows", return_value=["Notepad", "Task Manager"]):
         snap = w._worker_state_snapshot(evidence)
     assert "active_window=" in snap
     assert "Notepad" in snap
+    assert "open_windows=" in snap
+    assert "Task Manager" in snap
     assert "last_action=Launched: notepad.exe" in snap
+
+
+# AC-11: DesktopWorker _get_open_windows returns empty list on non-Windows (no ctypes.windll)
+def test_desktop_get_open_windows_safe_on_non_windows():
+    with patch("ctypes.windll", side_effect=AttributeError("no windll")):
+        result = DesktopWorker._get_open_windows()
+    assert result == []
 
 
 # AC-07: finish tool exits loop before snapshot is called
