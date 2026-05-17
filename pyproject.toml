@@ -50,6 +50,9 @@ asyncio_mode = "auto"
 markers = [
     "real: mark test as requiring live environment",
     "live_audit: live audit tests write structured skip records before skipping",
+    "e2e: end-to-end tests requiring live orchestrator",
+    "desktop: requires visible Windows desktop",
+    "slow: long-running scenarios",
 ]
 
 [tool.mypy]

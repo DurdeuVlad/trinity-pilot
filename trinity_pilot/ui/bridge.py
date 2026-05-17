@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal
 
 from trinity_pilot.config import Settings
 from trinity_pilot.core.types import ObjectiveSpec, TaskRecord, TaskStatus
@@ -24,6 +24,7 @@ class _WorkerThread(QThread):
         settings: Settings,
         db_path: str,
         objectives: list[ObjectiveSpec] | None = None,
+        signals_queue: asyncio.Queue | None = None,
     ) -> None:
         super().__init__()
         self._user_request = user_request
@@ -31,6 +32,7 @@ class _WorkerThread(QThread):
         self._settings = settings
         self._db_path = db_path
         self._objectives = objectives
+        self._signals: asyncio.Queue | None = signals_queue
         self._loop: asyncio.AbstractEventLoop | None = None
         self._orchestrator: AsyncTaskOrchestrator | None = None
         self._cancel_requested = False
@@ -51,6 +53,7 @@ class _WorkerThread(QThread):
         self._orchestrator = AsyncTaskOrchestrator(
             self._settings,
             db_path=self._db_path,
+            signals=self._signals,
         )
         if self._cancel_requested:
             self._orchestrator.cancel()
@@ -90,6 +93,7 @@ class WorkflowBridge(QObject):
         on_status: Callable[[str], None] | None = None,
         on_done: Callable[[dict[str, Any]], None] | None = None,
         objectives: list[dict] | None = None,
+        signals_queue: asyncio.Queue | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())
         objective_specs = [ObjectiveSpec.from_dict(o) for o in objectives] if objectives else []
@@ -107,6 +111,7 @@ class WorkflowBridge(QObject):
             self._settings,
             self._store_path,
             objective_specs or None,
+            signals_queue,
         )
         if on_log:
             self._worker.log_message.connect(on_log)
@@ -114,9 +119,13 @@ class WorkflowBridge(QObject):
             self._worker.status_changed.connect(on_status)
         if on_done:
             self._worker.task_finished.connect(
-                lambda tid, result: on_done(result)
+                lambda tid, result: on_done(result),
+                Qt.ConnectionType.DirectConnection,
             )
-        self._worker.task_finished.connect(self._on_worker_finished)
+        self._worker.task_finished.connect(
+            self._on_worker_finished,
+            Qt.ConnectionType.DirectConnection,
+        )
         self._worker.start()
         return task_id
 
