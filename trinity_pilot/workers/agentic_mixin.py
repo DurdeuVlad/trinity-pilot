@@ -257,11 +257,14 @@ class AgenticWorkerMixin:
             tool_name: str = tool_call["name"]
             args: dict[str, Any] = tool_call.get("args", {})
 
-            # Emit proper FunctionCall part (model turn) — NOT "[tool_call]:" text
+            # Emit proper FunctionCall part (model turn) — NOT "[tool_call]:" text.
+            # Attach raw_provider_content so GeminiProvider can replay the original
+            # Content object verbatim (preserving thought_signature for 2.5+ models).
             messages.append(
                 LLMMessage(
                     role="tool_call",
                     content=json.dumps({"name": tool_name, "args": args}),
+                    raw_provider_content=getattr(response, "raw_model_content", None),
                 )
             )
 

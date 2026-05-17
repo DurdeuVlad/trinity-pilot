@@ -9,6 +9,11 @@ from typing import Any
 class LLMMessage:
     role: str  # "user" | "model" | "system"
     content: str
+    # Optional provider-specific raw object.  GeminiProvider uses this to store
+    # the original Content object for "tool_call" turns so that thought_signature
+    # (required by Gemini 2.5+ thinking models) is replayed verbatim without any
+    # re-serialisation loss.
+    raw_provider_content: Any = None
 
 
 @dataclass
@@ -17,6 +22,9 @@ class LLMResponse:
     raw: Any = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     token_count: int = 0
+    # Provider-specific raw model Content object (e.g. Gemini Content).
+    # Carried through so agentic_mixin can attach it to LLMMessage.raw_provider_content.
+    raw_model_content: Any = None
 
 
 class LLMProvider(ABC):

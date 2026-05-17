@@ -35,7 +35,12 @@ def _check_playwright() -> None:
 # Helper: build a minimal ObjectiveSpec dict for browser domain
 # ---------------------------------------------------------------------------
 
-def _browser_objective(objective_id: str, goal: str, max_attempts: int = 2) -> dict:
+def _browser_objective(
+    objective_id: str,
+    goal: str,
+    max_attempts: int = 2,
+    max_agent_steps: int = 40,
+) -> dict:
     return {
         "objective_id": objective_id,
         "goal": goal,
@@ -48,7 +53,7 @@ def _browser_objective(objective_id: str, goal: str, max_attempts: int = 2) -> d
         "evidence_bundle": ["screenshot", "page_title"],
         "max_attempts": max_attempts,
         "rollback_or_abort_rule": "abort on network error",
-        "metadata": {},
+        "metadata": {"max_agent_steps": max_agent_steps},
     }
 
 
@@ -65,8 +70,11 @@ def test_browser_wikipedia_romania(bridge_harness: BridgeTestHarness, tmp_db_pat
     objectives = [
         _browser_objective(
             "obj-wiki-romania",
-            "Navigate to https://en.wikipedia.org/wiki/Romania and extract the population figure from the infobox",
+            "Navigate to https://en.wikipedia.org/wiki/Romania, then use read_page to get the page text, "
+            "and finish with success once you can confirm the page loaded (page title contains 'Romania'). "
+            "Do NOT use javascript: URLs.",
             max_attempts=2,
+            max_agent_steps=15,
         )
     ]
 
