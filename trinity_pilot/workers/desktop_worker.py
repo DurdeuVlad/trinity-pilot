@@ -75,6 +75,12 @@ Available tools:
 - report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
 CRITICAL RULES:
+- ALWAYS call focus_window BEFORE type_text, press_key, or press_hotkey.
+  The system automatically re-focuses the last focused window before sending
+  input, but you MUST still call focus_window at least once to declare which
+  window should receive input. Without it, keystrokes may go to the wrong app.
+- After launch_app, ALWAYS call focus_window with a title_re that matches the
+  launched application before sending any keystrokes.
 - ALWAYS use write_file to save content to disk. NEVER use GUI save dialogs.
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
@@ -183,6 +189,10 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
             )
         super().__init__(llm=llm)
+        # Title-regex of the window the agent last asked to focus.
+        # Re-asserted automatically before every input tool so keystrokes
+        # never land in a random foreground window.
+        self._target_window: str | None = None
 
     def _worker_system_prompt(self) -> str:
         return _DESKTOP_AGENT_SYSTEM
@@ -262,6 +272,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             return None
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
+        self._target_window = None  # reset per-objective; no cross-contamination
         evidence: dict[str, Any] = {
             "domain": "desktop",
             "objective_id": spec.objective_id,
@@ -328,20 +339,16 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         elif tool_name == "focus_window":
             title_re = args["title_re"]
             wait = float(args.get("wait", 0.5))
-            try:
-                from pywinauto import Application
-                app = Application(backend="uia").connect(title_re=title_re, timeout=5)
-                win = app.top_window()
-                win.set_focus()
-            except Exception:
-                pass
+            focused = await self._focus_window(title_re, evidence)
+            if focused:
+                self._target_window = title_re
             await asyncio.sleep(wait)
-            evidence["action_log"].append(f"Focused: {title_re}")
             return f"Focused window: {title_re}"
 
         elif tool_name == "type_text":
             text = args["text"]
             interval = float(args.get("interval", 0.03))
+            await self._ensure_target_focused(evidence)
             await self._type_text(text, interval, evidence)
             await asyncio.sleep(0.1)
             evidence["typed_text"] = evidence.get("typed_text", "") + text
@@ -351,6 +358,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         elif tool_name == "press_hotkey":
             keys_str = args["keys"]
             keys = [k.strip() for k in keys_str.split(",")]
+            await self._ensure_target_focused(evidence)
             await self._hotkey(keys, evidence)
             await asyncio.sleep(0.3)
             evidence["action_log"].append(f"Hotkey: {keys_str}")
@@ -358,6 +366,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
         elif tool_name == "press_key":
             key = args["key"]
+            await self._ensure_target_focused(evidence)
             await self._press_key(key, evidence)
             await asyncio.sleep(0.2)
             evidence["action_log"].append(f"Press: {key}")
@@ -537,8 +546,40 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             except Exception as exc:
                 evidence["action_log"].append(f"Action '{act}' failed: {exc}")
 
-    @staticmethod
-    async def _type_text(text: str, interval: float, evidence: dict[str, Any]) -> None:
+    async def _focus_window(self, title_re: str, evidence: dict[str, Any]) -> bool:
+        """Focus a window by title regex. Returns True on success."""
+        try:
+            from pywinauto import Application
+            app = Application(backend="uia").connect(title_re=title_re, timeout=5)
+            win = app.top_window()
+            win.set_focus()
+            await asyncio.sleep(0.3)
+            evidence["action_log"].append(f"Focused: {title_re}")
+            return True
+        except Exception as exc:
+            evidence["action_log"].append(f"focus_window failed ({title_re}): {exc}")
+            return False
+
+    async def _ensure_target_focused(self, evidence: dict[str, Any]) -> None:
+        """Re-assert focus on the last declared target window before sending input.
+
+        Called automatically before every type_text / press_key / press_hotkey
+        so keystrokes always land in the intended application even if something
+        else grabbed focus in between steps.
+        """
+        if not self._target_window:
+            return  # no target declared yet — trust whatever has focus
+        try:
+            active = self._get_active_window_title() or ""
+            import re as _re
+            if _re.search(self._target_window, active, _re.IGNORECASE):
+                return  # already focused — nothing to do
+            # Focus drifted — re-assert
+            await self._focus_window(self._target_window, evidence)
+        except Exception:
+            pass  # best-effort; don't block the input operation
+
+    async def _type_text(self, text: str, interval: float, evidence: dict[str, Any]) -> None:
         try:
             from pywinauto.keyboard import send_keys
             send_keys(text, pause=interval, with_spaces=True, with_tabs=True, with_newlines=True)
@@ -552,8 +593,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         pyautogui.write(text, interval=interval)
         evidence["action_log"].append("Typed via PyAutoGUI fallback")
 
-    @staticmethod
-    async def _hotkey(keys: list[str], evidence: dict[str, Any]) -> None:
+    async def _hotkey(self, keys: list[str], evidence: dict[str, Any]) -> None:
         try:
             from pywinauto.keyboard import send_keys
             modifier_map = {"ctrl": "^", "control": "^", "alt": "%", "shift": "+"}
@@ -570,8 +610,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         pyautogui.hotkey(*keys)
         evidence["action_log"].append("Hotkey via PyAutoGUI fallback")
 
-    @staticmethod
-    async def _press_key(key: str, evidence: dict[str, Any]) -> None:
+    async def _press_key(self, key: str, evidence: dict[str, Any]) -> None:
         try:
             from pywinauto.keyboard import send_keys
             key_name = key.upper()
