@@ -1,0 +1,30 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
+flowchart LR
+    classDef sense  fill:#0d1a2b,stroke:#00aaff,stroke-width:3px,color:#60c8ff
+    classDef think  fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+    classDef act    fill:#0d1433,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
+    classDef obs    fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
+    classDef ok     fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
+    classDef fail   fill:#2b0d1a,stroke:#ff2d78,stroke-width:3px,color:#ff2d78
+
+    S["👁  SENSE\nstate snapshot\n+ evidence dict\n+ screen / stdout"]:::sense
+
+    T["🧠  LLM CALL\nGemini reads full state\ndecides next action"]:::think
+
+    A["🔧  TOOL CALL\nrun_command\nnavigate / click\nlaunch_app / type_text"]:::act
+
+    O["📥  OBSERVE\nappend result\nto evidence dict"]:::obs
+
+    DONE(["✅  DONE\nreturn evidence"]):::ok
+    FAIL(["❌  FAILED\nstep budget hit\nor blocker"]):::fail
+
+    S --> T
+    T -->|tool_call| A
+    A --> O
+    O -->|next iteration| S
+    T -->|finish_success| DONE
+    T -->|finish_failure| FAIL
+
+    linkStyle 3 stroke:#7b2fff,stroke-width:2px,stroke-dasharray:6
+    linkStyle 4 stroke:#00ff88,stroke-width:2px
+    linkStyle 5 stroke:#ff2d78,stroke-width:2px

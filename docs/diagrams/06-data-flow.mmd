@@ -1,18 +1,27 @@
+%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
 flowchart TD
-    A["📝 user_request\n(string)"]
+    classDef input  fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
+    classDef spec   fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+    classDef evid   fill:#0d1a2b,stroke:#00aaff,stroke-width:3px,color:#60c8ff
+    classDef review fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
+    classDef db     fill:#2b1a0d,stroke:#ffe600,stroke-width:3px,color:#ffe600
 
-    A -->|ObjectivePlanner| B
+    A["📝  user_request\nplain text string"]:::input
 
-    B["📋 ObjectiveSpec\n─────────────\nobjective_id\ngoal\ndomain\nrequired_capabilities\nrisk_class  ·  max_attempts\nsuccess_tests  ·  evidence_bundle"]
+    B["📋  ObjectiveSpec\ngoal · domain · risk_class\nsuccess_tests · max_attempts"]:::spec
 
-    B -->|Worker executes| C
+    C["🗂  Evidence Dict\nstdout · screenshot\naction_log · launched_pids\nwritten_files"]:::evid
 
-    C["🗂 Evidence Dict\n─────────────\nstdout / stderr\nscreenshot bytes\naction_log\nlaunched_pids\nwritten_files\nerror"]
+    D["🔍  ReviewResult\npassed: bool\nfailure_reason\nsteering_message"]:::review
 
-    C -->|Reviewer checks| D
+    E["💾  TaskRecord\ntask_id · status\nobjective results · evidence"]:::db
 
-    D["✅ ReviewResult\n─────────────\npassed: bool\nfailure_reason\nsteering_message"]
-
+    A -->|Planner LLM| B
+    B -->|Worker ReAct loop| C
+    C -->|Reviewer LLM| D
     D -->|Orchestrator persists| E
 
-    E["💾 TaskRecord + DB\n─────────────\ntask_id\nstatus: RUNNING → DONE\nobjective results\nevidence"]
+    linkStyle 0 stroke:#7b2fff,stroke-width:2px
+    linkStyle 1 stroke:#00aaff,stroke-width:2px
+    linkStyle 2 stroke:#00ff88,stroke-width:2px
+    linkStyle 3 stroke:#ffe600,stroke-width:2px

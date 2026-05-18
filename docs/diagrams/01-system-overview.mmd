@@ -1,47 +1,36 @@
-graph TB
-    subgraph UI["UI Layer (PySide6 / Qt)"]
-        MW[MainWindow]
-        WB[WorkflowBridge]
-        WT[_WorkerThread\nasyncio loop in QThread]
+%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
+flowchart TD
+    classDef ui     fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
+    classDef orch   fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+    classDef worker fill:#0d1a2b,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
+    classDef llm    fill:#2b1a00,stroke:#ffe600,stroke-width:3px,color:#ffe600
+    classDef db     fill:#0d2b1a,stroke:#00ff88,stroke-width:2px,color:#00ff88
+
+    U(["👤  User\nplain text request"]):::ui
+
+    B["🖥  Qt Desktop UI\nWorkflowBridge"]:::ui
+
+    O["⚙️  Orchestrator\nbreaks task → runs objectives in order"]:::orch
+
+    subgraph W ["  Workers — each runs a ReAct loop  "]
+        W1["💻  Terminal"]:::worker
+        W2["🌐  Browser"]:::worker
+        W3["🖱  Desktop GUI"]:::worker
     end
 
-    subgraph Orchestration["Orchestration Layer"]
-        PL[ObjectivePlanner\nbreaks task into objectives]
-        OR[AsyncTaskOrchestrator\nruns objectives in order]
-        RV[Reviewer\npass / fail / steer]
-    end
+    LLM["✨  Gemini 2.5-flash\nall reasoning happens here"]:::llm
 
-    subgraph Workers["Domain Workers  —  ReAct Loop"]
-        TW[TerminalWorker\nshell / PowerShell]
-        BW[BrowserWorker\nPlaywright]
-        DW[DesktopWorker\npywinauto / pyautogui]
-    end
+    R["🔍  Reviewer\npass · retry · steer"]:::orch
 
-    subgraph LLM["LLM Layer"]
-        GM[GeminiProvider\ngemini-2.5-flash]
-    end
+    DB[("💾  SQLite\ntask history")]:::db
 
-    subgraph Memory["Memory Layer"]
-        TS[TaskStore\nSQLite]
-        OS[ObjectiveStateStore\nSQLite]
-    end
-
-    subgraph Signals["Signal Bus  asyncio.Queue"]
-        SG[ObjectiveDone\nObjectiveFailed\nStuckSignal\nSteeringMessage\nBudgetWarning]
-    end
-
-    MW -->|user submits task| WB
-    WB -->|start_task| WT
-    WT -->|run| OR
-    OR -->|plan| PL
-    PL -->|LLM call| GM
-    PL -->|ObjectiveSpec list| OR
-    OR -->|dispatch objective| TW & BW & DW
-    TW & BW & DW -->|LLM calls| GM
-    TW & BW & DW -->|evidence dict| RV
-    RV -->|LLM call| GM
-    RV -->|pass / fail / steer| OR
-    OR -->|write status| TS & OS
-    OR -->|emit| SG
-    SG -->|forwarded| WB
-    WB -->|on_done callback| MW
+    U -->|types task| B
+    B -->|start| O
+    O -->|objective| W1 & W2 & W3
+    W1 & W2 & W3 <-->|sense / tool call| LLM
+    W1 & W2 & W3 -->|evidence| R
+    R <-->|grade| LLM
+    R -->|pass / fail| O
+    O -->|save| DB
+    O -->|result| B
+    B -->|shows result| U
