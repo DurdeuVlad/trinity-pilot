@@ -106,7 +106,7 @@ async def _call_tool_jsonrpc(tool_name: str, args: dict) -> dict | list:
     response = _recv()
 
     proc.stdin.close()
-    proc.wait(timeout=10)
+    proc.wait(timeout=600)  # tasks can take minutes
 
     if "error" in response:
         return {"error": response["error"].get("message", "unknown"), "error_code": "RPC_ERROR"}
@@ -373,8 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_start = sub.add_parser("start-ui", help="Launch the Trinity Pilot UI application")
     p_start.add_argument(
         "--app-module",
-        default="trinity_pilot.ui.app",
-        help="Python module to run as the UI (default: trinity_pilot.ui.app)",
+        default="trinity_pilot",
+        help="Python module to run as the UI (default: trinity_pilot)",
     )
     p_start.add_argument(
         "--pid-file",

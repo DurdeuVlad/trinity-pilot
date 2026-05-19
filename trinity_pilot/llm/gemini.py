@@ -48,21 +48,35 @@ def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
             contents.append(genai_types.Content(role="model", parts=parts))
         elif msg.role == "tool_result":
             data = json.loads(msg.content)
-            contents.append(genai_types.Content(
-                role="user",
-                parts=[genai_types.Part(
+            tool_parts: list[genai_types.Part] = [
+                genai_types.Part(
                     function_response=genai_types.FunctionResponse(
                         name=data["name"],
                         response={"result": data["result"]},
                     )
-                )]
-            ))
+                )
+            ]
+            # Attach inline image when the tool result carries one (e.g. take_screenshot).
+            # This lets the LLM see the screen and read values like Calculator display.
+            if msg.image_data:
+                tool_parts.append(genai_types.Part(
+                    inline_data=genai_types.Blob(
+                        mime_type=msg.image_mime,
+                        data=msg.image_data,
+                    )
+                ))
+            contents.append(genai_types.Content(role="user", parts=tool_parts))
         else:
             role = "model" if msg.role == "model" else "user"
-            contents.append(genai_types.Content(
-                role=role,
-                parts=[genai_types.Part(text=msg.content)]
-            ))
+            parts: list[genai_types.Part] = [genai_types.Part(text=msg.content)]
+            if msg.image_data:
+                parts.append(genai_types.Part(
+                    inline_data=genai_types.Blob(
+                        mime_type=msg.image_mime,
+                        data=msg.image_data,
+                    )
+                ))
+            contents.append(genai_types.Content(role=role, parts=parts))
     return contents
 
 
@@ -79,7 +93,7 @@ class GeminiProvider(LLMProvider):
         self,
         messages: list[LLMMessage],
         system: str = "",
-        timeout: float = 30.0,
+        timeout: float = 120.0,
     ) -> LLMResponse:
         if not messages:
             raise ValueError("messages must not be empty")
@@ -88,21 +102,40 @@ class GeminiProvider(LLMProvider):
         config = genai_types.GenerateContentConfig(
             system_instruction=system if system else None,
         )
-        coro = self._client.aio.models.generate_content(
-            model=self._model_name,
-            contents=contents,
-            config=config,
+        # Run in thread so asyncio.wait_for can reliably cancel if needed.
+        # google-genai's async client holds HTTP connections open (SSE/chunked),
+        # which prevents the event loop from processing cancellations.
+        loop = asyncio.get_event_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=contents,
+                    config=config,
+                ),
+            ),
+            timeout=timeout,
         )
-        response = await asyncio.wait_for(coro, timeout=timeout)
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
-        return LLMResponse(content=response.text, raw=response, token_count=token_count)
+        # For thinking models (gemini-2.5-pro etc.) response.text may raise ValueError
+        # when the response contains thought parts. Extract only non-thought text parts.
+        text = ""
+        try:
+            text = response.text or ""
+        except Exception:
+            if hasattr(response, "candidates") and response.candidates:
+                for part in (getattr(response.candidates[0].content, "parts", None) or []):
+                    if not getattr(part, "thought", False):
+                        text += getattr(part, "text", "") or ""
+        return LLMResponse(content=text, raw=response, token_count=token_count)
 
     async def complete_with_tools(
         self,
         messages: list[LLMMessage],
         tools: list[dict[str, Any]],
         system: str = "",
-        timeout: float = 30.0,
+        timeout: float = 120.0,
     ) -> LLMResponse:
         if not messages:
             raise ValueError("messages must not be empty")
@@ -112,12 +145,18 @@ class GeminiProvider(LLMProvider):
             system_instruction=system if system else None,
             tools=tools,
         )
-        coro = self._client.aio.models.generate_content(
-            model=self._model_name,
-            contents=contents,
-            config=config,
+        loop = asyncio.get_event_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=contents,
+                    config=config,
+                ),
+            ),
+            timeout=timeout,
         )
-        response = await asyncio.wait_for(coro, timeout=timeout)
 
         tool_calls: list[dict[str, Any]] = []
         raw_model_content: Any = None
@@ -131,7 +170,13 @@ class GeminiProvider(LLMProvider):
         # "non-text parts in response: ['function_call']"
         text = ""
         if not tool_calls:
-            text = getattr(response, "text", "") or ""
+            try:
+                text = response.text or ""
+            except Exception:
+                if hasattr(response, "candidates") and response.candidates:
+                    for part in (getattr(response.candidates[0].content, "parts", None) or []):
+                        if not getattr(part, "thought", False):
+                            text += getattr(part, "text", "") or ""
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
         return LLMResponse(
             content=text,

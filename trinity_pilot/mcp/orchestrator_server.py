@@ -76,44 +76,30 @@ _RUNNING: dict[str, AsyncTaskOrchestrator] = {}
 
 @mcp.tool()
 async def submit_task(user_request: str, task_id: str | None = None) -> dict:
-    """Submit a new task to the local asyncio orchestration engine."""
+    """Submit a task to the orchestration engine and block until it completes.
+
+    Runs synchronously within the MCP call so the subprocess stays alive for
+    the full duration of the task.  The caller (app_control_cli) can simply
+    wait for this tool to return rather than polling stream-events separately.
+    """
     if task_id is None:
         task_id = str(uuid.uuid4())
 
-    # Persist in SQLite
     try:
-        task_store, _ = _get_stores()
-        task_store.save_task(
-            TaskRecord(
-                task_id=task_id,
-                user_request=user_request,
-                objectives=[],
-                status=TaskStatus.RUNNING,
-            )
-        )
         orchestrator = AsyncTaskOrchestrator(_settings)
         _RUNNING[task_id] = orchestrator
-
-        async def _run() -> None:
-            try:
-                await orchestrator.run(user_request, task_id=task_id)
-            finally:
-                _RUNNING.pop(task_id, None)
-
-        import asyncio
-
-        asyncio.create_task(_run())
+        try:
+            result = await orchestrator.run(user_request, task_id=task_id)
+        finally:
+            _RUNNING.pop(task_id, None)
     except Exception as exc:
         return _error(
-            "DB_WRITE_FAILED",
-            f"Task start failed: {exc}",
+            "TASK_FAILED",
+            f"Task execution failed: {exc}",
             task_id,
         )
 
-    return {
-        "task_id": task_id,
-        "status": "running",
-    }
+    return result
 
 
 # ---------------------------------------------------------------------------
