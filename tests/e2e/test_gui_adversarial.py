@@ -43,7 +43,7 @@ class TestVague:
     def test_vague_triggers_clarification(self, app, prompt, label):
         """Vague prompt → status must be 'Awaiting clarification', not 'Awaiting confirmation'."""
         app.submit(prompt)
-        status = app.wait_for(AFTER_SUBMIT, timeout=90)
+        status = app.wait_for(AFTER_SUBMIT, timeout=120)
         app.snap(f"adv_vag_{label}")
 
         assert status == STATUS_CLARIF, (

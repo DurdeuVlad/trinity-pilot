@@ -90,3 +90,6 @@ ai-workspace/
 desktop.ini
 $RECYCLE.BIN/
 nul
+
+# Crash / fault artefacts (generated at runtime, not source)
+crashes/

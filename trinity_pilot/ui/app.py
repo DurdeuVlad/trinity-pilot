@@ -39,6 +39,13 @@ class _PlanningRelay(QObject):
     error = Signal(str)
 
 
+class _ClarificationRelay(QObject):
+    """Marshals clarification-check results back to the Qt main thread."""
+    question = Signal(str)   # clarification needed — emit the question
+    clear = Signal()         # task is specific enough — proceed to planning
+
+
+
 class _DebugDrawer(QWidget):
     """Read-only state inspector panel. Shows ChatState, pending specs, request, progress."""
 
@@ -100,6 +107,11 @@ class MainWindow(QMainWindow):
         self._planning_relay = _PlanningRelay(self)
         self._planning_relay.planned.connect(self._on_planning_done)
         self._planning_relay.error.connect(self._on_planning_error)
+
+        self._clarification_relay = _ClarificationRelay(self)
+        self._clarification_relay.question.connect(self._on_clarification_needed)
+        self._clarification_relay.clear.connect(self._on_clarification_clear)
+
 
         # Debug drawer — only instantiated when debug_mode=True
         if self._debug_mode:
@@ -214,9 +226,10 @@ class MainWindow(QMainWindow):
         )
         row.addWidget(self._input)
 
-        # Kill path 1: in-app stop button
+        # Kill path 1: in-app stop button (hidden when not running)
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.setEnabled(False)
+        self._stop_btn.hide()
         self._stop_btn.clicked.connect(self._handle_stop)
         self._stop_btn.setStyleSheet(
             "QPushButton{background:#FFEBEE;color:#C62828;"
@@ -242,6 +255,40 @@ class MainWindow(QMainWindow):
         self._header.setStyleSheet(f"background:{hbg};border-bottom:1px solid {hborder};")
         self._input_bar.setStyleSheet(f"background:{ibg};border-top:1px solid {iborder};")
         self._chat.set_dark(dark)
+        # Re-apply input state styling for new theme
+        self._set_input_state(self._chat.get_state())
+
+    # State → (placeholder, light_bg, border_color)
+    _STATE_INPUT_LIGHT = {
+        ChatState.IDLE:                   ("Describe your task…",     "#F9F9F9", "#E0E0E0"),
+        ChatState.PLANNING:               ("Planning…",               "#FFF3E0", "#FF9800"),
+        ChatState.AWAITING_CLARIFICATION: ("Answer to clarify…",      "#E8F5E9", "#4CAF50"),
+        ChatState.AWAITING_CONFIRM:       ("or type an amendment…",   "#E3F2FD", "#1976D2"),
+        ChatState.EXECUTING:              ("Executing…",              "#E8EAF6", "#3F51B5"),
+        ChatState.DONE:                   ("Describe your next task…","#F9F9F9", "#E0E0E0"),
+        ChatState.ERROR:                  ("Describe your task…",     "#FFEBEE", "#F44336"),
+    }
+    _STATE_INPUT_DARK = {
+        ChatState.IDLE:                   ("Describe your task…",     "#2A2A2A", "#3A3A3A"),
+        ChatState.PLANNING:               ("Planning…",               "#2A1E00", "#FF9800"),
+        ChatState.AWAITING_CLARIFICATION: ("Answer to clarify…",      "#0D2010", "#4CAF50"),
+        ChatState.AWAITING_CONFIRM:       ("or type an amendment…",   "#0A1929", "#1976D2"),
+        ChatState.EXECUTING:              ("Executing…",              "#0D0D2A", "#3F51B5"),
+        ChatState.DONE:                   ("Describe your next task…","#2A2A2A", "#3A3A3A"),
+        ChatState.ERROR:                  ("Describe your task…",     "#2D0A0A", "#F44336"),
+    }
+
+    def _set_input_state(self, state: ChatState) -> None:
+        """Update input bar placeholder and border color to reflect current state."""
+        table = self._STATE_INPUT_DARK if self._dark else self._STATE_INPUT_LIGHT
+        placeholder, bg, border = table.get(state, ("Describe your task…", "#F9F9F9", "#E0E0E0"))
+        fg = "#E0E0E0" if self._dark else "#212121"
+        self._input.setPlaceholderText(placeholder)
+        self._input.setStyleSheet(
+            f"QLineEdit{{border:1px solid {border};border-radius:18px;"
+            f"padding:6px 14px;font-size:13px;background:{bg};color:{fg};}}"
+            f"QLineEdit:focus{{border-color:{border};background:{'#1A1A1A' if self._dark else 'white'};}}"
+        )
 
     def _wire_kill_paths(self) -> None:
         # Kill path 2: global hotkey Ctrl+Shift+Q
@@ -286,12 +333,17 @@ class MainWindow(QMainWindow):
             self._chat.add_system_note(message)
 
     def set_running(self, running: bool) -> None:
-        self._stop_btn.setEnabled(running)
+        if running:
+            self._stop_btn.show()
+            self._stop_btn.setEnabled(True)
+        else:
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.hide()
         state = self._chat.get_state()
         if not running and state not in (ChatState.IDLE, ChatState.DONE, ChatState.ERROR):
             self._chat.set_state(ChatState.IDLE)
             self._input.setEnabled(True)
-            self._input.setPlaceholderText("Describe your task…")
+            self._set_input_state(ChatState.IDLE)
         self.set_status("Running…" if running else "Ready")
 
     def update_objective_progress(
@@ -312,6 +364,8 @@ class MainWindow(QMainWindow):
         state = self._chat.get_state()
         if state == ChatState.AWAITING_CONFIRM:
             self._handle_confirmation(text)
+        elif state == ChatState.AWAITING_CLARIFICATION:
+            self._handle_clarification_answer(text)
         elif state in (ChatState.IDLE, ChatState.DONE, ChatState.ERROR):
             self._handle_new_task(text)
 
@@ -320,12 +374,10 @@ class MainWindow(QMainWindow):
         self._chat.add_user_message(task)
         self._chat.set_state(ChatState.PLANNING)
         self._input.setEnabled(False)
-        self._input.setPlaceholderText("Planning…")
+        self._set_input_state(ChatState.PLANNING)
         self.set_status("Planning…")
+        self._stop_btn.show()
         self._stop_btn.setEnabled(True)
-
-        # Start thinking stream for the AI thoughts bubble
-        self._start_thinking_stream(task)
 
         if not self._bridge:
             self._chat.add_ai_message(
@@ -334,18 +386,125 @@ class MainWindow(QMainWindow):
             )
             self._chat.set_state(ChatState.ERROR)
             self._input.setEnabled(True)
-            self._input.setPlaceholderText("Describe your task…")
+            self._set_input_state(ChatState.ERROR)
             self._stop_btn.setEnabled(False)
+            self._stop_btn.hide()
             return
 
+        # Spin the indicator while the clarification check runs (fast).
+        # If the task is clear, _on_clarification_clear will start the thinking
+        # stream + planning. If vague, _on_clarification_needed will ask a question.
+        self._chat.thinking.set_mode("planning")
         self._chat.thinking.start()
+        self._check_clarification_async(task)
 
+    def _start_planning_phase(self) -> None:
+        """Start thinking stream + plan_only after clarification is resolved."""
+        self._set_input_state(ChatState.PLANNING)
+        self.set_status("Planning…")
+        self._start_thinking_stream(self._pending_request)
         relay = self._planning_relay
         self._bridge.plan_only(
-            user_request=task,
+            user_request=self._pending_request,
             on_planned=lambda specs: relay.planned.emit(specs),
             on_error=lambda err: relay.error.emit(err),
         )
+
+    def _check_clarification_async(self, task: str) -> None:
+        """Ask the LLM if the task needs clarification. Fires relay signal with result."""
+        import threading
+        relay = self._clarification_relay
+        settings = self._settings
+
+        def _run() -> None:
+            try:
+                import asyncio
+                import json as _json
+                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.base import LLMMessage
+
+                if not settings:
+                    relay.clear.emit()
+                    return
+
+                # Use the fast worker model (flash-lite) with a tight timeout so the
+                # clarification check never meaningfully delays the planning phase.
+                provider = GeminiProvider(
+                    api_key=settings.gemini_api_key,
+                    model=settings.gemini_worker_model,
+                )
+                prompt = (
+                    f'Task: "{task}"\n\n'
+                    "Does this task need clarification before a desktop automation agent can execute it?\n\n"
+                    "Be EXTREMELY conservative — nearly all tasks are clear enough. Only return\n"
+                    "needs_clarification=true if the core action is genuinely ambiguous (you would\n"
+                    "be guessing what to do).\n\n"
+                    "Do NOT ask about:\n"
+                    "- Preferences (font, color, format, file type) — agent uses sensible defaults\n"
+                    "- Which standard app to use (use the obvious default)\n"
+                    "- Whether the user is sure\n\n"
+                    "DO ask only if:\n"
+                    "- 'files' or 'documents' mentioned but it's completely unclear which ones\n"
+                    "- The core action itself is ambiguous (e.g. 'do something with X')\n\n"
+                    "One short question maximum.\n\n"
+                    'Respond with JSON ONLY:\n{"needs_clarification": false}\n'
+                    'OR\n{"needs_clarification": true, "question": "..."}'
+                )
+                loop = asyncio.new_event_loop()
+                try:
+                    resp = loop.run_until_complete(
+                        provider.complete(
+                            [LLMMessage(role="user", content=prompt)],
+                            timeout=8.0,  # tight — if slow, skip clarification
+                        )
+                    )
+                    raw = resp.content.strip()
+                    # Strip markdown fences if present
+                    if raw.startswith("```"):
+                        parts = raw.split("```")
+                        raw = parts[1] if len(parts) > 1 else raw
+                        if raw.startswith("json"):
+                            raw = raw[4:].strip()
+                    data = _json.loads(raw)
+                    if data.get("needs_clarification") and data.get("question"):
+                        relay.question.emit(str(data["question"]))
+                    else:
+                        relay.clear.emit()
+                except Exception:
+                    relay.clear.emit()  # on any error, just proceed without clarifying
+                finally:
+                    loop.close()
+            except Exception:
+                relay.clear.emit()
+
+        threading.Thread(target=_run, daemon=True, name="trinity-clarification").start()
+
+    def _on_clarification_needed(self, question: str) -> None:
+        """Task is vague — ask the user a clarifying question."""
+        self._chat.thinking.stop()
+        self._chat.add_ai_message(
+            question,
+            thought_prompt="Clarification needed before planning.",
+        )
+        self._chat.set_state(ChatState.AWAITING_CLARIFICATION)
+        self._input.setEnabled(True)
+        self._set_input_state(ChatState.AWAITING_CLARIFICATION)
+        self.set_status("Awaiting clarification")
+
+    def _on_clarification_clear(self) -> None:
+        """Task is specific enough — proceed to planning."""
+        self._start_planning_phase()
+
+    def _handle_clarification_answer(self, answer: str) -> None:
+        """User answered the clarification question — enrich request and plan."""
+        self._chat.add_user_message(answer)
+        self._pending_request = f"{self._pending_request}. Additional context: {answer}"
+        self._chat.set_state(ChatState.PLANNING)
+        self._input.setEnabled(False)
+        self._set_input_state(ChatState.PLANNING)
+        self.set_status("Planning…")
+        self._chat.thinking.start()
+        self._start_planning_phase()
 
     def _handle_confirmation(self, text: str) -> None:
         """Handle free-text confirmation input or edit_requested signal text."""
@@ -376,12 +535,15 @@ class MainWindow(QMainWindow):
         )
         self._chat.set_state(ChatState.IDLE)
         self._input.setEnabled(True)
-        self._input.setPlaceholderText("Describe your task…")
+        self._set_input_state(ChatState.IDLE)
         self._stop_btn.setEnabled(False)
+        self._stop_btn.hide()
         self.set_status("Ready")
 
     def _execute_confirmed(self) -> None:
         self._chat.hide_confirm_bar()
+        self._chat.thinking.set_mode("executing")
+        self._chat.thinking.start()
         self._chat.add_ai_message(
             "Starting execution now. I'll keep you updated as each objective completes.",
             thought_prompt="User confirmed plan. Starting local orchestration.",
@@ -401,7 +563,7 @@ class MainWindow(QMainWindow):
                 start_time=time.monotonic(),
             )
         self._input.setEnabled(False)
-        self._input.setPlaceholderText("Executing…")
+        self._set_input_state(ChatState.EXECUTING)
         self.set_status("Executing…")
 
     # ------------------------------------------------------------------
@@ -415,7 +577,7 @@ class MainWindow(QMainWindow):
         self._chat.set_state(ChatState.AWAITING_CONFIRM)
         self._chat.show_confirm_bar()
         self._input.setEnabled(True)
-        self._input.setPlaceholderText("or type your amendment above…")
+        self._set_input_state(ChatState.AWAITING_CONFIRM)
         self.set_status("Awaiting confirmation")
 
     def _on_planning_error(self, error: str) -> None:
@@ -426,8 +588,9 @@ class MainWindow(QMainWindow):
         )
         self._chat.set_state(ChatState.ERROR)
         self._input.setEnabled(True)
-        self._input.setPlaceholderText("Describe your task…")
+        self._set_input_state(ChatState.ERROR)
         self._stop_btn.setEnabled(False)
+        self._stop_btn.hide()
         self.set_status("Planning failed")
 
     def _on_task_done(self, final_result: dict) -> None:
@@ -435,11 +598,22 @@ class MainWindow(QMainWindow):
         if isinstance(final_result, dict):
             final_status = str(final_result.get("status", "unknown"))
             workflow_results = final_result.get("results") or {}
-            if final_result.get("error"):
-                self.log(f"[ERROR] {final_result.get('error')}")
+            error_msg = final_result.get("error", "")
+            tb_msg = final_result.get("traceback", "")
+            if error_msg:
+                self.log(f"[ERROR] {error_msg}")
+            # Surface crash/error prominently in chat.
+            if final_status in ("crashed", "failed") and error_msg:
+                from trinity_pilot.__main__ import CRASHES_DIR
+                hint = f"\n\nCrash report saved to: `crashes/`" if CRASHES_DIR.exists() else ""
+                self._chat.add_ai_message(
+                    f"❌ Task crashed: **{error_msg}**{hint}",
+                    thought_prompt=tb_msg or error_msg,
+                )
         else:
             final_status = str(final_result)
             workflow_results = {}
+            error_msg = ""
 
         results = {}
         for i, spec in enumerate(self._pending_specs):
@@ -457,9 +631,25 @@ class MainWindow(QMainWindow):
         terminal = ChatState.DONE if final_status == "completed" else ChatState.ERROR
         self._chat.set_state(terminal)
         self._input.setEnabled(True)
-        self._input.setPlaceholderText("Describe your next task…")
+        self._set_input_state(terminal)
         self._stop_btn.setEnabled(False)
+        self._stop_btn.hide()
         self.set_status("Done" if final_status == "completed" else f"Finished: {final_status}")
+
+        # Show worker finish-summaries directly as an AI reply.
+        # Workers already produce descriptive summaries in their finish() call —
+        # no extra LLM needed, just surface them.
+        if final_status == "completed":
+            summaries: list[str] = []
+            for i, spec in enumerate(self._pending_specs):
+                obj_id = spec.get("objective_id", f"obj_{i}")
+                entry = workflow_results.get(obj_id, {})
+                s = entry.get("summary", "") or entry.get("evidence", {}).get("worker_result_summary", "")
+                if s:
+                    summaries.append(s)
+            if summaries:
+                reply = "\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
+                self._chat.add_ai_message(reply, thought_prompt="Worker finish summaries.")
 
     # ------------------------------------------------------------------
     # Streaming thoughts
@@ -512,7 +702,54 @@ class MainWindow(QMainWindow):
         self._handle_stop()
 
 
-def run_app() -> None:
+def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
+    """Catch unhandled exceptions in Qt slots — PySide6 swallows them silently.
+
+    Writes crash JSON to crashes/, shows a QMessageBox so the user sees the
+    error before the process exits, then re-raises so the normal exit path runs.
+    """
+    import traceback
+    from trinity_pilot.__main__ import _write_crash, _ensure_crashes_dir
+
+    _orig_hook = sys.excepthook
+
+    def _qt_hook(exc_type, exc_value, exc_tb):
+        msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        crash_path = _write_crash("qt-slot", msg, _ensure_crashes_dir())
+
+        # Try to show the error in the chat widget if window is available.
+        try:
+            win = window_ref[0] if window_ref else None
+            if win and hasattr(win, "_chat"):
+                hint = f"See crashes/ folder for full trace." if crash_path else ""
+                win._chat.add_ai_message(
+                    f"⚠️ Unhandled error: {exc_type.__name__}: {exc_value}\n{hint}",
+                    thought_prompt="crash",
+                )
+                win.set_status("Error")
+        except Exception:
+            pass
+
+        # Fallback: Qt message box so user is never left with a silent close.
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            box = QMessageBox()
+            box.setWindowTitle("Trinity Pilot — Unexpected Error")
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setText(f"<b>{exc_type.__name__}</b>: {exc_value}")
+            box.setDetailedText(msg)
+            if crash_path:
+                box.setInformativeText(f"Crash report saved to:\n{crash_path}")
+            box.exec()
+        except Exception:
+            pass
+
+        _orig_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _qt_hook
+
+
+def run_app(test_mode: bool = False) -> None:
     from trinity_pilot.config import Settings
     from trinity_pilot.ui.bridge import WorkflowBridge
 
@@ -528,19 +765,17 @@ def run_app() -> None:
     window.set_settings(settings)
     window.log("[SYSTEM] Local orchestrator ready.")
 
+    _window_ref: list[MainWindow] = [window]
+    _install_qt_exception_hook(_window_ref)
+
     # qt-material must import after PySide6
     from qt_material import apply_stylesheet
     apply_stylesheet(
         app,
-        theme="dark_teal.xml",
+        theme="light_teal.xml",
         extra={"QTextBrowser": {"background": "transparent"}},
     )
-    window._dark = True
-    window._dark_btn.setChecked(True)
-    window._chat.set_dark(True)
-    hbg, hborder = "#1A1A1A", "#2A2A2A"
-    window._header.setStyleSheet(f"background:{hbg};border-bottom:1px solid {hborder};")
-    window._input_bar.setStyleSheet(f"background:{hbg};border-top:1px solid {hborder};")
+    # _dark stays False (default), toggle stays unchecked — user can switch to dark
 
     window.show()
     sys.exit(app.exec())

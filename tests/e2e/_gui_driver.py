@@ -74,9 +74,10 @@ class AppDriver:
         driver.close()
     """
 
-    def __init__(self, proc: subprocess.Popen, win: Any) -> None:
+    def __init__(self, proc: subprocess.Popen, win: Any, hwnd: int = 0) -> None:
         self._proc = proc
         self._win = win
+        self._hwnd = hwnd
 
     # ------------------------------------------------------------------
     # Launch / teardown
@@ -119,7 +120,7 @@ class AppDriver:
         time.sleep(2)  # let Windows reclaim the window handles
 
         proc = subprocess.Popen(
-            [PYTHON, "-m", "trinity_pilot"],
+            [PYTHON, "-m", "trinity_pilot", "--test-mode"],
             cwd=str(APP_DIR),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -169,10 +170,26 @@ class AppDriver:
             raise RuntimeError(
                 f"App did not reach Ready within 15s; last status={got!r}"
             )
-        return cls(proc, win)
+        return cls(proc, win, hwnd=hwnd)
 
     def close(self) -> None:
-        """Kill the Trinity Pilot process tree."""
+        """Close Trinity Pilot gracefully via WM_CLOSE, force-kill only as fallback."""
+        # Try graceful close first: send WM_CLOSE so Qt can clean up.
+        if self._hwnd:
+            try:
+                import win32gui
+                import win32con
+                win32gui.PostMessage(self._hwnd, win32con.WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+        # Give the process up to 5s to exit on its own.
+        try:
+            self._proc.wait(timeout=5)
+            time.sleep(1)
+            return
+        except Exception:
+            pass
+        # Fallback: force-kill the process tree.
         try:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(self._proc.pid)],
@@ -184,7 +201,7 @@ class AppDriver:
             self._proc.wait(timeout=5)
         except Exception:
             pass
-        time.sleep(3)  # let Windows fully reclaim the process/window before the next test
+        time.sleep(1)
 
     # ------------------------------------------------------------------
     # Status reading
@@ -223,14 +240,25 @@ class AppDriver:
     # ------------------------------------------------------------------
 
     def submit(self, text: str) -> None:
-        """Click input box, type text, press Enter."""
+        """Type text into the input box and submit.
+
+        Uses pywinauto type_keys() directly on the Edit control — no foreground
+        window requirement, works reliably from a subprocess test runner context.
+        """
         try:
             edits = self._win.descendants(control_type="Edit")
             if edits:
                 edits[0].click_input()
+                time.sleep(0.2)
+                edits[0].type_keys(
+                    text.replace("{", "{{").replace("}", "}}") + "{ENTER}",
+                    with_spaces=True,
+                )
+                return
         except Exception:
             pass
-        time.sleep(0.3)
+        # Fallback: pyautogui (requires window to be foreground).
+        time.sleep(0.2)
         pyautogui.hotkey("ctrl", "a")
         time.sleep(0.1)
         pyautogui.write(text, interval=0.02)
