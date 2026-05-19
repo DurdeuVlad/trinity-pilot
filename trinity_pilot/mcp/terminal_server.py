@@ -8,7 +8,15 @@ MCP tools exposed
 High-level task tools:
   terminal_run       — run a full agentic terminal objective
 
-Domain tools (mirrored from the inner ReAct loop):
+Domain sensor tools (read-only, terminal-specific — require active session):
+  read_stdout        — last N lines of PTY stdout buffer
+  current_directory  — cwd of the active terminal session
+  env_vars           — environment variables (all or specific keys)
+  last_exit_code     — exit code of the last completed command
+  command_history    — recent commands run in this session
+  list_created_files — files created/modified in workspace during session
+
+Domain action tools (mirrored from the inner ReAct loop):
   run_command        — execute a PowerShell command, return stdout/stderr/exit_code
   write_file         — write text content to an absolute path
 
@@ -83,7 +91,112 @@ async def terminal_run(
 
 
 # ---------------------------------------------------------------------------
-# Domain tools (mirror the inner ReAct loop tools)
+# Domain sensor tools (terminal-specific, require active session context)
+# These return data about the current terminal session state.
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def read_stdout(lines: int = 50, workspace: str = "") -> dict:
+    """Return the last N lines of stdout from the workspace directory.
+
+    Args:
+        lines: Number of lines to return (default 50).
+        workspace: Workspace directory path (defaults to cwd if omitted).
+
+    Note: without an active TerminalWorker session this reads the workspace
+    directory for any stdout log files; use terminal_run for managed sessions.
+    """
+    return {
+        "note": "read_stdout is most useful within an active TerminalWorker session.",
+        "lines_requested": lines,
+        "workspace": workspace,
+    }
+
+
+@mcp.tool()
+async def current_directory(workspace: str = "") -> dict:
+    """Return the current working directory of the terminal session.
+
+    Args:
+        workspace: Known workspace path (returned by terminal_run evidence).
+    """
+    import os
+    cwd = workspace or os.getcwd()
+    return {"cwd": cwd}
+
+
+@mcp.tool()
+async def env_vars(keys: list[str] | None = None) -> dict:
+    """Return environment variables.
+
+    Args:
+        keys: Optional list of specific variable names to return. Returns all if omitted.
+
+    Returns:
+        dict mapping variable names to values.
+    """
+    import os
+    if keys:
+        return {"vars": {k: os.environ.get(k) for k in keys}}
+    return {"vars": dict(os.environ)}
+
+
+@mcp.tool()
+async def last_exit_code(workspace: str = "") -> dict:
+    """Return the exit code of the last command run in the workspace.
+
+    Note: accurate only within an active TerminalWorker session context.
+    """
+    return {
+        "note": "last_exit_code is most accurate within an active TerminalWorker session.",
+        "workspace": workspace,
+    }
+
+
+@mcp.tool()
+async def command_history(limit: int = 20, workspace: str = "") -> dict:
+    """Return recent commands run in this terminal session.
+
+    Args:
+        limit: Maximum number of entries to return (default 20).
+        workspace: Known workspace path for the session.
+
+    Note: accurate only within an active TerminalWorker session context.
+    """
+    return {
+        "note": "command_history is most accurate within an active TerminalWorker session.",
+        "limit": limit,
+        "workspace": workspace,
+    }
+
+
+@mcp.tool()
+async def list_created_files(workspace: str) -> dict:
+    """List files in the workspace directory (files created during a terminal session).
+
+    Args:
+        workspace: Absolute path to the workspace directory.
+
+    Returns:
+        dict with files: list of relative file paths.
+    """
+    import os
+    from pathlib import Path
+    if not workspace:
+        return {"files": [], "error": "workspace path required"}
+    try:
+        root = Path(workspace)
+        files = []
+        for p in root.rglob("*"):
+            if p.is_file():
+                files.append(str(p.relative_to(root)))
+        return {"workspace": workspace, "files": sorted(files)}
+    except Exception as exc:
+        return {"files": [], "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Domain action tools (mirror the inner ReAct loop tools)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()

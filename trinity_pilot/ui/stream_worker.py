@@ -40,7 +40,10 @@ class StreamWorker(QThread):
                 contents=self._prompt,
                 config=config,
             ):
-                text = chunk.text or ""
+                try:
+                    text = chunk.text or ""
+                except Exception:
+                    text = ""
                 if text:
                     full_text += text
                     self.chunk_received.emit(text)

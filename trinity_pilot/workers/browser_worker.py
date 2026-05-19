@@ -18,6 +18,7 @@ from trinity_pilot.workers.agentic_mixin import (
     _finish_decl,
     _make_tool,
     _report_blocking_decl,
+    _take_screenshot_decl,
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
@@ -41,16 +42,28 @@ _BROWSER_AGENT_SYSTEM = """\
 You are a browser automation agent using Playwright on a live browser.
 Use the available tools to accomplish the goal step by step.
 
+Tool categories:
+- SENSOR tools read, inspect, measure, and detect. They never change world state.
+  Use them freely before and after actions to verify state.
+- ACTION tools create, modify, execute, or delete. They change world state.
+  Each action must be intentional. Prefer sensing first, then acting.
+
 Available tools:
-- navigate: Navigate to a URL.
-- click: Click a CSS selector on the current page.
-- fill: Fill an input field on the current page.
-- read_page: Read the current page title, URL, and DOM text preview.
-- finish: Signal that the objective is complete or definitively failed.
-- report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
+
+[SENSOR] screenshot: Capture current desktop as PNG visual evidence. mode='screen' (default), 'all_screens', or 'app' (supply app_title regex).
+[SENSOR] read_page: Read current page title, URL, and DOM text preview.
+
+[ACTION] navigate: Navigate to a URL.
+[ACTION] click: Click a CSS selector on the current page.
+[ACTION] fill: Fill an input field on the current page.
+[ACTION] finish: Signal that the objective is complete or definitively failed.
+[ACTION] report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
 RULES:
 - Always navigate to a URL first before interacting with elements.
+- After each ACTION tool call, read its result before proceeding. If a tool failed or
+  produced unexpected state, adapt — do not blindly continue to the next planned step.
+- Call screenshot after key actions to verify the result visually.
 - Call finish when done or if the objective is definitively impossible.
 - Call report_blocking only if you genuinely cannot proceed without external input.
 """
@@ -120,7 +133,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         return _BROWSER_AGENT_SYSTEM
 
     def _worker_tools(self) -> list[genai_types.Tool]:
-        return [_make_tool([_navigate_decl, _click_decl, _fill_decl, _read_page_decl, _finish_decl, _report_blocking_decl])]
+        return [_make_tool([_navigate_decl, _click_decl, _fill_decl, _read_page_decl, _take_screenshot_decl, _finish_decl, _report_blocking_decl])]
 
     def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
         page_url = evidence.get("page_url") or "about:blank"
@@ -141,7 +154,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         return f"current_url={url}\npage_title={title}\npage_status={status_str}"
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
-        timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 300))
         evidence: dict[str, Any] = {
             "domain": "browser",
             "objective_id": spec.objective_id,

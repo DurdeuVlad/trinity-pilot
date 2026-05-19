@@ -4,10 +4,16 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
 
 
-_FRAMES = [
-    "\u25cf\u25cb\u25cb  Trinity is thinking",
-    "\u25cb\u25cf\u25cb  Trinity is thinking",
-    "\u25cb\u25cb\u25cf  Trinity is thinking",
+_FRAMES_PLANNING = [
+    "\u25cf\u25cb\u25cb  Planning your task",
+    "\u25cb\u25cf\u25cb  Planning your task",
+    "\u25cb\u25cb\u25cf  Planning your task",
+]
+
+_FRAMES_EXECUTING = [
+    "\u25cf\u25cb\u25cb  Running objectives",
+    "\u25cb\u25cf\u25cb  Running objectives",
+    "\u25cb\u25cb\u25cf  Running objectives",
 ]
 
 
@@ -19,7 +25,8 @@ class ThinkingIndicator(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        self._label = QLabel(_FRAMES[0])
+        self._frames = _FRAMES_PLANNING
+        self._label = QLabel(self._frames[0])
         self._label.setStyleSheet(
             "color:#FF6347; font-style:italic; font-size:13px;"
         )
@@ -33,9 +40,18 @@ class ThinkingIndicator(QWidget):
 
         self.hide()
 
+    def apply_dark(self, dark: bool) -> None:
+        pass  # colour is fixed brand orange; no dark variant needed yet
+
+    def set_mode(self, mode: str) -> None:
+        """Switch animation text. mode: 'planning' | 'executing'"""
+        self._frames = _FRAMES_EXECUTING if mode == "executing" else _FRAMES_PLANNING
+        self._frame_idx = 0
+        self._label.setText(self._frames[0])
+
     def start(self) -> None:
         self._frame_idx = 0
-        self._label.setText(_FRAMES[0])
+        self._label.setText(self._frames[0])
         self.show()
         self._timer.start()
 
@@ -44,5 +60,5 @@ class ThinkingIndicator(QWidget):
         self.hide()
 
     def _advance(self) -> None:
-        self._frame_idx = (self._frame_idx + 1) % len(_FRAMES)
-        self._label.setText(_FRAMES[self._frame_idx])
+        self._frame_idx = (self._frame_idx + 1) % len(self._frames)
+        self._label.setText(self._frames[self._frame_idx])

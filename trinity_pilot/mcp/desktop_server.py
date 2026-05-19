@@ -5,11 +5,17 @@ Internal hot-path skips this server and calls DesktopWorker directly.
 
 MCP tools exposed
 -----------------
-High-level task tools:
-  desktop_screenshot  — capture current desktop screenshot
-  desktop_find_window — find a window and return element tree
+Domain sensor tools (read-only, desktop-specific):
+  uia_tree          — UIA accessibility tree of focused or named window
+  focused_element   — currently focused UI element details
+  window_hierarchy  — all windows with z-order and visibility
+  get_element_value — value/text of a specific UI element by locator
+  app_state         — running state of a named application
 
-Domain tools (mirrored from the inner ReAct loop):
+Cross-cutting sensors (screenshot, window enumeration, clipboard) are in
+sensor_server.py — NOT duplicated here.
+
+Domain action tools (mirrored from the inner ReAct loop):
   launch_app         — launch an application by executable name
   focus_window       — focus a window by title regex
   type_text          — type text into the focused window
@@ -28,13 +34,6 @@ import asyncio
 from pathlib import Path
 
 from fastmcp import FastMCP
-
-from trinity_pilot.core.types import (
-    DomainType,
-    ObjectiveSpec,
-    RiskClass,
-)
-from trinity_pilot.workers.desktop_worker import DesktopWorker
 
 mcp = FastMCP(
     name="trinity-pilot-desktop",
@@ -57,51 +56,215 @@ def version() -> str:
 
 
 # ---------------------------------------------------------------------------
-# High-level task tools
+# Domain sensor tools (read-only, desktop-specific)
+# Cross-cutting sensors (screenshot, window_list, clipboard_read, file_stat)
+# live in sensor_server.py — call that server for those.
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def desktop_screenshot(objective_id: str, goal: str) -> dict:
-    """Take a screenshot of the current desktop and return evidence."""
-    spec = ObjectiveSpec(
-        objective_id=objective_id,
-        goal=goal,
-        dependencies=[],
-        domain=DomainType.DESKTOP,
-        required_capabilities=["desktop_screenshot"],
-        risk_class=RiskClass.LOW,
-        preconditions=[],
-        success_tests=["screenshot captured"],
-        evidence_bundle=["screenshot"],
-        max_attempts=1,
-        rollback_or_abort_rule="abort",
-    )
-    worker = DesktopWorker()
-    return await worker.execute(spec)
+def uia_tree(window_title: str = "") -> dict:
+    """Return the UIA accessibility tree of the focused window or a named window.
+
+    Args:
+        window_title: Optional regex to match window title. Defaults to focused window.
+
+    Returns:
+        dict with tree_text (string representation) and window_title.
+    """
+    try:
+        from pywinauto import Application, findwindows
+        if window_title:
+            handles = findwindows.find_windows(title_re=window_title)
+            if not handles:
+                return {"found": False, "error": f"No window matching '{window_title}'"}
+            app = Application(backend="uia").connect(handle=handles[0], timeout=3)
+        else:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            app = Application(backend="uia").connect(handle=hwnd, timeout=3)
+        wrapper = app.top_window()
+        import io
+        buf = io.StringIO()
+        wrapper.print_control_identifiers(out=buf)
+        tree_text = buf.getvalue()
+        actual_title = wrapper.window_text()
+        return {"found": True, "window_title": actual_title, "tree_text": tree_text}
+    except Exception as exc:
+        return {"found": False, "error": str(exc)}
 
 
 @mcp.tool()
-async def desktop_find_window(objective_id: str, goal: str) -> dict:
-    """Find a window and return its element tree snapshot."""
-    spec = ObjectiveSpec(
-        objective_id=objective_id,
-        goal=goal,
-        dependencies=[],
-        domain=DomainType.DESKTOP,
-        required_capabilities=["desktop_uia"],
-        risk_class=RiskClass.LOW,
-        preconditions=[],
-        success_tests=["window found"],
-        evidence_bundle=["element_tree_snapshot", "screenshot"],
-        max_attempts=1,
-        rollback_or_abort_rule="abort",
-    )
-    worker = DesktopWorker()
-    return await worker.execute(spec)
+def focused_element() -> dict:
+    """Return details about the currently focused UI element.
+
+    Returns:
+        dict with name, control_type, value, rect (x, y, width, height).
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes
+        from pywinauto import Application
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        app = Application(backend="uia").connect(handle=hwnd, timeout=3)
+        wrapper = app.top_window()
+        focused = wrapper.get_focus()
+        rect = focused.rectangle()
+        return {
+            "name": focused.window_text(),
+            "control_type": focused.element_info.control_type,
+            "value": getattr(focused, "get_value", lambda: "")(),
+            "rect": {
+                "x": rect.left, "y": rect.top,
+                "width": rect.right - rect.left,
+                "height": rect.bottom - rect.top,
+            },
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+def window_hierarchy() -> dict:
+    """Return all visible top-level windows with z-order, visibility, and process info.
+
+    Returns:
+        dict with windows: list of {title, pid, z_order, x, y, width, height}.
+    """
+    import ctypes
+    import ctypes.wintypes
+    windows = []
+    z = 0
+
+    def _callback(hwnd: int, _: int) -> bool:
+        nonlocal z
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+                if title:
+                    rect = ctypes.wintypes.RECT()
+                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    pid = ctypes.c_ulong()
+                    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    windows.append({
+                        "title": title,
+                        "pid": pid.value,
+                        "z_order": z,
+                        "x": rect.left, "y": rect.top,
+                        "width": rect.right - rect.left,
+                        "height": rect.bottom - rect.top,
+                    })
+                    z += 1
+        return True
+
+    try:
+        _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        ctypes.windll.user32.EnumWindows(_WNDENUMPROC(_callback), 0)
+    except Exception as exc:
+        return {"windows": [], "error": str(exc)}
+    return {"windows": windows}
+
+
+@mcp.tool()
+def get_element_value(locator: str, window_title: str = "") -> dict:
+    """Read the value or text of a UI element by its name or locator.
+
+    Args:
+        locator: Element name (auto_id, name, or title).
+        window_title: Optional window title regex to narrow search.
+
+    Returns:
+        dict with found, value, control_type.
+    """
+    try:
+        from pywinauto import Application, findwindows
+        if window_title:
+            handles = findwindows.find_windows(title_re=window_title)
+            if not handles:
+                return {"found": False, "error": f"No window matching '{window_title}'"}
+            app = Application(backend="uia").connect(handle=handles[0], timeout=3)
+        else:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            app = Application(backend="uia").connect(handle=hwnd, timeout=3)
+        wrapper = app.top_window()
+        child = wrapper.child_window(title=locator)
+        value = child.window_text()
+        return {
+            "found": True,
+            "value": value,
+            "control_type": child.element_info.control_type,
+        }
+    except Exception as exc:
+        return {"found": False, "error": str(exc)}
+
+
+@mcp.tool()
+def app_state(process_name: str) -> dict:
+    """Check the running state of an application by process name.
+
+    Args:
+        process_name: Executable name (e.g. 'notepad.exe').
+
+    Returns:
+        dict with running, window_count, focused_window_title, pids.
+    """
+    try:
+        import psutil
+        procs = [p for p in psutil.process_iter(["pid", "name"]) if p.info["name"].lower() == process_name.lower()]
+        if not procs:
+            return {"running": False, "process_name": process_name}
+        pids = [p.info["pid"] for p in procs]
+    except Exception:
+        pids = []
+
+    import ctypes
+    import ctypes.wintypes
+    matching_windows = []
+
+    def _callback(hwnd: int, _: int) -> bool:
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            pid = ctypes.c_ulong()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids:
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                buf = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+                if title:
+                    matching_windows.append(title)
+        return True
+
+    try:
+        _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        ctypes.windll.user32.EnumWindows(_WNDENUMPROC(_callback), 0)
+    except Exception:
+        pass
+
+    focused_hwnd = ctypes.windll.user32.GetForegroundWindow()
+    focused_pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(focused_hwnd, ctypes.byref(focused_pid))
+    focused_title = None
+    if focused_pid.value in pids:
+        length = ctypes.windll.user32.GetWindowTextLengthW(focused_hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(focused_hwnd, buf, length + 1)
+        focused_title = buf.value or None
+
+    return {
+        "running": bool(pids),
+        "process_name": process_name,
+        "pids": pids,
+        "window_count": len(matching_windows),
+        "window_titles": matching_windows,
+        "focused_window_title": focused_title,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Domain tools (mirror the inner ReAct loop tools)
+# Domain action tools (mirror the inner ReAct loop tools)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()

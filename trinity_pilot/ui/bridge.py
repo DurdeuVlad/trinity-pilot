@@ -43,9 +43,22 @@ class _WorkerThread(QThread):
         try:
             result = self._loop.run_until_complete(self._run_orchestrator())
             self.task_finished.emit(self._task_id, result)
-        except Exception as exc:
-            self.log_message.emit(f"[ERROR] {exc}")
-            self.task_finished.emit(self._task_id, {"task_id": self._task_id, "status": "failed", "error": str(exc)})
+        except BaseException as exc:  # noqa: BLE001 — catch everything, incl. KeyboardInterrupt
+            import traceback as _tb
+            full_trace = _tb.format_exc()
+            self.log_message.emit(f"[CRASH] {exc}\n{full_trace}")
+            # Save crash bundle to disk.
+            try:
+                from trinity_pilot.__main__ import _write_crash, _ensure_crashes_dir
+                _write_crash(f"worker-{self._task_id}", full_trace, _ensure_crashes_dir())
+            except Exception:
+                pass
+            self.task_finished.emit(self._task_id, {
+                "task_id": self._task_id,
+                "status": "crashed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": full_trace,
+            })
         finally:
             self._loop.close()
 
@@ -120,11 +133,11 @@ class WorkflowBridge(QObject):
         if on_done:
             self._worker.task_finished.connect(
                 lambda tid, result: on_done(result),
-                Qt.ConnectionType.DirectConnection,
+                Qt.ConnectionType.QueuedConnection,
             )
         self._worker.task_finished.connect(
             self._on_worker_finished,
-            Qt.ConnectionType.DirectConnection,
+            Qt.ConnectionType.QueuedConnection,
         )
         self._worker.start()
         return task_id

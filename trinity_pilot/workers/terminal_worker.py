@@ -19,6 +19,7 @@ from trinity_pilot.workers.agentic_mixin import (
     _finish_decl,
     _make_tool,
     _report_blocking_decl,
+    _take_screenshot_decl,
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
@@ -30,15 +31,31 @@ _TERMINAL_SYSTEM = """\
 You are a terminal automation agent on Windows (PowerShell 5.1).
 Given a goal, use the available tools to accomplish it step by step.
 
+Tool categories:
+- SENSOR tools read, inspect, measure, and detect. They never change world state.
+  Use them freely before and after actions to verify state.
+- ACTION tools create, modify, execute, or delete. They change world state.
+  Each action must be intentional. Prefer sensing first, then acting.
+
 Available tools:
-- run_command: Execute a PowerShell command in the workspace directory.
-- write_file: Write text content directly to a file at an absolute path.
-- finish: Signal that the objective is complete or definitively failed.
-- report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
+
+[SENSOR] screenshot: Capture a screenshot. mode='screen' (default), 'all_screens', or 'app' (supply app_title regex).
+
+[ACTION] run_command: Execute a PowerShell command in the workspace directory.
+[ACTION] write_file: Write text content directly to a file at an absolute path.
+[ACTION] finish: Signal that the objective is complete or definitively failed.
+[ACTION] report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
 RULES:
-- Always use backslash-escaped paths in run_command: C:\\\\Users\\\\User\\\\Desktop\\\\file.txt
-- For write_file paths you may use forward slashes: C:/Users/User/Desktop/file.txt
+- After each ACTION tool call, read its result before proceeding. If a tool failed or
+  produced unexpected state (wrong exit code, unexpected output), adapt — do not
+  blindly continue to the next planned step.
+- Always use backslash-escaped paths in run_command: C:\\\\Users\\\\User\\\\Documents\\\\file.txt
+- For write_file paths you may use forward slashes: C:/Users/User/Documents/file.txt
+- If the user asked to save a file to a SPECIFIC path, use EXACTLY that path. Do NOT redirect to Desktop.
+- When listing or counting files in a directory, ALWAYS use -Recurse unless told otherwise.
+  Example: Get-ChildItem "C:\\path\\to\\dir" -Filter "*.py" -Recurse
+  Without -Recurse you only see the top-level folder — that is almost always wrong.
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
 """
@@ -141,6 +158,11 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             f"last_action={last_action}",
         ]
 
+        _HISTORY_CAP = 10
+        if len(action_log) > 1:
+            history = action_log[-_HISTORY_CAP:]
+            lines.append(f"commands_tried=[{', '.join(repr(e) for e in history)}]")
+
         # stdout/stderr snippets (last 200 chars each, only when non-empty)
         stdout = evidence.get("stdout", "")
         if stdout:
@@ -152,7 +174,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
         return "\n".join(lines)
 
     def _worker_tools(self) -> list[genai_types.Tool]:
-        return [_make_tool([_run_command_decl, _write_file_decl, _finish_decl, _report_blocking_decl])]
+        return [_make_tool([_run_command_decl, _write_file_decl, _take_screenshot_decl, _finish_decl, _report_blocking_decl])]
 
     async def execute(self, spec: ObjectiveSpec) -> dict[str, Any]:
         workspace = tempfile.mkdtemp(prefix="trinity-term-")

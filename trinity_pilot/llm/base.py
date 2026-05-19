@@ -14,6 +14,9 @@ class LLMMessage:
     # (required by Gemini 2.5+ thinking models) is replayed verbatim without any
     # re-serialisation loss.
     raw_provider_content: Any = None
+    # Optional inline image for multimodal messages (reviewer vision).
+    image_data: bytes | None = None
+    image_mime: str = "image/jpeg"
 
 
 @dataclass

@@ -222,7 +222,13 @@ class AsyncTaskOrchestrator:
                     )
                     self._snapshot.completed_objectives.append(objective_id)
                     await self.signals.put(ObjectiveDone(task_id, objective_id))
-                    return {"status": "passed", "attempts": attempt_number, "evidence": last_evidence}
+                    return {
+                        "status": "passed",
+                        "attempts": attempt_number,
+                        "evidence": last_evidence,
+                        # Bubble worker finish-summary up so the UI can synthesise a reply.
+                        "summary": last_evidence.get("worker_result_summary", ""),
+                    }
 
                 reason = review.failure_reason or FailureReason.FAILED_ASSERTION
                 reflection_id = self._reflection_store.save_reflection(

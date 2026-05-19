@@ -29,11 +29,30 @@ class ObjectiveReviewer:
     async def review(
         self, spec: ObjectiveSpec, evidence: dict[str, Any]
     ) -> ReviewResult:
+        import base64
+
+        # Strip raw screenshot bytes from evidence JSON — pass as real image instead.
+        evidence_for_json = {k: v for k, v in evidence.items() if k != "screenshot"}
+        screenshot_b64: str = evidence.get("screenshot", "")
+
         user_msg = REVIEWER_USER_TEMPLATE.format(
             spec_json=json.dumps(spec.to_dict(), indent=2),
-            evidence_json=json.dumps(evidence, indent=2),
+            evidence_json=json.dumps(evidence_for_json, indent=2),
         )
-        messages = [LLMMessage(role="user", content=user_msg)]
+
+        image_data: bytes | None = None
+        if screenshot_b64:
+            try:
+                image_data = base64.b64decode(screenshot_b64)
+            except Exception:
+                image_data = None
+
+        messages = [LLMMessage(
+            role="user",
+            content=user_msg,
+            image_data=image_data,
+            image_mime="image/jpeg",
+        )]
 
         try:
             response = await self._provider.complete(

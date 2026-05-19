@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any, cast
@@ -82,6 +83,36 @@ _report_blocking_decl = genai_types.FunctionDeclaration(
 )
 
 
+_take_screenshot_decl = genai_types.FunctionDeclaration(
+    name="screenshot",
+    description=(
+        "Capture a screenshot and return it as a visual observation. "
+        "mode='screen' captures one monitor (screen_index=0 is the primary monitor). "
+        "mode='all_screens' captures every monitor combined into one image. "
+        "mode='app' captures a specific window — supply its title as app_title (regex supported)."
+    ),
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "mode": genai_types.Schema(
+                type=genai_types.Type.STRING,
+                description="Capture mode: 'screen', 'all_screens', or 'app'.",
+                enum=["screen", "all_screens", "app"],
+            ),
+            "screen_index": genai_types.Schema(
+                type=genai_types.Type.INTEGER,
+                description="Monitor index to capture (0 = primary). Only used when mode='screen'.",
+            ),
+            "app_title": genai_types.Schema(
+                type=genai_types.Type.STRING,
+                description="Window title regex to capture. Only used when mode='app'.",
+            ),
+        },
+        required=[],
+    ),
+)
+
+
 def _make_tool(declarations: list[genai_types.FunctionDeclaration]) -> genai_types.Tool:
     return genai_types.Tool(function_declarations=declarations)
 
@@ -115,7 +146,7 @@ class AgenticWorkerMixin:
 
     def _worker_tools(self) -> list[genai_types.Tool]:
         """Return the tool list for this worker. Subclasses override to add domain tools."""
-        return [_make_tool([_finish_decl, _report_blocking_decl])]
+        return [_make_tool([_finish_decl, _report_blocking_decl, _take_screenshot_decl])]
 
     def _worker_system_prompt(self) -> str:
         """Return the system prompt for this worker. Subclasses override."""
@@ -123,12 +154,34 @@ class AgenticWorkerMixin:
 
     async def _dispatch_tool(
         self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]
-    ) -> str | _FinishSignal | _BlockerSignal:
+    ) -> str | tuple[str, bytes] | _FinishSignal | _BlockerSignal:
         """Dispatch a tool call. Returns observation string or a control-flow signal.
 
         Base handles "finish" and "report_blocking". Subclasses handle domain tools
         and delegate unknown names to super().
         """
+        if tool_name == "screenshot":
+            from trinity_pilot.tools.screenshot import capture_screenshot
+            mode = args.get("mode", "screen")
+            screen_index = int(args.get("screen_index", 0))
+            app_title = args.get("app_title", "")
+            try:
+                img_bytes, desc = capture_screenshot(
+                    mode=mode, screen_index=screen_index, app_title=app_title
+                )
+                evidence["screenshot"] = base64.b64encode(img_bytes).decode()
+                evidence.setdefault("action_log", []).append(
+                    f"Screenshot captured: mode={mode} desc={desc!r}"
+                )
+                return (
+                    f"Screenshot captured ({desc}). Image attached — read the screen carefully "
+                    "to determine the current state and what is visible.",
+                    img_bytes,
+                )
+            except Exception as exc:
+                evidence.setdefault("action_log", []).append(f"screenshot failed: {exc}")
+                return f"Screenshot failed: {exc}"
+
         if tool_name == "finish":
             status = args.get("status", "success")
             if status not in ("success", "failure"):
@@ -151,12 +204,39 @@ class AgenticWorkerMixin:
         """Return a compact snapshot of current domain state after each domain tool dispatch."""
         return ""
 
+    def _shared_sensor_context(self) -> str:
+        """Best-effort cross-cutting sensor snapshot injected at worker startup. Never raises."""
+        import datetime as _dt
+        lines = ["[SHARED SENSOR CONTEXT]"]
+        lines.append(f"  timestamp: {_dt.datetime.now().isoformat(timespec='seconds')}")
+        try:
+            import pyautogui as _pg
+            w, h = _pg.size()
+            lines.append(f"  screen_dimensions: {w}x{h}")
+        except Exception:
+            pass
+        try:
+            import ctypes as _ct
+            hwnd = _ct.windll.user32.GetForegroundWindow()
+            length = _ct.windll.user32.GetWindowTextLengthW(hwnd)
+            buf = _ct.create_unicode_buffer(length + 1)
+            _ct.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value
+            if title:
+                lines.append(f"  active_window: {title!r}")
+        except Exception:
+            pass
+        return "\n".join(lines)
+
     def _worker_initial_message(self, spec: ObjectiveSpec, evidence: dict[str, Any]) -> str:
         """Build the first user message for the ReAct loop."""
         steering = spec.metadata.get("steering_context", "")
         if isinstance(steering, dict):
             steering = steering.get("latest_recovery_hint", "")
         parts: list[str] = []
+        shared_ctx = self._shared_sensor_context()
+        if shared_ctx:
+            parts.append(shared_ctx)
         env_ctx = self._worker_environment_context(spec, evidence)
         if env_ctx:
             parts.append(env_ctx)
@@ -193,6 +273,7 @@ class AgenticWorkerMixin:
 
         steps_taken = 0
         tokens_used = 0
+        recent_calls: dict[tuple[str, str], int] = {}
 
         while steps_taken < max_steps:
             response: LLMResponse = await self._llm.complete_with_tools(
@@ -268,6 +349,41 @@ class AgenticWorkerMixin:
                 )
             )
 
+            # Dedup guard — warn on 2nd identical call, block on 3rd+
+            _CONTROL_TOOLS = {"finish", "report_blocking"}
+            _dedup_prefix = ""
+            if tool_name not in _CONTROL_TOOLS:
+                _args_key = json.dumps(args, sort_keys=True)
+                _call_key = (tool_name, _args_key)
+                _prior = recent_calls.get(_call_key, 0)
+                recent_calls[_call_key] = _prior + 1
+                if _prior == 1:
+                    _dedup_prefix = (
+                        f"⚠️ REPEATED CALL: You already called {tool_name!r} with these exact "
+                        "arguments. Try a fundamentally different approach."
+                    )
+                elif _prior >= 2:
+                    _blocked_obs = (
+                        f"🛑 BLOCKED: {tool_name!r} called with identical arguments {_prior + 1} "
+                        "times. You are stuck in a loop. Call finish('failure') with a clear "
+                        "explanation of what you tried and why you could not complete the goal."
+                    )
+                    _snap = self._worker_state_snapshot(evidence)
+                    if _snap:
+                        _blocked_obs = f"{_blocked_obs}\n\n[STATE]\n{_snap}"
+                    messages.append(LLMMessage(
+                        role="tool_result",
+                        content=json.dumps({"name": tool_name, "result": _blocked_obs}),
+                    ))
+                    steps_taken += 1
+                    if effective_signals is not None:
+                        await effective_signals.put(WorkerStepSignal(
+                            task_id=task_id, objective_id=spec.objective_id,
+                            step_num=steps_taken, tool_name=tool_name,
+                            tokens_this_step=response.token_count,
+                        ))
+                    continue
+
             # Dispatch through unified tool routing (finish/blocking handled at base)
             dispatch_result = await self._dispatch_tool(tool_name, args, evidence)
 
@@ -291,17 +407,27 @@ class AgenticWorkerMixin:
                 )
                 raise WorkerBlocker(dispatch_result.reason, wr)
 
-            # Domain tool: observation string
-            observation: str = dispatch_result
+            # Domain tool: observation string or (string, image_bytes) tuple
+            img_bytes: bytes | None = None
+            if isinstance(dispatch_result, tuple):
+                observation, img_bytes = dispatch_result
+            else:
+                observation = dispatch_result  # type: ignore[assignment]
+            if _dedup_prefix:
+                observation = f"{_dedup_prefix}\n\n{observation}"
             snapshot = self._worker_state_snapshot(evidence)
             if snapshot:
                 observation = f"{observation}\n\n[STATE]\n{snapshot}"
 
-            # Emit proper FunctionResponse part (user turn)
+            # Emit proper FunctionResponse part (user turn).
+            # When image bytes are attached (e.g. screenshot), include them
+            # so the LLM receives a multimodal tool result and can read the screen.
             messages.append(
                 LLMMessage(
                     role="tool_result",
                     content=json.dumps({"name": tool_name, "result": observation}),
+                    image_data=img_bytes,
+                    image_mime="image/jpeg",
                 )
             )
 

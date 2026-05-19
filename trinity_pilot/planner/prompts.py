@@ -50,8 +50,15 @@ Metadata rules (REQUIRED — always populate for these domains):
 - desktop domain: use for launching GUI applications (Notepad, Calculator, Paint, File Explorer,
   Microsoft Word, etc.), clicking buttons or UI elements in application windows, typing text into
   application windows, or capturing desktop screenshots. ALWAYS use desktop domain for GUI app
-  launches — never use terminal domain for these. Examples: "open Notepad", "launch Calculator",
-  "type text in Notepad", "take a screenshot of the desktop".
+  launches — never use terminal domain for these.
+  IMPORTANT: Group ALL desktop steps into ONE objective with a complete goal description.
+  The goal must describe the COMPLETE task end-to-end — not just the first step.
+  Example: for "Open Calculator, calculate 847x23, tell me the result" the goal must say:
+  "Launch Calculator, press 8, 4, 7, x, 2, 3, =, copy the result with Ctrl+C, read it with
+  clipboard_read, and report the value."
+  Do NOT create a separate objective just for launching — put launch + interact + report all
+  in a single objective goal string.
+  Do NOT split multi-step desktop tasks into separate objectives.
 """
 
 PLANNER_USER_TEMPLATE = """\

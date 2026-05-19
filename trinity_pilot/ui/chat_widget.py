@@ -25,6 +25,7 @@ from trinity_pilot.ui.thinking_indicator import ThinkingIndicator
 class ChatState(Enum):
     IDLE = auto()
     PLANNING = auto()
+    AWAITING_CLARIFICATION = auto()
     AWAITING_CONFIRM = auto()
     EXECUTING = auto()
     DONE = auto()
@@ -175,7 +176,12 @@ class _ThoughtPanel(QWidget):
         p.setColor(QPalette.ColorRole.Base, QColor(tv_bg))
         p.setColor(QPalette.ColorRole.WindowText, QColor(tv_fg))
         self.setPalette(p)
-        self.setStyleSheet(f"background:{bg};border-top:1px solid {border};")
+        self.setStyleSheet(
+            f"background:{bg};"
+            "border-left:3px solid #FF6347;"
+            f"border-top:1px solid {border};"
+            "margin-left:4px;"
+        )
         self._toggle.setStyleSheet(
             "QToolButton{border:none;color:#FF6347;font-size:11px;"
             "font-style:italic;background:transparent;}"
@@ -282,15 +288,15 @@ class ChatWidget(QWidget):
         )
         root_layout.addWidget(self._browser, stretch=1)
 
+        # Thought panel immediately below chat (visually connected to last AI bubble)
+        self._thought_panel = _ThoughtPanel(debug_mode=self._debug_mode, parent=self)
+        self._thought_panel.hide()
+        root_layout.addWidget(self._thought_panel)
+
         # Confirm bar (hidden by default, shown after planning)
         self._confirm_bar = _ConfirmBar(self)
         self._confirm_bar.hide()
         root_layout.addWidget(self._confirm_bar)
-
-        # Thought panel (collapsible, appears below browser)
-        self._thought_panel = _ThoughtPanel(debug_mode=self._debug_mode, parent=self)
-        self._thought_panel.hide()
-        root_layout.addWidget(self._thought_panel)
 
         # Thinking indicator
         self._thinking = ThinkingIndicator(self)
@@ -299,6 +305,10 @@ class ChatWidget(QWidget):
         # Objective chips
         self._chips = ObjectiveChipsWidget(self)
         root_layout.addWidget(self._chips)
+
+        # Show welcome message on launch
+        self._message_log.append(("welcome", ()))
+        self._rebuild_html()
 
     # ------------------------------------------------------------------
     # Public confirm bar API
@@ -351,9 +361,7 @@ class ChatWidget(QWidget):
 
     def show_objectives_card(self, specs: list[dict]) -> None:
         self._message_log.append(("objectives", (specs,)))
-        self._message_log.append(("confirm", ()))
         self._append_html(br.objectives_card(specs, dark=self._dark))
-        self._append_html(br.confirmation_prompt(dark=self._dark))
 
     def show_progress_chips(self, specs: list[dict]) -> None:
         self._chips.set_objectives(specs)
@@ -387,7 +395,14 @@ class ChatWidget(QWidget):
         return self._state
 
     def set_state(self, state: ChatState) -> None:
+        prev = self._state
         self._state = state
+        if state == ChatState.PLANNING and prev not in (ChatState.PLANNING,):
+            self._message_log.append(("state_banner", ("🧠 Planning", "#FF9800")))
+            self._rebuild_html()
+        elif state == ChatState.EXECUTING and prev != ChatState.EXECUTING:
+            self._message_log.append(("state_banner", ("⚙ Executing", "#3F51B5")))
+            self._rebuild_html()
         if state == ChatState.EXECUTING:
             self._poll_timer.start()
         else:
@@ -434,12 +449,14 @@ class ChatWidget(QWidget):
             return br.system_note(args[0], dark=d)
         if kind == "objectives":
             return br.objectives_card(args[0], dark=d)
-        if kind == "confirm":
-            return br.confirmation_prompt(dark=d)
         if kind == "summary":
             return br.summary_bubble(args[0], args[1], args[2], dark=d)
         if kind == "exec_step":
             return br.execution_row(args[0], args[1], args[2], dark=d)
+        if kind == "welcome":
+            return br.welcome_bubble(dark=d)
+        if kind == "state_banner":
+            return br.state_banner(args[0], args[1], dark=d)
         return ""
 
     def _append_html(self, _fragment: str) -> None:

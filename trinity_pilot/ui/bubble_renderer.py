@@ -179,15 +179,6 @@ def objectives_card(specs: list[dict], dark: bool = False) -> str:
     )
 
 
-def confirmation_prompt(dark: bool = False) -> str:
-    """AI confirmation request after objectives card."""
-    return ai_bubble(
-        "Ready to run these objectives? "
-        "Type ‘yes’ to start, ‘no’ to cancel, "
-        "or describe what you’d like to change.",
-        dark=dark,
-    )
-
 
 def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = False) -> str:
     """Completion summary bubble."""
@@ -216,6 +207,30 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
             msg += f", {not_run} not run"
         msg += f" after {elapsed_s:.1f}s."
 
+    divider = c["divider"]
+    desc_fg = c["desc_fg"]
+    rows = ""
+    for obj_id, entry in results.items():
+        s = entry.get("status", "unknown")
+        row_icon = "✅" if s == "passed" else ("❌" if s == "failed" else "⏭")
+        summary_text = (
+            entry.get("summary", "")
+            or entry.get("evidence", {}).get("worker_result_summary", "")
+        )
+        if len(summary_text) > 80:
+            summary_text = summary_text[:77] + "…"
+        detail = (
+            f"<br/><span style='color:{desc_fg};margin-left:16px;'>"
+            f"{_esc(summary_text)}</span>"
+            if summary_text
+            else ""
+        )
+        rows += (
+            f"<div style='font-size:12px;padding:3px 0;"
+            f"border-top:1px solid {divider};margin-top:2px;'>"
+            f"{row_icon} <b>{_esc(obj_id)}</b>{detail}</div>"
+        )
+
     return (
         "<div style='"
         f"background:{color};"
@@ -227,6 +242,7 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
         f"color:{c['summary_fg']};"
         "'>"
         f"{icon} <b>{msg}</b>"
+        f"{rows}"
         "</div>"
     )
 
@@ -260,6 +276,39 @@ def system_note(text: str, dark: bool = False) -> str:
         "font-size:11px;"
         "margin:4px 0;"
         f"'>{_esc(text)}</div>"
+    )
+
+
+def welcome_bubble(dark: bool = False) -> str:
+    """Centered onboarding message shown on launch."""
+    c = _DARK if dark else _LIGHT
+    return (
+        "<div style='text-align:center;margin:24px 32px 8px 32px;'>"
+        "<div style='font-size:22px;margin-bottom:8px;'>✈️</div>"
+        f"<div style='font-weight:700;font-size:15px;color:{c['ai_accent']};margin-bottom:6px;'>"
+        "Trinity Pilot</div>"
+        f"<div style='font-size:12px;color:{c['system_fg']};line-height:1.6;'>"
+        "Describe any desktop task and I'll break it into objectives and execute them.<br/>"
+        "Type a task below to get started."
+        "</div>"
+        "</div>"
+    )
+
+
+def state_banner(label: str, color: str, dark: bool = False) -> str:
+    """Centered state-transition banner (planning / executing)."""
+    # Qt HTML renderer does not support 8-digit hex RGBA — use explicit rgba().
+    # Parse the #RRGGBB color into r,g,b components for the rgba() background.
+    r = int(color[1:3], 16)
+    g = int(color[3:5], 16)
+    b = int(color[5:7], 16)
+    bg = f"rgba({r},{g},{b},0.12)"
+    border_color = f"rgba({r},{g},{b},0.35)"
+    return (
+        f"<div style='text-align:center;margin:6px 4px;padding:5px 12px;"
+        f"border-radius:4px;background:{bg};border:1px solid {border_color};"
+        f"font-size:11px;color:{color};font-weight:600;letter-spacing:0.5px;'>"
+        f"{label}</div>"
     )
 
 

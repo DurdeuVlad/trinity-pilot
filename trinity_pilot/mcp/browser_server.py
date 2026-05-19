@@ -8,11 +8,22 @@ MCP tools exposed
 High-level task tools:
   browser_navigate   — run a full agentic browser objective
 
-Domain tools (mirrored from the inner ReAct loop):
+Domain sensor tools (read-only, browser-specific — require active session):
+  read_page          — read current page title, URL, and text preview
+  dom_snapshot       — full DOM as structured text
+  accessibility_tree — ARIA accessibility tree of current page
+  current_url        — active page URL
+  page_title         — active page title
+  get_cookies        — cookies for current session or domain
+  list_open_tabs     — all open browser tabs
+  network_log        — recent network requests
+  get_element_text   — text content of a CSS-selected element
+  get_element_attribute — attribute value of a CSS-selected element
+
+Domain action tools (mirrored from the inner ReAct loop):
   navigate           — navigate to a URL, return HTTP status
   click              — click a CSS selector on the current page
   fill               — fill an input field
-  read_page          — read current page title, URL, and text preview
 
 Control tools:
   finish             — signal objective complete or failed
@@ -129,6 +140,104 @@ async def read_page() -> dict:
     Note: requires an active browser session managed by BrowserWorker.
     """
     return {"note": "read_page must be called within an active BrowserWorker session."}
+
+
+# ---------------------------------------------------------------------------
+# Domain sensor tools (browser-specific, require active session)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def dom_snapshot() -> dict:
+    """Return the full DOM as structured text (elements, attributes, text nodes).
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "dom_snapshot must be called within an active BrowserWorker session."}
+
+
+@mcp.tool()
+async def accessibility_tree() -> dict:
+    """Return the ARIA accessibility tree of the current page.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "accessibility_tree must be called within an active BrowserWorker session."}
+
+
+@mcp.tool()
+async def current_url() -> dict:
+    """Return the active page URL.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "current_url must be called within an active BrowserWorker session."}
+
+
+@mcp.tool()
+async def page_title() -> dict:
+    """Return the active page title.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "page_title must be called within an active BrowserWorker session."}
+
+
+@mcp.tool()
+async def get_cookies(domain: str = "") -> dict:
+    """Return cookies for the current session or a specific domain.
+
+    Args:
+        domain: Optional domain to filter cookies (e.g. 'example.com').
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "get_cookies must be called within an active BrowserWorker session.", "domain": domain}
+
+
+@mcp.tool()
+async def list_open_tabs() -> dict:
+    """Return all open browser tabs with title and URL.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "list_open_tabs must be called within an active BrowserWorker session."}
+
+
+@mcp.tool()
+async def network_log(limit: int = 20) -> dict:
+    """Return recent network requests: method, URL, status code.
+
+    Args:
+        limit: Maximum number of recent entries to return.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "network_log must be called within an active BrowserWorker session.", "limit": limit}
+
+
+@mcp.tool()
+async def get_element_text(selector: str) -> dict:
+    """Return text content of a CSS-selected element.
+
+    Args:
+        selector: CSS selector for the target element.
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "get_element_text must be called within an active BrowserWorker session.", "selector": selector}
+
+
+@mcp.tool()
+async def get_element_attribute(selector: str, attr: str) -> dict:
+    """Return an attribute value of a CSS-selected element.
+
+    Args:
+        selector: CSS selector for the target element.
+        attr: Attribute name (e.g. 'href', 'value', 'class').
+
+    Note: requires an active browser session managed by BrowserWorker.
+    """
+    return {"note": "get_element_attribute must be called within an active BrowserWorker session.", "selector": selector, "attr": attr}
 
 
 # ---------------------------------------------------------------------------

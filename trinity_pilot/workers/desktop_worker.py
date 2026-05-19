@@ -64,18 +64,26 @@ _DESKTOP_AGENT_SYSTEM = """\
 You are a desktop automation agent on Windows.
 Use the available tools to accomplish the goal step by step.
 
+Tool categories:
+- SENSOR tools read, inspect, measure, and detect. They never change world state.
+  Use them freely before and after actions to verify state.
+- ACTION tools create, modify, execute, or delete. They change world state.
+  Each action must be intentional. Prefer sensing first, then acting.
+
 Available tools:
-- launch_app: Launch an application by executable name.
-- focus_window: Focus a window by title regex.
-- type_text: Type text into the currently focused window.
-- press_hotkey: Press a keyboard hotkey combination.
-- press_key: Press a single key.
-- write_file: Write text content directly to a file at an absolute path.
-- wait: Pause execution for a number of seconds.
-- take_screenshot: Capture the current screen as visual evidence. Call after completing the task.
-- get_clipboard: Read current clipboard text (e.g. Calculator result after Ctrl+C).
-- finish: Signal that the objective is complete or definitively failed.
-- report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
+
+[SENSOR] screenshot: Capture the current screen as visual evidence. Call after completing the task.
+[SENSOR] clipboard_read: Read current clipboard text (e.g. Calculator result after Ctrl+C).
+
+[ACTION] launch_app: Launch an application by executable name.
+[ACTION] focus_window: Focus a window by title regex.
+[ACTION] type_text: Type text into the currently focused window.
+[ACTION] press_hotkey: Press a keyboard hotkey combination.
+[ACTION] press_key: Press a single key.
+[ACTION] write_file: Write text content directly to a file at an absolute path.
+[ACTION] wait: Pause execution for a number of seconds.
+[ACTION] finish: Signal that the objective is complete or definitively failed.
+[ACTION] report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
 CRITICAL RULES:
 - ALWAYS call focus_window BEFORE type_text, press_key, or press_hotkey.
@@ -85,16 +93,20 @@ CRITICAL RULES:
 - After launch_app, ALWAYS call focus_window with a title_re that matches the
   launched application before sending any keystrokes.
 - ALWAYS use write_file to save content to disk. NEVER use GUI save dialogs.
+- After write_file, open the created file so the user can see it. Use launch_app with the file
+  path as an arg (e.g. {"action":"launch","app":"notepad.exe","args":["C:/path/to/file.txt"],"wait":1.5}).
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
 - Use forward slashes in all file paths.
+- After each ACTION tool call, read its result before proceeding. If a tool failed or
+  produced unexpected state, adapt — do not blindly continue to the next planned step.
 - NEVER call finish until every action described in the GOAL is done. Read the GOAL in full
   before your first tool call. If the goal says "calculate X", you must press the buttons,
-  perform the computation, copy the result (Ctrl+C), read it with get_clipboard, and include
+  perform the computation, copy the result (Ctrl+C), read it with clipboard_read, and include
   the value in your finish summary. Finishing after only launching the app is wrong.
-- After completing all goal steps, call take_screenshot to capture visual evidence of the
+- After completing all goal steps, call screenshot to capture visual evidence of the
   final state, then call finish with a summary that includes any result values observed.
-- Use get_clipboard to read values that were copied to clipboard (e.g. Calculator result
+- Use clipboard_read to read values that were copied to clipboard (e.g. Calculator result
   after pressing Ctrl+C).
 """
 
@@ -189,7 +201,7 @@ _wait_decl = genai_types.FunctionDeclaration(
 )
 
 _get_clipboard_decl = genai_types.FunctionDeclaration(
-    name="get_clipboard",
+    name="clipboard_read",
     description="Read and return the current clipboard text content.",
     parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
 )
@@ -449,12 +461,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             evidence["action_log"].append(f"Waited {secs}s")
             return f"Waited {secs}s"
 
-        elif tool_name == "take_screenshot":
+        elif tool_name == "screenshot":
             if self._target_window and not args.get("app_title"):
                 args = {**args, "mode": args.get("mode", "app"), "app_title": self._target_window}
             return await super()._dispatch_tool(tool_name, args, evidence)
 
-        elif tool_name == "get_clipboard":
+        elif tool_name == "clipboard_read":
             import subprocess
             try:
                 result = subprocess.run(
@@ -462,11 +474,11 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     capture_output=True, text=True, timeout=5,
                 )
                 text = result.stdout.strip()
-                evidence["action_log"].append(f"Clipboard read: {text[:100]!r}")
+                evidence["action_log"].append(f"clipboard_read: {text[:100]!r}")
                 return text if text else "(clipboard is empty)"
             except Exception as exc:
-                evidence["action_log"].append(f"get_clipboard failed: {exc}")
-                return f"get_clipboard failed: {exc}"
+                evidence["action_log"].append(f"clipboard_read failed: {exc}")
+                return f"clipboard_read failed: {exc}"
 
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)

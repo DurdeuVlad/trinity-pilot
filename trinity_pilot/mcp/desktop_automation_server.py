@@ -1,18 +1,15 @@
-"""Desktop automation MCP server — screenshot, click, type, find window.
+"""Desktop automation MCP server — low-level click, type, key actions.
 
 Provides Copilot with tools to drive the Trinity Pilot UI for automated testing.
+ACTION tools only. Cross-cutting sensors (screenshot, find_window, locate_on_screen)
+have been moved to sensor_server.py.
 
 Run: python -m trinity_pilot.mcp.desktop_automation_server
 """
 from __future__ import annotations
 
-import base64
-import io
-import subprocess
-import sys
 import time
 
-import pyautogui
 import pyautogui as pg
 from fastmcp import FastMCP
 
@@ -22,29 +19,6 @@ mcp = FastMCP("desktop-automation")
 pg.FAILSAFE = True
 pg.PAUSE = 0.05
 
-
-@mcp.tool()
-def take_screenshot(region: dict | None = None) -> dict:
-    """Take a screenshot of the desktop or a region.
-
-    Args:
-        region: Optional dict with keys x, y, width, height to capture a sub-region.
-
-    Returns:
-        dict with 'image_b64' (PNG base64) and 'width', 'height'.
-    """
-    if region:
-        img = pg.screenshot(region=(region["x"], region["y"], region["width"], region["height"]))
-    else:
-        img = pg.screenshot()
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return {
-        "image_b64": base64.b64encode(buf.getvalue()).decode(),
-        "width": img.width,
-        "height": img.height,
-    }
 
 
 @mcp.tool()
@@ -104,42 +78,6 @@ def press_key(key: str) -> str:
     return f"Pressed {key}"
 
 
-@mcp.tool()
-def find_window(title_contains: str) -> dict:
-    """Find a window by partial title match and return its position/size.
-
-    Args:
-        title_contains: Substring to match against window titles.
-
-    Returns:
-        dict with 'found', 'title', 'x', 'y', 'width', 'height', or error message.
-    """
-    try:
-        import win32gui
-
-        results = []
-
-        def _enum(hwnd, _):
-            if win32gui.IsWindowVisible(hwnd):
-                t = win32gui.GetWindowText(hwnd)
-                if title_contains.lower() in t.lower():
-                    rect = win32gui.GetWindowRect(hwnd)
-                    results.append({
-                        "hwnd": hwnd,
-                        "title": t,
-                        "x": rect[0],
-                        "y": rect[1],
-                        "width": rect[2] - rect[0],
-                        "height": rect[3] - rect[1],
-                    })
-
-        win32gui.EnumWindows(_enum, None)
-        if results:
-            return {"found": True, **results[0]}
-        return {"found": False, "error": f"No window matching '{title_contains}'"}
-    except ImportError:
-        return {"found": False, "error": "win32gui not available"}
-
 
 @mcp.tool()
 def focus_window(title_contains: str) -> str:
@@ -174,35 +112,6 @@ def focus_window(title_contains: str) -> str:
     except ImportError:
         return "win32gui not available"
 
-
-@mcp.tool()
-def locate_on_screen(image_b64: str, confidence: float = 0.8) -> dict:
-    """Locate an image on screen and return its center coordinates.
-
-    Args:
-        image_b64: Base64-encoded PNG of the image to find.
-        confidence: Match confidence threshold (0.0–1.0).
-
-    Returns:
-        dict with 'found', 'x', 'y' (center) or error.
-    """
-    import tempfile
-    import os
-
-    data = base64.b64decode(image_b64)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        f.write(data)
-        tmp = f.name
-    try:
-        loc = pg.locateOnScreen(tmp, confidence=confidence)
-        if loc:
-            center = pg.center(loc)
-            return {"found": True, "x": center.x, "y": center.y}
-        return {"found": False}
-    except Exception as exc:
-        return {"found": False, "error": str(exc)}
-    finally:
-        os.unlink(tmp)
 
 
 @mcp.tool()
