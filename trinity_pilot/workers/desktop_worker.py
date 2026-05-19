@@ -19,6 +19,7 @@ from trinity_pilot.workers.agentic_mixin import (
     _finish_decl,
     _make_tool,
     _report_blocking_decl,
+    _take_screenshot_decl,
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
@@ -71,6 +72,8 @@ Available tools:
 - press_key: Press a single key.
 - write_file: Write text content directly to a file at an absolute path.
 - wait: Pause execution for a number of seconds.
+- take_screenshot: Capture the current screen as visual evidence. Call after completing the task.
+- get_clipboard: Read current clipboard text (e.g. Calculator result after Ctrl+C).
 - finish: Signal that the objective is complete or definitively failed.
 - report_blocking: Signal an unresolvable blocker requiring orchestrator intervention.
 
@@ -85,6 +88,14 @@ CRITICAL RULES:
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
 - Use forward slashes in all file paths.
+- NEVER call finish until every action described in the GOAL is done. Read the GOAL in full
+  before your first tool call. If the goal says "calculate X", you must press the buttons,
+  perform the computation, copy the result (Ctrl+C), read it with get_clipboard, and include
+  the value in your finish summary. Finishing after only launching the app is wrong.
+- After completing all goal steps, call take_screenshot to capture visual evidence of the
+  final state, then call finish with a summary that includes any result values observed.
+- Use get_clipboard to read values that were copied to clipboard (e.g. Calculator result
+  after pressing Ctrl+C).
 """
 
 # Domain tool declarations
@@ -177,6 +188,12 @@ _wait_decl = genai_types.FunctionDeclaration(
     ),
 )
 
+_get_clipboard_decl = genai_types.FunctionDeclaration(
+    name="get_clipboard",
+    description="Read and return the current clipboard text content.",
+    parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
+)
+
 
 class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     """LLM-driven desktop worker using ReAct loop."""
@@ -206,16 +223,24 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             _press_key_decl,
             _desktop_write_file_decl,
             _wait_decl,
+            _get_clipboard_decl,
+            _take_screenshot_decl,
             _finish_decl,
             _report_blocking_decl,
         ])]
 
     def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
         import sys as _sys
+        import pathlib
         platform_name = "Windows" if _sys.platform == "win32" else _sys.platform
         active_title = self._get_active_window_title()
+        desktop = str(pathlib.Path.home() / "Desktop").replace("\\", "/")
+        username = os.environ.get("USERNAME") or os.environ.get("USER") or "User"
         lines = ["DESKTOP STATE:"]
         lines.append(f"  Platform: {platform_name}")
+        lines.append(f"  Username: {username}")
+        lines.append(f"  Desktop path: {desktop}")
+        lines.append(f"  Home dir: {str(pathlib.Path.home()).replace(chr(92), '/')}")
         if active_title:
             lines.append(f"  Active window: {active_title!r}")
         else:
@@ -321,6 +346,29 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             raw_args = args.get("args", "")
             app_args = raw_args.split() if raw_args else []
             app_args = [a.replace("/", "\\") if isinstance(a, str) else a for a in app_args]
+            # Map exe names to window title patterns so we can detect existing instances.
+            _EXE_TITLE_MAP = {
+                "notepad.exe": "notepad",
+                "notepad": "notepad",
+                "calc.exe": "calculator",
+                "calc": "calculator",
+                "mspaint.exe": "paint",
+                "mspaint": "paint",
+            }
+            title_hint = _EXE_TITLE_MAP.get(app.lower())
+            if title_hint:
+                try:
+                    from pywinauto import findwindows
+                    existing = findwindows.find_windows(title_re=f"(?i){title_hint}")
+                    if existing:
+                        import ctypes
+                        hwnd = existing[0]
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        evidence["action_log"].append(f"Reused existing window: {app}")
+                        return f"Reused existing {app} window (already open)"
+                except Exception:
+                    pass  # fall through to normal launch
             pids_before = _snapshot_pids()
             proc = subprocess.Popen([app, *app_args])
             wait = float(args.get("wait", 1.5))
@@ -347,6 +395,17 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
         elif tool_name == "type_text":
             text = args["text"]
+            _MAX_TYPE_CHARS = 500
+            if len(text) > _MAX_TYPE_CHARS:
+                evidence["action_log"].append(
+                    f"type_text blocked: {len(text)} chars > {_MAX_TYPE_CHARS} limit"
+                )
+                return (
+                    f"🛑 BLOCKED: type_text called with {len(text)} characters. "
+                    f"Maximum per call is {_MAX_TYPE_CHARS}. "
+                    "Typing thousands of characters is not a supported automation pattern. "
+                    "Call finish('failure') explaining that the goal requires excessive repetition."
+                )
             interval = float(args.get("interval", 0.03))
             await self._ensure_target_focused(evidence)
             await self._type_text(text, interval, evidence)
@@ -389,6 +448,25 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             await asyncio.sleep(secs)
             evidence["action_log"].append(f"Waited {secs}s")
             return f"Waited {secs}s"
+
+        elif tool_name == "take_screenshot":
+            if self._target_window and not args.get("app_title"):
+                args = {**args, "mode": args.get("mode", "app"), "app_title": self._target_window}
+            return await super()._dispatch_tool(tool_name, args, evidence)
+
+        elif tool_name == "get_clipboard":
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                text = result.stdout.strip()
+                evidence["action_log"].append(f"Clipboard read: {text[:100]!r}")
+                return text if text else "(clipboard is empty)"
+            except Exception as exc:
+                evidence["action_log"].append(f"get_clipboard failed: {exc}")
+                return f"get_clipboard failed: {exc}"
 
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)
@@ -481,6 +559,25 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 if act == "launch":
                     app = step["app"]
                     args = [a.replace("/", "\\") if isinstance(a, str) else a for a in step.get("args", [])]
+                    _EXE_TITLE_MAP = {
+                        "notepad.exe": "notepad", "notepad": "notepad",
+                        "calc.exe": "calculator", "calc": "calculator",
+                        "mspaint.exe": "paint", "mspaint": "paint",
+                    }
+                    title_hint = _EXE_TITLE_MAP.get(app.lower())
+                    if title_hint:
+                        try:
+                            from pywinauto import findwindows
+                            existing = findwindows.find_windows(title_re=f"(?i){title_hint}")
+                            if existing:
+                                import ctypes
+                                hwnd = existing[0]
+                                ctypes.windll.user32.ShowWindow(hwnd, 9)
+                                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                                evidence["action_log"].append(f"Reused existing window: {app}")
+                                continue
+                        except Exception:
+                            pass
                     pids_before = _snapshot_pids()
                     proc = subprocess.Popen([app, *args])
                     wait = float(step.get("wait", 1.5))
@@ -666,9 +763,9 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             import io
             from PIL import ImageGrab
             img = ImageGrab.grab()
-            img.thumbnail((640, 360))
+            img.thumbnail((1280, 720))
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=40)
+            img.save(buf, format="JPEG", quality=60)
             evidence["screenshot"] = base64.b64encode(buf.getvalue()).decode()
             evidence["action_log"].append("Screenshot captured via PIL ImageGrab (thumbnail)")
         except Exception as exc:

@@ -112,6 +112,33 @@ def desktop_available():
 
 
 # ---------------------------------------------------------------------------
+# app — function-scoped GUI driver (Layer 3: full Qt GUI via pywinauto)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def app(request):
+    """Fresh Trinity Pilot GUI instance per test. Process is killed on teardown.
+
+    Skipped automatically on non-Windows or if GEMINI_API_KEY is absent.
+    Each test gets an isolated app instance with a clean DB state.
+    """
+    if sys.platform != "win32":
+        pytest.skip("GUI tests require Windows")
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        pytest.skip("GEMINI_API_KEY not set — skipping GUI e2e tests")
+
+    from tests.e2e._gui_driver import AppDriver
+
+    driver = AppDriver.launch()
+    yield driver
+
+    safe_name = request.node.name.replace("/", "_").replace("\\", "_")[:60]
+    driver.snap(f"teardown_{safe_name}")
+    driver.close()
+
+
+# ---------------------------------------------------------------------------
 # Marker registration (also in pyproject.toml)
 # ---------------------------------------------------------------------------
 

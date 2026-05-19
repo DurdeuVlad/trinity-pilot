@@ -1,4 +1,4 @@
-"""Worker timeout guard tests — spec.metadata["timeout_seconds"] enforced via asyncio.wait_for."""
+"""Worker timeout guard and input-cap tests."""
 import asyncio
 from unittest.mock import AsyncMock, patch
 
@@ -71,3 +71,35 @@ class TestDesktopWorkerTimeout:
         with patch.object(worker, "_run_objective", side_effect=slow_run):
             with pytest.raises(WorkerError, match="timeout"):
                 await worker.execute(spec)
+
+
+class TestDesktopWorkerTypeTextCap:
+    def _make_worker(self):
+        from unittest.mock import MagicMock
+        from trinity_pilot.workers.desktop_worker import DesktopWorker
+        mock_llm = MagicMock()
+        return DesktopWorker(llm=mock_llm)
+
+    @pytest.mark.asyncio
+    async def test_type_text_blocked_above_500_chars(self):
+        worker = self._make_worker()
+        evidence: dict = {"action_log": []}
+        result = await worker._dispatch_tool(
+            "type_text", {"text": "a" * 501}, evidence
+        )
+        assert "BLOCKED" in result
+        assert "501" in result
+        assert any("blocked" in entry.lower() for entry in evidence["action_log"])
+
+    @pytest.mark.asyncio
+    async def test_type_text_exactly_500_chars_not_blocked(self):
+        worker = self._make_worker()
+        evidence: dict = {"action_log": [], "typed_text": ""}
+
+        with patch.object(worker, "_ensure_target_focused", new_callable=AsyncMock):
+            with patch.object(worker, "_type_text", new_callable=AsyncMock):
+                result = await worker._dispatch_tool(
+                    "type_text", {"text": "a" * 500}, evidence
+                )
+        assert "BLOCKED" not in result
+        assert "500" in result
