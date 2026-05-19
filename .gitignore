@@ -93,3 +93,13 @@ nul
 
 # Crash / fault artefacts (generated at runtime, not source)
 crashes/
+
+# Eval / research artifacts (local dev only)
+eval_*.py
+eval_*.db
+eval_*.json
+eval_screenshots/
+adversarial_test.py
+run_adv.bat
+rerun_inj01.bat
+*.db
