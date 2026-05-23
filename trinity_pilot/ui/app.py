@@ -41,8 +41,9 @@ class _PlanningRelay(QObject):
 
 class _ClarificationRelay(QObject):
     """Marshals clarification-check results back to the Qt main thread."""
-    question = Signal(str)   # clarification needed — emit the question
-    clear = Signal()         # task is specific enough — proceed to planning
+    question = Signal(str)        # clarification needed — emit the question
+    clear = Signal()              # automate intent, task clear — proceed to planning
+    direct_response = Signal(str, str)  # (intent, task) — chat/consult, skip planning
 
 
 
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
         self._clarification_relay = _ClarificationRelay(self)
         self._clarification_relay.question.connect(self._on_clarification_needed)
         self._clarification_relay.clear.connect(self._on_clarification_clear)
+        self._clarification_relay.direct_response.connect(self._on_direct_response)
 
 
         # Debug drawer — only instantiated when debug_mode=True
@@ -435,20 +437,23 @@ class MainWindow(QMainWindow):
                 )
                 prompt = (
                     f'Task: "{task}"\n\n'
-                    "Does this task need clarification before a desktop automation agent can execute it?\n\n"
-                    "Be EXTREMELY conservative — nearly all tasks are clear enough. Only return\n"
-                    "needs_clarification=true if the core action is genuinely ambiguous (you would\n"
-                    "be guessing what to do).\n\n"
-                    "Do NOT ask about:\n"
-                    "- Preferences (font, color, format, file type) — agent uses sensible defaults\n"
-                    "- Which standard app to use (use the obvious default)\n"
-                    "- Whether the user is sure\n\n"
-                    "DO ask only if:\n"
-                    "- 'files' or 'documents' mentioned but it's completely unclear which ones\n"
-                    "- The core action itself is ambiguous (e.g. 'do something with X')\n\n"
-                    "One short question maximum.\n\n"
-                    'Respond with JSON ONLY:\n{"needs_clarification": false}\n'
-                    'OR\n{"needs_clarification": true, "question": "..."}'
+                    "Step 1 — classify the intent:\n"
+                    '- "automate": user wants to perform an action on their computer '
+                    "(open apps, click UI, run commands, browse the web, manage files, etc.)\n"
+                    '- "consult": user wants advice or discussion about automation or computer '
+                    "tasks, without actually executing anything\n"
+                    '- "chat": general conversation, creative writing, factual questions, '
+                    "or anything unrelated to computer automation\n\n"
+                    "Step 2 — if intent is 'automate', decide if clarification is needed.\n"
+                    "Be EXTREMELY conservative — nearly all tasks are clear enough.\n"
+                    "Do NOT ask about preferences, which standard app to use, or whether "
+                    "the user is sure.\n"
+                    "DO ask only if the core action is genuinely ambiguous.\n\n"
+                    "Respond with JSON ONLY — one of:\n"
+                    '{"intent": "chat"}\n'
+                    '{"intent": "consult"}\n'
+                    '{"intent": "automate", "needs_clarification": false}\n'
+                    '{"intent": "automate", "needs_clarification": true, "question": "..."}'
                 )
                 loop = asyncio.new_event_loop()
                 try:
@@ -466,7 +471,10 @@ class MainWindow(QMainWindow):
                         if raw.startswith("json"):
                             raw = raw[4:].strip()
                     data = _json.loads(raw)
-                    if data.get("needs_clarification") and data.get("question"):
+                    intent = data.get("intent", "automate")
+                    if intent in ("chat", "consult"):
+                        relay.direct_response.emit(intent, task)
+                    elif data.get("needs_clarification") and data.get("question"):
                         relay.question.emit(str(data["question"]))
                     else:
                         relay.clear.emit()
@@ -494,6 +502,56 @@ class MainWindow(QMainWindow):
     def _on_clarification_clear(self) -> None:
         """Task is specific enough — proceed to planning."""
         self._start_planning_phase()
+
+    def _on_direct_response(self, intent: str, task: str) -> None:
+        """Task is chat or consult — stream a direct answer, skip planning entirely."""
+        self._chat.thinking.stop()
+
+        if intent == "consult":
+            system = (
+                "You are Trinity Pilot, a desktop automation advisor. "
+                "Give helpful advice about automation, workflows, and computer tasks. "
+                "You can discuss strategies and explain concepts, but you are not executing anything right now."
+            )
+            prompt = f'The user asked: "{task}"\n\nRespond as an automation consultant.'
+        else:
+            system = (
+                "You are Trinity Pilot, a helpful AI assistant. "
+                "Answer the user conversationally and directly."
+            )
+            prompt = f'The user asked: "{task}"\n\nRespond helpfully.'
+
+        self._chat.start_bubble_stream()
+
+        if not self._settings:
+            self._chat.set_state(ChatState.DONE)
+            self._input.setEnabled(True)
+            self._set_input_state(ChatState.DONE)
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.hide()
+            self.set_status("Ready")
+            return
+
+        self._stream_worker = StreamWorker(
+            api_key=self._settings.gemini_api_key,
+            model=self._settings.gemini_planner_model,
+            prompt=prompt,
+            system=system,
+            parent=self,
+        )
+        self._stream_worker.chunk_received.connect(self._chat.on_bubble_stream_chunk)
+        self._stream_worker.stream_done.connect(self._on_direct_response_done)
+        self._stream_worker.stream_error.connect(self._on_thinking_stream_error)
+        self._stream_worker.start()
+        self.set_status("Responding…")
+
+    def _on_direct_response_done(self, _full_text: str) -> None:
+        self._chat.set_state(ChatState.DONE)
+        self._input.setEnabled(True)
+        self._set_input_state(ChatState.DONE)
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.hide()
+        self.set_status("Ready")
 
     def _handle_clarification_answer(self, answer: str) -> None:
         """User answered the clarification question — enrich request and plan."""
@@ -551,7 +609,10 @@ class MainWindow(QMainWindow):
         task_id = self._bridge.start_task(
             user_request=self._pending_request,
             on_log=self.log,
-            on_status=lambda s: self.set_status(f"Status: {s}"),
+            on_status=lambda s: self.set_status(
+                {"running": "Executing…", "completed": "Done",
+                 "failed": "Error", "cancelled": "Cancelled"}.get(s, s.capitalize())
+            ),
             on_done=self._on_task_done,
             objectives=self._pending_specs,
         ) if self._bridge else None
@@ -634,7 +695,8 @@ class MainWindow(QMainWindow):
         self._set_input_state(terminal)
         self._stop_btn.setEnabled(False)
         self._stop_btn.hide()
-        self.set_status("Done" if final_status == "completed" else f"Finished: {final_status}")
+        _done_labels = {"completed": "Done", "failed": "Error", "cancelled": "Cancelled", "crashed": "Crashed"}
+        self.set_status(_done_labels.get(final_status, f"Finished: {final_status}"))
 
         # Show worker finish-summaries directly as an AI reply.
         # Workers already produce descriptive summaries in their finish() call —

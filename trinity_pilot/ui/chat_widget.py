@@ -93,6 +93,18 @@ class _ConfirmBar(QWidget):
         self._edit_input.returnPressed.connect(self._on_edit_submit)
         layout.addWidget(self._edit_input, stretch=1)
 
+        self._cancel_btn = QPushButton("✕")
+        self._cancel_btn.setFixedWidth(30)
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.setStyleSheet(
+            "QPushButton{background:#F5F5F5;color:#757575;"
+            "border:1px solid #E0E0E0;border-radius:12px;"
+            "padding:4px 6px;font-size:12px;}"
+            "QPushButton:hover{background:#EEEEEE;}"
+        )
+        self._cancel_btn.clicked.connect(self._on_edit_cancel)
+        layout.addWidget(self._cancel_btn)
+
         layout.addStretch()
 
     def _on_approve(self) -> None:
@@ -108,13 +120,22 @@ class _ConfirmBar(QWidget):
         self._reject_btn.setVisible(False)
         self._edit_btn.setVisible(False)
         self._edit_input.setVisible(True)
+        self._cancel_btn.setVisible(True)
         self._edit_input.setFocus()
+
+    def _on_edit_cancel(self) -> None:
+        self._edit_input.clear()
+        self._edit_input.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._approve_btn.setVisible(True)
+        self._reject_btn.setVisible(True)
+        self._edit_btn.setVisible(True)
 
     def _on_edit_submit(self) -> None:
         text = self._edit_input.text().strip()
-        # Reset UI state back to buttons
         self._edit_input.clear()
         self._edit_input.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._approve_btn.setVisible(True)
         self._reject_btn.setVisible(True)
         self._edit_btn.setVisible(True)
@@ -142,16 +163,16 @@ class _ThoughtPanel(QWidget):
         layout.setSpacing(2)
 
         self._toggle = QToolButton()
-        self._toggle.setText("\U0001f9e0 Thoughts ▸")
+        self._toggle.setText("\U0001f9e0 AI Reasoning ▾")
         self._toggle.setCheckable(True)
-        self._toggle.setChecked(debug_mode)
+        self._toggle.setChecked(True)
         self._toggle.toggled.connect(self._on_toggle)
         layout.addWidget(self._toggle)
 
         self._thought_view = QTextEdit()
         self._thought_view.setReadOnly(True)
-        self._thought_view.setFixedHeight(72)
-        self._thought_view.setVisible(debug_mode)
+        self._thought_view.setFixedHeight(120)
+        self._thought_view.setVisible(True)
         layout.addWidget(self._thought_view)
 
         if debug_mode:
@@ -215,7 +236,7 @@ class _ThoughtPanel(QWidget):
 
     def _on_toggle(self, checked: bool) -> None:
         self._toggle.setText(
-            f"\U0001f9e0 Thoughts {'▾' if checked else '▸'}"
+            f"\U0001f9e0 AI Reasoning {'▾' if checked else '▸'}"
         )
         self._thought_view.setVisible(checked)
         if self._debug_view:
@@ -336,6 +357,8 @@ class ChatWidget(QWidget):
     # ------------------------------------------------------------------
 
     def add_user_message(self, text: str) -> None:
+        if self._message_log and self._message_log[0][0] == "welcome":
+            self._message_log.pop(0)
         self._message_log.append(("user", (text,)))
         self._append_html(br.user_bubble(text, dark=self._dark))
 
@@ -355,8 +378,6 @@ class ChatWidget(QWidget):
 
     def add_system_note(self, text: str) -> None:
         self._message_log.append(("system", (text,)))
-        compat_label = QLabel(text, self._browser)
-        compat_label.hide()
         self._append_html(br.system_note(text, dark=self._dark))
 
     def show_objectives_card(self, specs: list[dict]) -> None:
@@ -386,6 +407,27 @@ class ChatWidget(QWidget):
     def on_stream_error(self, error: str) -> None:
         if self._current_thought_panel and self._debug_mode:
             self._current_thought_panel.set_text(f"[stream error: {error}]")
+
+    def start_bubble_stream(self) -> None:
+        """Add an empty AI bubble for direct in-place streaming. Hides thought panel."""
+        if self._message_log and self._message_log[0][0] == "welcome":
+            self._message_log.pop(0)
+        # Drop any trailing state_banner (e.g. Planning) — not relevant for direct chat
+        while self._message_log and self._message_log[-1][0] == "state_banner":
+            self._message_log.pop()
+        self._message_log.append(("ai", ("", "", "")))
+        self._thought_panel.hide()
+        self._current_thought_panel = None
+        self._rebuild_html()
+
+    def on_bubble_stream_chunk(self, chunk: str) -> None:
+        """Append chunk to the last AI bubble in the main chat (not thought panel)."""
+        for i in reversed(range(len(self._message_log))):
+            if self._message_log[i][0] == "ai":
+                kind, args = self._message_log[i]
+                self._message_log[i] = ("ai", (args[0] + chunk, args[1], args[2]))
+                self._rebuild_html()
+                return
 
     # ------------------------------------------------------------------
     # State machine
@@ -484,7 +526,8 @@ class ChatWidget(QWidget):
         except ImportError:
             pass
         sb = self._browser.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        if sb.maximum() - sb.value() <= 120:
+            sb.setValue(sb.maximum())
 
     @property
     def thinking(self) -> ThinkingIndicator:
