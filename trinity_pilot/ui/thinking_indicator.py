@@ -1,20 +1,34 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
 
+_ON  = '<span style="color:#FF6347;font-size:13px;">&#9679;</span>'
+_OFF = '<span style="color:#CCCCCC;font-size:13px;">&#9679;</span>'
 
-_FRAMES_PLANNING = [
-    "\u25cf\u25cb\u25cb  Planning your task",
-    "\u25cb\u25cf\u25cb  Planning your task",
-    "\u25cb\u25cb\u25cf  Planning your task",
+# 6-frame running-light pattern \u2014 perceived as smooth at 80ms/frame (12.5 fps)
+_PATTERNS: list[tuple[bool, bool, bool]] = [
+    (True,  False, False),
+    (True,  True,  False),
+    (False, True,  False),
+    (False, True,  True),
+    (False, False, True),
+    (True,  False, True),
 ]
 
-_FRAMES_EXECUTING = [
-    "\u25cf\u25cb\u25cb  Running objectives",
-    "\u25cb\u25cf\u25cb  Running objectives",
-    "\u25cb\u25cb\u25cf  Running objectives",
-]
+_INTERVAL_MS = 80
+
+
+def _frame_html(pattern: tuple[bool, bool, bool], label: str) -> str:
+    dots = "".join(_ON if b else _OFF for b in pattern)
+    return (
+        f'{dots}&nbsp;&nbsp;'
+        f'<span style="color:#FF6347;font-style:italic;font-size:13px;">{label}</span>'
+    )
+
+
+_FRAMES_PLANNING  = [_frame_html(p, "Planning your task")  for p in _PATTERNS]
+_FRAMES_EXECUTING = [_frame_html(p, "Running objectives")  for p in _PATTERNS]
 
 
 class ThinkingIndicator(QWidget):
@@ -26,16 +40,15 @@ class ThinkingIndicator(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
 
         self._frames = _FRAMES_PLANNING
-        self._label = QLabel(self._frames[0])
-        self._label.setStyleSheet(
-            "color:#FF6347; font-style:italic; font-size:13px;"
-        )
+        self._label = QLabel()
+        self._label.setTextFormat(Qt.TextFormat.RichText)
+        self._label.setText(self._frames[0])
         layout.addWidget(self._label)
         layout.addStretch()
 
         self._frame_idx = 0
         self._timer = QTimer(self)
-        self._timer.setInterval(400)
+        self._timer.setInterval(_INTERVAL_MS)
         self._timer.timeout.connect(self._advance)
 
         self.hide()

@@ -65,7 +65,7 @@ async def test_desktop_worker_dispatch_take_screenshot():
     from trinity_pilot.workers.desktop_worker import DesktopWorker
     worker = DesktopWorker()
     evidence: dict = {"action_log": []}
-    result = await worker._dispatch_tool("take_screenshot", {}, evidence)
+    result = await worker._dispatch_tool("screenshot", {}, evidence)
     assert isinstance(result, tuple), "Expected (str, bytes) tuple"
     text, img_bytes = result
     assert "Screenshot captured" in text
@@ -81,7 +81,7 @@ async def test_desktop_worker_dispatch_take_screenshot_all_screens():
     from trinity_pilot.workers.desktop_worker import DesktopWorker
     worker = DesktopWorker()
     evidence: dict = {"action_log": []}
-    result = await worker._dispatch_tool("take_screenshot", {"mode": "all_screens"}, evidence)
+    result = await worker._dispatch_tool("screenshot", {"mode": "all_screens"}, evidence)
     assert isinstance(result, tuple)
     text, img_bytes = result
     assert "all screens" in text

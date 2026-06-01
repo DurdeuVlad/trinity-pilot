@@ -4,8 +4,9 @@ import time
 from enum import Enum, auto
 from typing import Any
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation, QTimer, Signal
 from PySide6.QtWidgets import (
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,6 +21,31 @@ from PySide6.QtWidgets import (
 from trinity_pilot.ui import bubble_renderer as br
 from trinity_pilot.ui.objective_chips import ObjectiveChipsWidget
 from trinity_pilot.ui.thinking_indicator import ThinkingIndicator
+from trinity_pilot.ui.theme import tok
+
+
+def _fade_in(widget: QWidget, duration_ms: int = 200) -> None:
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)  # parent=widget prevents GC
+    anim.setDuration(duration_ms)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    widget.show()
+    anim.start()
+
+
+def _fade_out(widget: QWidget, duration_ms: int = 150) -> None:
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)  # parent=widget prevents GC
+    anim.setDuration(duration_ms)
+    anim.setStartValue(1.0)
+    anim.setEndValue(0.0)
+    anim.setEasingCurve(QEasingCurve.Type.InCubic)
+    anim.finished.connect(widget.hide)
+    anim.start()
 
 
 class ChatState(Enum):
@@ -41,6 +67,7 @@ class _ConfirmBar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._dark = False
         self._build_ui()
         self.apply_dark(False)
 
@@ -49,46 +76,24 @@ class _ConfirmBar(QWidget):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(8)
 
-        lbl = QLabel("Plan ready:")
-        lbl.setStyleSheet("font-size:12px;font-weight:600;")
+        lbl = QLabel("Plan ready —")
+        lbl.setStyleSheet("font-size:12px;font-weight:700;color:#60A5FA;")
         layout.addWidget(lbl)
 
         self._approve_btn = QPushButton("✓ Approve")
-        self._approve_btn.setStyleSheet(
-            "QPushButton{background:#E8F5E9;color:#2E7D32;"
-            "border:1px solid #A5D6A7;border-radius:12px;"
-            "padding:4px 14px;font-size:12px;font-weight:600;}"
-            "QPushButton:hover{background:#C8E6C9;}"
-        )
         self._approve_btn.clicked.connect(self._on_approve)
         layout.addWidget(self._approve_btn)
 
         self._reject_btn = QPushButton("✗ Reject")
-        self._reject_btn.setStyleSheet(
-            "QPushButton{background:#FFEBEE;color:#C62828;"
-            "border:1px solid #FFCDD2;border-radius:12px;"
-            "padding:4px 14px;font-size:12px;font-weight:600;}"
-            "QPushButton:hover{background:#FFCDD2;}"
-        )
         self._reject_btn.clicked.connect(self._on_reject)
         layout.addWidget(self._reject_btn)
 
         self._edit_btn = QPushButton("✎ Edit")
-        self._edit_btn.setStyleSheet(
-            "QPushButton{background:#F5F5F5;color:#424242;"
-            "border:1px solid #E0E0E0;border-radius:12px;"
-            "padding:4px 14px;font-size:12px;font-weight:600;}"
-            "QPushButton:hover{background:#EEEEEE;}"
-        )
         self._edit_btn.clicked.connect(self._on_edit)
         layout.addWidget(self._edit_btn)
 
         self._edit_input = QLineEdit()
         self._edit_input.setPlaceholderText("Describe your changes…")
-        self._edit_input.setStyleSheet(
-            "QLineEdit{border:1px solid #E0E0E0;border-radius:12px;"
-            "padding:4px 10px;font-size:12px;}"
-        )
         self._edit_input.setVisible(False)
         self._edit_input.returnPressed.connect(self._on_edit_submit)
         layout.addWidget(self._edit_input, stretch=1)
@@ -96,12 +101,6 @@ class _ConfirmBar(QWidget):
         self._cancel_btn = QPushButton("✕")
         self._cancel_btn.setFixedWidth(30)
         self._cancel_btn.setVisible(False)
-        self._cancel_btn.setStyleSheet(
-            "QPushButton{background:#F5F5F5;color:#757575;"
-            "border:1px solid #E0E0E0;border-radius:12px;"
-            "padding:4px 6px;font-size:12px;}"
-            "QPushButton:hover{background:#EEEEEE;}"
-        )
         self._cancel_btn.clicked.connect(self._on_edit_cancel)
         layout.addWidget(self._cancel_btn)
 
@@ -109,11 +108,9 @@ class _ConfirmBar(QWidget):
 
     def _on_approve(self) -> None:
         self.approved.emit()
-        self.hide()
 
     def _on_reject(self) -> None:
         self.rejected.emit()
-        self.hide()
 
     def _on_edit(self) -> None:
         self._approve_btn.setVisible(False)
@@ -140,15 +137,29 @@ class _ConfirmBar(QWidget):
         self._reject_btn.setVisible(True)
         self._edit_btn.setVisible(True)
         self.edit_requested.emit(text)
-        self.hide()
 
     def apply_dark(self, dark: bool) -> None:
-        """Update bar background for dark/light palette."""
-        bg = "#1E1E1E" if dark else "#F5F5F5"
-        border = "#2A2A2A" if dark else "#E0E0E0"
+        self._dark = dark
+        bg  = tok("confirm_bg",     dark)
+        brd = tok("confirm_border", dark)
         self.setStyleSheet(
-            f"background:{bg};border-top:1px solid {border};"
+            f"background:{bg};border:1px solid {brd};"
+            "border-radius:10px;margin:4px 8px;"
         )
+        # Refresh button styles
+        self._apply_btn_styles(dark)
+
+    def _apply_btn_styles(self, dark: bool) -> None:
+        def _btn(bg, fg, brd):
+            return (
+                f"QPushButton{{background:{tok(bg,dark)};color:{tok(fg,dark)};"
+                f"border:1px solid {tok(brd,dark)};border-radius:12px;"
+                f"padding:5px 14px;font-size:12px;font-weight:600;}}"
+                f"QPushButton:hover{{background:{tok(brd,dark)};}}"
+            )
+        self._approve_btn.setStyleSheet(_btn("btn_approve_bg","btn_approve_fg","btn_approve_brd"))
+        self._reject_btn.setStyleSheet(_btn("btn_reject_bg","btn_reject_fg","btn_reject_brd"))
+        self._edit_btn.setStyleSheet(_btn("btn_edit_bg","btn_edit_fg","btn_edit_brd"))
 
 
 class _ThoughtPanel(QWidget):
@@ -187,11 +198,11 @@ class _ThoughtPanel(QWidget):
 
     def apply_dark(self, dark: bool) -> None:
         from PySide6.QtGui import QColor, QPalette
-        bg = "#1A1A1A" if dark else "#FFFFFF"
-        border = "#2A2A2A" if dark else "#F0F0F0"
-        tv_bg = "#242424" if dark else "#FAFAFA"
-        tv_border = "#3A3A3A" if dark else "#E0E0E0"
-        tv_fg = "#CCCCCC" if dark else "#555"
+        bg     = tok("surface",  dark)
+        border = tok("border",   dark)
+        tv_bg  = tok("surface2", dark)
+        tv_fg  = tok("text_muted", dark)
+        accent = tok("accent",   dark)
         p = QPalette()
         p.setColor(QPalette.ColorRole.Window, QColor(bg))
         p.setColor(QPalette.ColorRole.Base, QColor(tv_bg))
@@ -199,23 +210,24 @@ class _ThoughtPanel(QWidget):
         self.setPalette(p)
         self.setStyleSheet(
             f"background:{bg};"
-            "border-left:3px solid #FF6347;"
+            f"border-left:3px solid {accent};"
             f"border-top:1px solid {border};"
             "margin-left:4px;"
         )
         self._toggle.setStyleSheet(
-            "QToolButton{border:none;color:#FF6347;font-size:11px;"
+            f"QToolButton{{border:none;color:{accent};font-size:11px;"
             "font-style:italic;background:transparent;}"
-            "QToolButton:hover{color:#FF8A65;}"
+            f"QToolButton:hover{{color:{tok('text', dark)};}}"
         )
         self._thought_view.setStyleSheet(
-            f"QTextEdit{{background:{tv_bg};border:1px solid {tv_border};"
+            f"QTextEdit{{background:{tv_bg};border:1px solid {border};"
             f"border-radius:4px;font-size:11px;color:{tv_fg};padding:4px;}}"
         )
         if self._debug_view:
+            dbg_bg = tok("bg", dark)
             self._debug_view.setStyleSheet(
-                "QTextEdit{background:#0D0D0D;color:#80CBC4;"
-                "font-family:monospace;font-size:10px;padding:4px;border-radius:4px;}"
+                f"QTextEdit{{background:{dbg_bg};color:#80CBC4;"
+                "font-family:monospace;font-size:10px;padding:4px;border-radius:4px;}}"
             )
 
     def append_chunk(self, chunk: str) -> None:
@@ -254,6 +266,7 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self._debug_mode = debug_mode
         self._dark = False
+        self._scale: float = 1.0
         self._state = ChatState.IDLE
         self._pending_specs: list[dict] = []
         self._task_id: str | None = None
@@ -263,6 +276,12 @@ class ChatWidget(QWidget):
         # Each block is stored as (kind, args) so it can be re-rendered on theme change
         self._message_log: list[tuple[str, tuple]] = []
 
+        self._stream_queue: list[str] = []
+        self._is_streaming = False
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setInterval(28)  # ~35 drain ticks/sec — smooth without lag buildup
+        self._drain_timer.timeout.connect(self._drain_stream_queue)
+
         self._build_ui()
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(2000)
@@ -271,14 +290,20 @@ class ChatWidget(QWidget):
     def set_bridge(self, bridge: Any) -> None:
         self._bridge = bridge
 
+    def set_scale(self, scale: float) -> None:
+        """Reactively scale all chat text by rebuilding HTML at the new scale."""
+        self._scale = max(0.7, min(2.0, scale))
+        self._rebuild_html()
+
     def set_dark(self, dark: bool) -> None:
         """Switch the entire chat widget between dark and light mode."""
         self._dark = dark
         from PySide6.QtGui import QColor, QPalette
-        browser_bg = "#121212" if dark else "#FAFAFA"
+        browser_bg = tok("bg", dark)
+        browser_fg = tok("text", dark)
         p = QPalette()
         p.setColor(QPalette.ColorRole.Base, QColor(browser_bg))
-        p.setColor(QPalette.ColorRole.Text, QColor("#E0E0E0" if dark else "#212121"))
+        p.setColor(QPalette.ColorRole.Text, QColor(browser_fg))
         self._browser.setPalette(p)
         self._browser.setStyleSheet(
             f"QTextBrowser{{background:{browser_bg};border:none;"
@@ -337,11 +362,11 @@ class ChatWidget(QWidget):
 
     def show_confirm_bar(self) -> None:
         """Show the _ConfirmBar below the chat browser."""
-        self._confirm_bar.show()
+        _fade_in(self._confirm_bar, 200)
 
     def hide_confirm_bar(self) -> None:
         """Hide the _ConfirmBar."""
-        self._confirm_bar.hide()
+        _fade_out(self._confirm_bar, 150)
 
     # ------------------------------------------------------------------
     # Public execution step API
@@ -360,7 +385,7 @@ class ChatWidget(QWidget):
         if self._message_log and self._message_log[0][0] == "welcome":
             self._message_log.pop(0)
         self._message_log.append(("user", (text,)))
-        self._append_html(br.user_bubble(text, dark=self._dark))
+        self._append_html(br.user_bubble(text, dark=self._dark, scale=self._scale))
 
     def add_ai_message(
         self,
@@ -369,8 +394,8 @@ class ChatWidget(QWidget):
         debug_json: str = "",
     ) -> None:
         self._message_log.append(("ai", (text, thought_prompt, debug_json)))
-        self._append_html(br.ai_bubble(text, dark=self._dark))
-        self._thought_panel.show()
+        self._append_html(br.ai_bubble(text, dark=self._dark, scale=self._scale))
+        _fade_in(self._thought_panel, 180)
         self._thought_panel.set_text(thought_prompt)
         if debug_json and self._debug_mode:
             self._thought_panel.set_debug_json(debug_json)
@@ -378,11 +403,11 @@ class ChatWidget(QWidget):
 
     def add_system_note(self, text: str) -> None:
         self._message_log.append(("system", (text,)))
-        self._append_html(br.system_note(text, dark=self._dark))
+        self._append_html(br.system_note(text, dark=self._dark, scale=self._scale))
 
     def show_objectives_card(self, specs: list[dict]) -> None:
         self._message_log.append(("objectives", (specs,)))
-        self._append_html(br.objectives_card(specs, dark=self._dark))
+        self._append_html(br.objectives_card(specs, dark=self._dark, scale=self._scale))
 
     def show_progress_chips(self, specs: list[dict]) -> None:
         self._chips.set_objectives(specs)
@@ -390,7 +415,7 @@ class ChatWidget(QWidget):
     def show_completion(self, status: str, results: dict) -> None:
         elapsed = time.monotonic() - self._start_time if self._start_time else 0.0
         self._message_log.append(("summary", (elapsed, status, results)))
-        self._append_html(br.summary_bubble(elapsed, status, results, dark=self._dark))
+        self._append_html(br.summary_bubble(elapsed, status, results, dark=self._dark, scale=self._scale))
         self._chips.reset()
 
     # ------------------------------------------------------------------
@@ -416,18 +441,47 @@ class ChatWidget(QWidget):
         while self._message_log and self._message_log[-1][0] == "state_banner":
             self._message_log.pop()
         self._message_log.append(("ai", ("", "", "")))
-        self._thought_panel.hide()
+        self._is_streaming = True
+        self._stream_queue.clear()
+        _fade_out(self._thought_panel, 120)
         self._current_thought_panel = None
         self._rebuild_html()
 
     def on_bubble_stream_chunk(self, chunk: str) -> None:
-        """Append chunk to the last AI bubble in the main chat (not thought panel)."""
+        """Queue chunk for rate-controlled drain into the last AI bubble."""
+        self._stream_queue.append(chunk)
+        if not self._drain_timer.isActive():
+            self._drain_timer.start()
+
+    def on_bubble_stream_done(self) -> None:
+        """Called when bubble streaming is complete. Drains remaining queue, clears cursor."""
+        if not self._is_streaming:
+            return
+        self._drain_timer.stop()
+        self._is_streaming = False
+        if self._stream_queue:
+            text = "".join(self._stream_queue)
+            self._stream_queue.clear()
+            for i in reversed(range(len(self._message_log))):
+                if self._message_log[i][0] == "ai":
+                    kind, args = self._message_log[i]
+                    self._message_log[i] = ("ai", (args[0] + text, args[1], args[2]))
+                    break
+        self._rebuild_html()
+
+    def _drain_stream_queue(self) -> None:
+        if not self._stream_queue:
+            self._drain_timer.stop()
+            return
+        batch = self._stream_queue[:3]
+        self._stream_queue = self._stream_queue[3:]
+        text = "".join(batch)
         for i in reversed(range(len(self._message_log))):
             if self._message_log[i][0] == "ai":
                 kind, args = self._message_log[i]
-                self._message_log[i] = ("ai", (args[0] + chunk, args[1], args[2]))
-                self._rebuild_html()
-                return
+                self._message_log[i] = ("ai", (args[0] + text, args[1], args[2]))
+                break
+        self._rebuild_html()
 
     # ------------------------------------------------------------------
     # State machine
@@ -483,22 +537,23 @@ class ChatWidget(QWidget):
     def _render_fragment(self, kind: str, args: tuple) -> str:
         """Re-render a logged message with current dark setting."""
         d = self._dark
+        s = self._scale
         if kind == "user":
-            return br.user_bubble(args[0], dark=d)
+            return br.user_bubble(args[0], dark=d, scale=s)
         if kind == "ai":
-            return br.ai_bubble(args[0], dark=d)
+            return br.ai_bubble(args[0], dark=d, scale=s)
         if kind == "system":
-            return br.system_note(args[0], dark=d)
+            return br.system_note(args[0], dark=d, scale=s)
         if kind == "objectives":
-            return br.objectives_card(args[0], dark=d)
+            return br.objectives_card(args[0], dark=d, scale=s)
         if kind == "summary":
-            return br.summary_bubble(args[0], args[1], args[2], dark=d)
+            return br.summary_bubble(args[0], args[1], args[2], dark=d, scale=s)
         if kind == "exec_step":
-            return br.execution_row(args[0], args[1], args[2], dark=d)
+            return br.execution_row(args[0], args[1], args[2], dark=d, scale=s)
         if kind == "welcome":
-            return br.welcome_bubble(dark=d)
+            return br.welcome_bubble(dark=d, scale=s)
         if kind == "state_banner":
-            return br.state_banner(args[0], args[1], dark=d)
+            return br.state_banner(args[0], args[1], dark=d, scale=s)
         return ""
 
     def _append_html(self, _fragment: str) -> None:
@@ -508,6 +563,15 @@ class ChatWidget(QWidget):
     def _rebuild_html(self) -> None:
         """Re-render entire message log with current theme."""
         fragments = [self._render_fragment(k, a) for k, a in self._message_log]
+        if self._is_streaming:
+            for i in reversed(range(len(self._message_log))):
+                if self._message_log[i][0] == "ai":
+                    frag = fragments[i]
+                    cursor = ' <span style="color:#FF6347;opacity:0.65;">&#9611;</span>'
+                    last_div = frag.rfind("</div>")
+                    if last_div >= 0:
+                        fragments[i] = frag[:last_div] + cursor + frag[last_div:]
+                    break
         bg = "#121212" if self._dark else "#FAFAFA"
         fg = "#E0E0E0" if self._dark else "#212121"
         full_html = (

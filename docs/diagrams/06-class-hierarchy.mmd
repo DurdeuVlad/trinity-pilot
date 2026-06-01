@@ -1,35 +1,43 @@
-%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'classText': '#e2e8f0', 'fontSize': '16px'}}}%%
+﻿%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'classText': '#e2e8f0', 'fontSize': '16px'}}}%%
 classDiagram
-    direction TB
+ accTitle: Class Hierarchy  Shared STAO Engine and Worker Specializations
+ direction TB
 
-    class AgenticWorkerMixin {
-        <<shared ReAct engine>>
-        run_loop(spec, evidence, max_steps)
-        _dispatch_tool(name, args, evidence)
-    }
+ class AgenticWorkerMixin {
+ <<shared STAO engine>>
+ run_loop(spec, evidence, max_steps)
+ _dispatch_tool(name, args, evidence)
+ }
 
-    class TerminalWorker {
-        domain = terminal
-        run_command · write_file
-    }
+ class TerminalWorker {
+ domain = terminal
+ run_command / write_file
+ }
 
-    class BrowserWorker {
-        domain = browser
-        navigate · click · read_page
-    }
+ class BrowserWorker {
+ domain = browser
+ navigate / click / read_page
+ }
 
-    class DesktopWorker {
-        domain = desktop
-        launch_app · focus_window
-        type_text · press_key
-    }
+ class DesktopWorker {
+ domain = desktop
+ launch_app / focus_window
+ type_text / press_key
+ }
 
-    class GeminiProvider {
-        model = gemini-2.5-flash
-        complete_with_tools()
-    }
+ class GeminiProvider {
+ model = gemini-2.5-flash
+ complete_with_tools()
+ }
 
-    AgenticWorkerMixin  <|--  TerminalWorker
-    AgenticWorkerMixin  <|--  BrowserWorker
-    AgenticWorkerMixin  <|--  DesktopWorker
-    AgenticWorkerMixin  -->   GeminiProvider : LLM calls
+ class CustomWorker {
+ <<extension point>>
+ domain = any_new_domain
+ tools from new MCP server
+ }
+
+ AgenticWorkerMixin  <|--  TerminalWorker
+ AgenticWorkerMixin  <|--  BrowserWorker
+ AgenticWorkerMixin  <|--  DesktopWorker
+ AgenticWorkerMixin  <|--  CustomWorker : add MCP server  new domain
+ AgenticWorkerMixin  --> GeminiProvider : LLM calls

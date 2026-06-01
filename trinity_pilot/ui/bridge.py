@@ -38,6 +38,15 @@ class _WorkerThread(QThread):
         self._cancel_requested = False
 
     def run(self) -> None:
+        # Initialize COM in STA mode on this thread before the asyncio loop starts.
+        # pywinauto uses UIA (COM-based) for window automation; if the calling thread
+        # hasn't called CoInitialize(STA), COM raises RPC_E_WRONG_THREAD (0x8001010d)
+        # and crashes the process.  This must be called once per thread before any UIA use.
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -61,6 +70,11 @@ class _WorkerThread(QThread):
             })
         finally:
             self._loop.close()
+            try:
+                import comtypes
+                comtypes.CoUninitialize()
+            except Exception:
+                pass
 
     async def _run_orchestrator(self) -> dict:
         self._orchestrator = AsyncTaskOrchestrator(

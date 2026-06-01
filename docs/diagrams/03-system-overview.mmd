@@ -1,36 +1,39 @@
-%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
+﻿%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
 flowchart TD
-    classDef ui     fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
-    classDef orch   fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
-    classDef worker fill:#0d1a2b,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
-    classDef llm    fill:#2b1a00,stroke:#ffe600,stroke-width:3px,color:#ffe600
-    classDef db     fill:#0d2b1a,stroke:#00ff88,stroke-width:2px,color:#00ff88
+ accTitle: Runtime Architecture  Components and Data Flow
+ classDef ui fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
+ classDef orch fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+ classDef worker fill:#0d1a2b,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
+ classDef llm fill:#2b1a00,stroke:#ffe600,stroke-width:3px,color:#ffe600
+ classDef db fill:#0d2b1a,stroke:#00ff88,stroke-width:2px,color:#00ff88
 
-    U(["👤  User\nplain text request"]):::ui
+ U(["User<br/>plain text request"]):::ui
 
-    B["🖥  Qt Desktop UI\nWorkflowBridge"]:::ui
+ B["Qt Desktop UI<br/>WorkflowBridge"]:::ui
 
-    O["⚙️  Orchestrator\nbreaks task → runs objectives in order"]:::orch
+ O["Orchestrator<br/>ordered objectives<br/>selects Worker by domain"]:::orch
 
-    subgraph W ["  Workers — each runs a ReAct loop  "]
-        W1["💻  Terminal"]:::worker
-        W2["🌐  Browser"]:::worker
-        W3["🖱  Desktop GUI"]:::worker
-    end
+ subgraph WP ["Workers  one active per objective"]
+ W1["TerminalWorker<br/>domain = terminal"]:::worker
+ W2["BrowserWorker<br/>domain = browser"]:::worker
+ W3["DesktopWorker<br/>domain = desktop"]:::worker
+ end
 
-    LLM["✨  Gemini 2.5-flash\nall reasoning happens here"]:::llm
+ LLM["Gemini 2.5-flash<br/>all reasoning happens here"]:::llm
 
-    R["🔍  Reviewer\npass · retry · steer"]:::orch
+ R["Reviewer<br/>pass / retry / steer"]:::orch
 
-    DB[("💾  SQLite\ntask history")]:::db
+ DB[("SQLite<br/>task history")]:::db
 
-    U -->|types task| B
-    B -->|start| O
-    O -->|objective| W1 & W2 & W3
-    W1 & W2 & W3 <-->|sense / tool call| LLM
-    W1 & W2 & W3 -->|evidence| R
-    R <-->|grade| LLM
-    R -->|pass / fail| O
-    O -->|save| DB
-    O -->|result| B
-    B -->|shows result| U
+ U -->|types task| B
+ B -->|start| O
+ O -->|domain=terminal| W1
+ O -->|domain=browser| W2
+ O -->|domain=desktop| W3
+ W1 & W2 & W3 <-->|STAO loop| LLM
+ W1 & W2 & W3 -->|evidence| R
+ R <-->|grade| LLM
+ R -->|pass / fail| O
+ O -->|save| DB
+ O -->|result| B
+ B -->|shows result| U

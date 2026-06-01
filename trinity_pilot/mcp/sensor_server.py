@@ -56,18 +56,25 @@ def version() -> str:
 def screenshot(region: dict | None = None) -> dict:
     """Capture a screenshot of the desktop or a sub-region.
 
+    Supports multi-monitor setups including negative X coordinates (left monitors)
+    and coordinates beyond the primary monitor width.
+
     Args:
         region: Optional dict with keys x, y, width, height for a sub-region.
+                Uses virtual desktop coordinates (can be negative for left monitors,
+                or > primary_width for right monitors).
 
     Returns:
         dict with image_b64 (PNG base64), width, height.
     """
-    import pyautogui as pg
+    from PIL import ImageGrab
 
     if region:
-        img = pg.screenshot(region=(region["x"], region["y"], region["width"], region["height"]))
+        x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+        # all_screens=True captures from the full virtual desktop across all monitors
+        img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
     else:
-        img = pg.screenshot()
+        img = ImageGrab.grab(all_screens=True)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

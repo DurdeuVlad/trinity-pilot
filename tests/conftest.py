@@ -16,6 +16,10 @@ def pytest_configure(config):
         "markers",
         "real: mark test as requiring live environment — only runs with --real flag",
     )
+    config.addinivalue_line(
+        "markers",
+        "vm_official: canonical VM failure/adversarial suite",
+    )
 
 
 def pytest_collection_modifyitems(config, items):

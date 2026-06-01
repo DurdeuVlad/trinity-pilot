@@ -54,8 +54,12 @@ class TestKillPaths:
         window = MainWindow(debug_mode=True)
         qtbot.addWidget(window)
         window.log("[SYSTEM] test message")
-        # Verify chat widget has at least one child widget added (the system note label)
-        from PySide6.QtWidgets import QLabel
-        labels = window._chat._msg_container.findChildren(QLabel)
-        texts = [lbl.text() for lbl in labels]
-        assert any("test message" in t for t in texts), f"No note found. Labels: {texts}"
+        # add_system_note renders into a QTextBrowser via HTML; check the message log.
+        system_notes = [
+            entry[1][0]
+            for entry in window._chat._message_log
+            if entry[0] == "system"
+        ]
+        assert any("test message" in note for note in system_notes), (
+            f"No system note found. Log: {window._chat._message_log}"
+        )

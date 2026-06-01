@@ -1,7 +1,7 @@
-"""Tests for migrated GeminiProvider using google.genai async client (AC-1.2)."""
+"""Tests for GeminiProvider using google.genai sync client via run_in_executor."""
 from __future__ import annotations
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -28,8 +28,7 @@ def provider():
 
 def test_complete_returns_token_count(provider):
     gemini, mock_client = provider
-    mock_response = make_mock_response(total_tokens=99)
-    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+    mock_client.models.generate_content.return_value = make_mock_response(total_tokens=99)
 
     result = asyncio.run(gemini.complete([LLMMessage(role="user", content="hello")]))
     assert isinstance(result, LLMResponse)
@@ -38,35 +37,32 @@ def test_complete_returns_token_count(provider):
 
 
 def test_complete_uses_wait_for_timeout(provider):
-    """asyncio.wait_for is used -- a hung coroutine raises TimeoutError."""
+    """asyncio.wait_for timeout propagates as TimeoutError."""
     gemini, mock_client = provider
+    mock_client.models.generate_content.return_value = make_mock_response()
 
-    async def hang(*args, **kwargs):
-        await asyncio.sleep(9999)
-
-    mock_client.aio.models.generate_content = AsyncMock(side_effect=hang)
-
-    with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(
-            gemini.complete(
-                [LLMMessage(role="user", content="hello")],
-                timeout=0.01,
+    with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                gemini.complete(
+                    [LLMMessage(role="user", content="hello")],
+                    timeout=0.01,
+                )
             )
-        )
 
 
 def test_complete_token_count_zero_when_usage_metadata_missing(provider):
     gemini, mock_client = provider
     mock_response = make_mock_response()
     mock_response.usage_metadata = None
-    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+    mock_client.models.generate_content.return_value = mock_response
 
     result = asyncio.run(gemini.complete([LLMMessage(role="user", content="hello")]))
     assert result.token_count == 0
 
 
 def test_complete_does_not_use_to_thread(provider):
-    """Ensure no asyncio.to_thread usage -- native async only."""
+    """Ensure no asyncio.to_thread usage -- executor pattern only."""
     import trinity_pilot.llm.gemini as gemini_module
     import inspect
     source = inspect.getsource(gemini_module)

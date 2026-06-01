@@ -24,7 +24,7 @@ pyautogui.FAILSAFE = False
 APP_DIR = Path(__file__).resolve().parents[2]          # trinity-pilot/
 VENV_PY = str(APP_DIR / ".venv" / "Scripts" / "python.exe")
 PYTHON = VENV_PY if Path(VENV_PY).exists() else sys.executable
-SCREENSHOTS_DIR = APP_DIR.parent.parent / ".ai" / "screenshots" / "e2e"
+SCREENSHOTS_DIR = Path(os.path.expanduser("~")) / ".ai" / "screenshots" / "e2e"
 DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
 
 # ---------------------------------------------------------------------------
@@ -74,10 +74,17 @@ class AppDriver:
         driver.close()
     """
 
-    def __init__(self, proc: subprocess.Popen, win: Any, hwnd: int = 0) -> None:
+    def __init__(
+        self,
+        proc: subprocess.Popen,
+        win: Any,
+        hwnd: int = 0,
+        db_path: Path | None = None,
+    ) -> None:
         self._proc = proc
         self._win = win
         self._hwnd = hwnd
+        self._db_path = db_path  # temp DB — cleaned up in close()
 
     # ------------------------------------------------------------------
     # Launch / teardown
@@ -97,8 +104,8 @@ class AppDriver:
         except Exception:
             pass
 
-        # Kill any stale Trinity Pilot windows left by previous tests.
-        # Use win32gui to enumerate exactly which PIDs own "Trinity Pilot" windows.
+        # Kill any stale Trinity Pilot processes left by previous tests.
+        # Step 1: kill by window title (visible windows).
         try:
             import win32gui
             import win32process
@@ -117,23 +124,82 @@ class AppDriver:
                 )
         except Exception:
             pass
-        time.sleep(2)  # let Windows reclaim the window handles
+        # Step 2: kill any python.exe process with "trinity_pilot" in cmdline
+        # (catches windowless or minimised instances that step 1 misses).
+        try:
+            subprocess.run(
+                [
+                    "powershell", "-NonInteractive", "-Command",
+                    "Get-WmiObject Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*trinity_pilot*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+                ],
+                capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
+        time.sleep(3)  # let Windows reclaim handles and ports
 
+        import tempfile as _tempfile
+        _stderr_path = Path(_tempfile.mktemp(suffix="_trinity_stderr.log"))
+        _db_path = Path(_tempfile.mktemp(suffix="_trinity_test.db"))
+        _stderr_fh = open(_stderr_path, "w", encoding="utf-8")
+        # Use a unique DB path per launch to avoid SQLite busy-timeout delays
+        # when stale processes are force-killed and leave WAL locks.
+        _env = {**os.environ, "DB_PATH": str(_db_path)}
         proc = subprocess.Popen(
             [PYTHON, "-m", "trinity_pilot", "--test-mode"],
             cwd=str(APP_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=_stderr_fh,
+            stderr=_stderr_fh,
+            env=_env,
+            # Isolate from the parent console so that taskkill on this process
+            # does not propagate a CTRL_BREAK/CLOSE event up to eval_multirun.py.
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-        time.sleep(12)  # Qt startup
+        time.sleep(5)  # brief pause; loop below retries for up to 35s
 
         from pywinauto import Application
         from pywinauto.findwindows import ElementAmbiguousError, ElementNotFoundError
+        try:
+            from pywinauto.timings import TimeoutError as _PwTimeout
+        except ImportError:
+            _PwTimeout = type("_PwTimeout", (Exception,), {})  # dummy
+
+        def _cleanup_proc_and_log(proc, fh, path):
+            """Terminate proc, close file handle, read log, unlink log file."""
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                # Wait up to 3s for the subprocess to release the log file.
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+            try:
+                fh.flush()
+                fh.close()
+            except Exception:
+                pass
+            log_text = ""
+            try:
+                log_text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass  # File still locked — not critical
+            return log_text
 
         hwnd: int | None = None
-        deadline2 = time.monotonic() + 25
+        deadline2 = time.monotonic() + 240  # 240s: first cold-VM launch can take >120s
         while time.monotonic() < deadline2:
+            # If process died already, no point waiting
+            if proc.poll() is not None:
+                break
             try:
+                # visible_only=True uses Win32 EnumWindows internally, which finds
+                # windows across virtual desktops (unlike UIA-only enumeration).
                 app = Application(backend="uia").connect(
                     title_re="Trinity Pilot",
                     visible_only=True,
@@ -151,26 +217,60 @@ class AppDriver:
                 if hwnd:
                     app = Application(backend="uia").connect(handle=hwnd)
                     break
-            except ElementNotFoundError:
+            except (ElementNotFoundError, _PwTimeout):
                 time.sleep(0.5)
             except Exception as exc:
-                proc.terminate()
+                startup_log = _cleanup_proc_and_log(proc, _stderr_fh, _stderr_path)
                 raise RuntimeError(
-                    f"Trinity Pilot window not found after startup: {exc}"
+                    f"Trinity Pilot window not found after startup: {exc!r}\n"
+                    f"Startup log:\n{startup_log}"
                 ) from exc
 
+        # Close log file handle (the app subprocess still holds it open).
+        try:
+            _stderr_fh.flush()
+            _stderr_fh.close()
+        except Exception:
+            pass
+
         if not hwnd:
-            proc.terminate()
-            raise RuntimeError("Trinity Pilot window not found within 25s")
+            # App didn't appear — terminate, read log, raise.
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+            startup_log = ""
+            try:
+                startup_log = _stderr_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+            try:
+                _stderr_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                rc = proc.poll()
+            except Exception:
+                rc = None
+            raise RuntimeError(
+                f"Trinity Pilot window not found within 120s (exit code: {rc})\n"
+                f"Startup log:\n{startup_log}"
+            )
+        # hwnd found — clean up log file silently (process still running, may fail)
+        try:
+            _stderr_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         win = app.window(handle=hwnd)
-        got = cls._wait_static(win, {STATUS_READY}, timeout=15)
+        got = cls._wait_static(win, {STATUS_READY}, timeout=60)
         if got != STATUS_READY:
             proc.terminate()
             raise RuntimeError(
-                f"App did not reach Ready within 15s; last status={got!r}"
+                f"App did not reach Ready within 30s; last status={got!r}"
             )
-        return cls(proc, win, hwnd=hwnd)
+        return cls(proc, win, hwnd=hwnd, db_path=_db_path)
 
     def close(self) -> None:
         """Close Trinity Pilot gracefully via WM_CLOSE, force-kill only as fallback."""
@@ -202,6 +302,13 @@ class AppDriver:
         except Exception:
             pass
         time.sleep(1)
+        # Clean up the temp DB created for this test run.
+        if self._db_path:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    Path(str(self._db_path) + suffix).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Status reading
@@ -240,16 +347,59 @@ class AppDriver:
     # ------------------------------------------------------------------
 
     def submit(self, text: str) -> None:
-        """Type text into the input box and submit.
+        """Type text into the input box and submit (or click Approve for confirmation).
 
-        Uses pywinauto type_keys() directly on the Edit control — no foreground
-        window requirement, works reliably from a subprocess test runner context.
+        For "yes"/"y"/"ok" when in Awaiting confirmation state, tries to click
+        the Approve button first (more reliable than typing into the input box).
+        Uses pywinauto type_keys() as primary method, pyautogui as fallback.
         """
+        _YES = {"yes", "y", "ok", "okay", "sure", "yep", "run", "go"}
+
+        # If confirming, try to find and click the Approve button first.
+        if text.lower().strip() in _YES:
+            approve_clicked = False
+            try:
+                # Focus the window so UIA events land in the right thread.
+                try:
+                    self._win.set_focus()
+                except Exception:
+                    pass
+                time.sleep(0.2)
+                buttons = self._win.descendants(control_type="Button")
+                for btn in buttons:
+                    label = btn.window_text().strip()
+                    if "approve" in label.lower() or label == "✔" or "Approve" in label:
+                        # Try invoke() (UIA InvokePattern) first — more reliable
+                        # than click_input() for Qt buttons across session boundary.
+                        try:
+                            btn.invoke()
+                            approve_clicked = True
+                        except Exception:
+                            pass
+                        if not approve_clicked:
+                            # Fallback: pyautogui click at button screen coordinates.
+                            try:
+                                rect = btn.rectangle()
+                                x = (rect.left + rect.right) // 2
+                                y = (rect.top + rect.bottom) // 2
+                                pyautogui.click(x, y)
+                                approve_clicked = True
+                            except Exception:
+                                pass
+                        if approve_clicked:
+                            return
+            except Exception:
+                pass
+
+        # Primary: type into the Edit control and press Enter.
         try:
             edits = self._win.descendants(control_type="Edit")
             if edits:
                 edits[0].click_input()
                 time.sleep(0.2)
+                # Clear any stale text first (Ctrl+A then Delete)
+                edits[0].type_keys("^a{DELETE}", with_spaces=False)
+                time.sleep(0.1)
                 edits[0].type_keys(
                     text.replace("{", "{{").replace("}", "}}") + "{ENTER}",
                     with_spaces=True,

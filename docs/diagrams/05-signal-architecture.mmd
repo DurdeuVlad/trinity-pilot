@@ -1,24 +1,25 @@
-%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
+﻿%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
 flowchart LR
-    classDef orch   fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
-    classDef bus    fill:#0d1a2b,stroke:#00aaff,stroke-width:3px,color:#60c8ff
-    classDef ok     fill:#0d2b1a,stroke:#00ff88,stroke-width:2px,color:#00ff88
-    classDef bad    fill:#2b0d1a,stroke:#ff2d78,stroke-width:2px,color:#ff2d78
-    classDef info   fill:#1a1a0d,stroke:#ffe600,stroke-width:2px,color:#ffe600
-    classDef ui     fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
+ accTitle: Async Signal Bus  Orchestrator to Qt UI
+ classDef orch fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+ classDef bus fill:#0d1a2b,stroke:#00aaff,stroke-width:3px,color:#60c8ff
+ classDef ok fill:#0d2b1a,stroke:#00ff88,stroke-width:2px,color:#00ff88
+ classDef bad fill:#2b0d1a,stroke:#ff2d78,stroke-width:2px,color:#ff2d78
+ classDef info fill:#1a1a0d,stroke:#ffe600,stroke-width:2px,color:#ffe600
+ classDef ui fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
 
-    O["⚙️  Orchestrator\n+ Workers"]:::orch
-    Q[("📡  asyncio.Queue\nsignal bus")]:::bus
+ O["Orchestrator<br/>+ Workers"]:::orch
+ Q[("asyncio.Queue<br/>signal bus")]:::bus
 
-    S1["ObjectiveDone"]:::ok
-    S2["ObjectiveFailed"]:::bad
-    S3["StuckSignal\nneeds user input"]:::bad
-    S4["SteeringMessage\nStepCompleted\nBudgetWarning"]:::info
+ S1["ObjectiveDone"]:::ok
+ S2["ObjectiveFailed"]:::bad
+ S3["StuckSignal<br/>needs user input"]:::bad
+ S4["SteeringMessage<br/>StepCompleted<br/>BudgetWarning"]:::info
 
-    UI["🖥  Qt UI\nMainWindow"]:::ui
+ UI["Qt UI<br/>MainWindow"]:::ui
 
-    O -->|await put| Q
-    Q --> S1 & S2 & S3 & S4
-    S1 -->|task done| UI
-    S2 & S3 -->|failure / blocked| UI
-    S4 -->|live progress| UI
+ O -->|await put| Q
+ Q --> S1 & S2 & S3 & S4
+ S1 -->|task done| UI
+ S2 & S3 -->|failure / blocked| UI
+ S4 -->|live progress| UI

@@ -95,7 +95,12 @@ def _esc(text: str) -> str:
     return html.escape(str(text))
 
 
-def user_bubble(text: str, dark: bool = False) -> str:
+def _px(n: int, scale: float) -> str:
+    """Scale a pixel value and clamp to a readable minimum."""
+    return f"{max(8, round(n * scale))}px"
+
+
+def user_bubble(text: str, dark: bool = False, scale: float = 1.0) -> str:
     """Right-aligned user message bubble."""
     c = _DARK if dark else _LIGHT
     return (
@@ -105,18 +110,22 @@ def user_bubble(text: str, dark: bool = False) -> str:
         "'>"
         "<span style='"
         "display:inline-block;"
+        "max-width:88%;"
+        "word-wrap:break-word;"
+        "overflow-wrap:break-word;"
+        "white-space:pre-wrap;"
         f"background:{c['user_bg']};"
         f"color:{c['user_fg']};"
         "padding:8px 14px;"
         "border-radius:16px 16px 4px 16px;"
-        "font-size:13px;"
+        f"font-size:{_px(13, scale)};"
         "line-height:1.4;"
         f"'>{_esc(text)}</span>"
         "</div>"
     )
 
 
-def ai_bubble(text: str, dark: bool = False) -> str:
+def ai_bubble(text: str, dark: bool = False, scale: float = 1.0) -> str:
     """Left-aligned AI message bubble."""
     c = _DARK if dark else _LIGHT
     return (
@@ -126,19 +135,23 @@ def ai_bubble(text: str, dark: bool = False) -> str:
         "'>"
         "<span style='"
         "display:inline-block;"
+        "max-width:88%;"
+        "word-wrap:break-word;"
+        "overflow-wrap:break-word;"
+        "white-space:pre-wrap;"
         f"background:{c['ai_bg']};"
         f"color:{c['ai_fg']};"
         "padding:8px 14px;"
         "border-radius:16px 16px 16px 4px;"
         f"border-left:3px solid {c['ai_accent']};"
-        "font-size:13px;"
+        f"font-size:{_px(13, scale)};"
         "line-height:1.4;"
         f"'>{_esc(text)}</span>"
         "</div>"
     )
 
 
-def objectives_card(specs: list[dict], dark: bool = False) -> str:
+def objectives_card(specs: list[dict], dark: bool = False, scale: float = 1.0) -> str:
     """Numbered objectives list formatted as a card."""
     c = _DARK if dark else _LIGHT
     domain_map = _DOMAIN_COLORS_DARK if dark else _DOMAIN_COLORS
@@ -152,14 +165,14 @@ def objectives_card(specs: list[dict], dark: bool = False) -> str:
         bg, fg = domain_map.get(domain, domain_default)
         badge = (
             f"<span style='background:{bg};color:{fg};"
-            f"padding:1px 7px;border-radius:10px;font-size:11px;"
+            f"padding:1px 7px;border-radius:10px;font-size:{_px(11, scale)};"
             f"font-weight:600;margin-right:6px;'>{_esc(domain)}</span>"
         )
         rows += (
             f"<div style='padding:5px 0;border-bottom:1px solid {c['divider']};'>"
             f"<b style='color:{c['ai_accent']};'>{i}.</b>&nbsp;{badge}&nbsp;"
             f"<b style='color:{c['obj_fg']};'>{obj_id}</b><br/>"
-            f"<span style='color:{c['desc_fg']};font-size:12px;margin-left:18px;'>{description}</span>"
+            f"<span style='color:{c['desc_fg']};font-size:{_px(12, scale)};margin-left:18px;'>{description}</span>"
             f"</div>"
         )
 
@@ -171,7 +184,7 @@ def objectives_card(specs: list[dict], dark: bool = False) -> str:
         "border-radius:8px;"
         "padding:10px 14px;"
         "'>"
-        f"<div style='font-weight:700;color:{c['header_fg']};margin-bottom:6px;font-size:13px;'>"
+        f"<div style='font-weight:700;color:{c['header_fg']};margin-bottom:6px;font-size:{_px(13, scale)};'>"
         "📋 Planned Objectives"
         "</div>"
         f"{rows}"
@@ -180,7 +193,7 @@ def objectives_card(specs: list[dict], dark: bool = False) -> str:
 
 
 
-def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = False) -> str:
+def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = False, scale: float = 1.0) -> str:
     """Completion summary bubble."""
     c = _DARK if dark else _LIGHT
     total = len(results)
@@ -217,8 +230,8 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
             entry.get("summary", "")
             or entry.get("evidence", {}).get("worker_result_summary", "")
         )
-        if len(summary_text) > 80:
-            summary_text = summary_text[:77] + "…"
+        if len(summary_text) > 200:
+            summary_text = summary_text[:197] + "…"
         detail = (
             f"<br/><span style='color:{desc_fg};margin-left:16px;'>"
             f"{_esc(summary_text)}</span>"
@@ -226,7 +239,7 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
             else ""
         )
         rows += (
-            f"<div style='font-size:12px;padding:3px 0;"
+            f"<div style='font-size:{_px(12, scale)};padding:3px 0;"
             f"border-top:1px solid {divider};margin-top:2px;'>"
             f"{row_icon} <b>{_esc(obj_id)}</b>{detail}</div>"
         )
@@ -238,7 +251,7 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
         "border-radius:4px;"
         "margin:8px 4px;"
         "padding:10px 14px;"
-        "font-size:13px;"
+        f"font-size:{_px(13, scale)};"
         f"color:{c['summary_fg']};"
         "'>"
         f"{icon} <b>{msg}</b>"
@@ -266,28 +279,28 @@ def debug_block(label: str, content: str) -> str:
     )
 
 
-def system_note(text: str, dark: bool = False) -> str:
+def system_note(text: str, dark: bool = False, scale: float = 1.0) -> str:
     """Subtle system/info note line."""
     c = _DARK if dark else _LIGHT
     return (
         "<div style='"
         "text-align:center;"
         f"color:{c['system_fg']};"
-        "font-size:11px;"
+        f"font-size:{_px(11, scale)};"
         "margin:4px 0;"
         f"'>{_esc(text)}</div>"
     )
 
 
-def welcome_bubble(dark: bool = False) -> str:
+def welcome_bubble(dark: bool = False, scale: float = 1.0) -> str:
     """Centered onboarding message shown on launch."""
     c = _DARK if dark else _LIGHT
     return (
         "<div style='text-align:center;margin:24px 32px 8px 32px;'>"
-        "<div style='font-size:22px;margin-bottom:8px;'>✈️</div>"
-        f"<div style='font-weight:700;font-size:15px;color:{c['ai_accent']};margin-bottom:6px;'>"
+        f"<div style='font-size:{_px(22, scale)};margin-bottom:8px;'>✈️</div>"
+        f"<div style='font-weight:700;font-size:{_px(15, scale)};color:{c['ai_accent']};margin-bottom:6px;'>"
         "Trinity Pilot</div>"
-        f"<div style='font-size:12px;color:{c['system_fg']};line-height:1.6;'>"
+        f"<div style='font-size:{_px(12, scale)};color:{c['system_fg']};line-height:1.6;'>"
         "Describe any desktop task and I'll break it into objectives and execute them.<br/>"
         "Type a task below to get started."
         "</div>"
@@ -295,10 +308,8 @@ def welcome_bubble(dark: bool = False) -> str:
     )
 
 
-def state_banner(label: str, color: str, dark: bool = False) -> str:
+def state_banner(label: str, color: str, dark: bool = False, scale: float = 1.0) -> str:
     """Centered state-transition banner (planning / executing)."""
-    # Qt HTML renderer does not support 8-digit hex RGBA — use explicit rgba().
-    # Parse the #RRGGBB color into r,g,b components for the rgba() background.
     r = int(color[1:3], 16)
     g = int(color[3:5], 16)
     b = int(color[5:7], 16)
@@ -307,7 +318,7 @@ def state_banner(label: str, color: str, dark: bool = False) -> str:
     return (
         f"<div style='text-align:center;margin:6px 4px;padding:5px 12px;"
         f"border-radius:4px;background:{bg};border:1px solid {border_color};"
-        f"font-size:11px;color:{color};font-weight:600;letter-spacing:0.5px;'>"
+        f"font-size:{_px(11, scale)};color:{color};font-weight:600;letter-spacing:0.5px;'>"
         f"{label}</div>"
     )
 
@@ -317,6 +328,7 @@ def execution_row(
     status: str,
     indent_level: int = 0,
     dark: bool = False,
+    scale: float = 1.0,
 ) -> str:
     """Compact inline execution step row with status indicator.
 
@@ -354,7 +366,7 @@ def execution_row(
         f"<div style='"
         f"padding-left:{padding_left}px;"
         f"padding-top:2px;padding-bottom:2px;"
-        f"font-size:12px;"
+        f"font-size:{_px(12, scale)};"
         f"font-family:monospace;"
         f"{bg_style}"
         f"color:{fg};"

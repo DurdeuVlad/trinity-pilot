@@ -656,12 +656,56 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 evidence["action_log"].append(f"Action '{act}' failed: {exc}")
 
     async def _focus_window(self, title_re: str, evidence: dict[str, Any]) -> bool:
-        """Focus a window by title regex. Returns True on success."""
+        """Focus a window by title regex. Returns True on success.
+
+        Uses pure Win32 EnumWindows via ctypes — no UIA queries, no WinUI3 hang.
+        Polls up to 30s for the window to become visible (covers slow app launches).
+        """
+        import ctypes
+        import ctypes.wintypes
+        import re as _re
+        import time
+
+        pattern = _re.compile(title_re, _re.IGNORECASE)
+        user32 = ctypes.windll.user32
+
+        def _find_visible_hwnd() -> int | None:
+            found: list[int] = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+            def _cb(hwnd: int, _: int) -> bool:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                if pattern.search(buf.value):
+                    found.append(hwnd)
+                    return False  # stop enumeration
+                return True
+
+            user32.EnumWindows(_cb, 0)
+            return found[0] if found else None
+
         try:
-            from pywinauto import Application
-            app = Application(backend="uia").connect(title_re=title_re, timeout=5)
-            win = app.top_window()
-            win.set_focus()
+            deadline = time.monotonic() + 30
+            hwnd: int | None = None
+            while time.monotonic() < deadline:
+                hwnd = _find_visible_hwnd()
+                if hwnd:
+                    break
+                await asyncio.sleep(0.5)
+
+            if not hwnd:
+                evidence["action_log"].append(
+                    f"focus_window failed ({title_re}): window not visible after 30s"
+                )
+                return False
+
+            user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
             await asyncio.sleep(0.3)
             evidence["action_log"].append(f"Focused: {title_re}")
             return True
@@ -693,14 +737,18 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             from pywinauto.keyboard import send_keys
             send_keys(text, pause=interval, with_spaces=True, with_tabs=True, with_newlines=True)
             evidence["action_log"].append("Typed via pywinauto keyboard")
-            return
         except Exception as exc:
             evidence["action_log"].append(f"pywinauto type fallback failed: {exc}")
+            import pyautogui
+            pyautogui.FAILSAFE = False
+            pyautogui.write(text, interval=interval)
+            evidence["action_log"].append("Typed via PyAutoGUI fallback")
 
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.write(text, interval=interval)
-        evidence["action_log"].append("Typed via PyAutoGUI fallback")
+        # Accumulate typed text so verify_visible_text can confirm visible delivery.
+        # Only counted as visible proof when focus_window was called first
+        # (meaning keystrokes were intentionally directed at a known window).
+        if self._target_window:
+            evidence["visible_text"] = evidence.get("visible_text", "") + text
 
     async def _hotkey(self, keys: list[str], evidence: dict[str, Any]) -> None:
         try:

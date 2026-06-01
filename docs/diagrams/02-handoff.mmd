@@ -1,33 +1,34 @@
-%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
+﻿%%{init: {'theme': 'dark', 'themeVariables': {'background': '#0a0e1a', 'primaryColor': '#0d1433', 'primaryBorderColor': '#00ffcc', 'primaryTextColor': '#e2e8f0', 'lineColor': '#00ffcc', 'edgeLabelBackground': '#0a0e1a', 'fontSize': '18px'}}}%%
 flowchart TD
-    classDef user   fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
-    classDef plan   fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
-    classDef orch   fill:#0d1433,stroke:#7b2fff,stroke-width:2px,color:#c084fc
-    classDef worker fill:#0d1a2b,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
-    classDef review fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
-    classDef ok     fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
-    classDef fail   fill:#2b0d1a,stroke:#ff2d78,stroke-width:2px,color:#ff2d78
+ accTitle: Task Pipeline  Planner / Orchestrator / Worker / Reviewer
+ classDef user fill:#0d1433,stroke:#00ffcc,stroke-width:3px,color:#00ffcc
+ classDef plan fill:#1a0d2b,stroke:#7b2fff,stroke-width:3px,color:#c084fc
+ classDef orch fill:#0d1433,stroke:#7b2fff,stroke-width:2px,color:#c084fc
+ classDef worker fill:#0d1a2b,stroke:#ff2d78,stroke-width:3px,color:#ff8fab
+ classDef review fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
+ classDef ok fill:#0d2b1a,stroke:#00ff88,stroke-width:3px,color:#00ff88
+ classDef fail fill:#2b0d1a,stroke:#ff2d78,stroke-width:2px,color:#ff2d78
 
-    U(["👤  User\n'open Chrome and search X'"]):::user
+ U(["User<br/>plain text request"]):::user
 
-    P["🧠  Planner  LLM\nbreaks task into ObjectiveSpec list\n1. open browser  2. navigate  3. search"]:::plan
+ P["Planner LLM<br/>breaks task into<br/>ordered ObjectiveSpec list"]:::plan
 
-    O["⚙️  Orchestrator\npicks next objective\ntracks retries"]:::orch
+ O["Orchestrator<br/>picks next objective<br/>routes to matching Worker<br/>tracks retries"]:::orch
 
-    W["🤖  Worker\nruns ReAct loop\nsense → LLM → tool → observe"]:::worker
+ W["Worker<br/>runs STAO loop<br/>sense -> think -> act -> observe"]:::worker
 
-    R["🔍  Reviewer  LLM\ncompares evidence\nvs success criteria"]:::review
+ R["Reviewer LLM<br/>compares evidence<br/>vs success criteria"]:::review
 
-    PASS(["✅  PASS\nnext objective"]):::ok
-    FAIL(["❌  FAIL\nretry or abort"]):::fail
-    END(["🎉  All objectives done\nresult back to UI"]):::ok
+ PASS(["PASS<br/>next objective"]):::ok
+ FAIL(["FAIL<br/>retry or abort"]):::fail
+ END(["All objectives done<br/>result back to UI"]):::ok
 
-    U --> P
-    P -->|ObjectiveSpec list| O
-    O -->|one objective| W
-    W -->|evidence dict| R
-    R -->|pass| PASS
-    R -->|fail| FAIL
-    PASS --> O
-    FAIL -->|retry| O
-    O -->|all done| END
+ U --> P
+ P -->|ObjectiveSpec list| O
+ O -->|one objective| W
+ W -->|evidence dict| R
+ R -->|pass| PASS
+ R -->|fail| FAIL
+ PASS --> O
+ FAIL -->|retry| O
+ O -->|all done| END

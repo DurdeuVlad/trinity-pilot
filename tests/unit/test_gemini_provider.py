@@ -1,7 +1,7 @@
 """GeminiProvider unit tests -- no live API calls."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -55,8 +55,8 @@ class TestGeminiProviderCompleteWithTools:
 
         with patch("trinity_pilot.llm.gemini.genai.Client") as mock_client_cls:
             mock_client = MagicMock()
-            mock_client.aio.models.generate_content = AsyncMock(
-                return_value=_mock_response(text="", parts=[fake_part])
+            mock_client.models.generate_content.return_value = _mock_response(
+                text="", parts=[fake_part]
             )
             mock_client_cls.return_value = mock_client
 
@@ -88,11 +88,9 @@ class TestGeminiProviderCompleteWithToolsNoToolCalls:
 
         with patch("trinity_pilot.llm.gemini.genai.Client") as mock_client_cls:
             mock_client = MagicMock()
-            mock_client.aio.models.generate_content = AsyncMock(
-                return_value=_mock_response(
-                    text="just a plain response",
-                    parts=[fake_part],
-                )
+            mock_client.models.generate_content.return_value = _mock_response(
+                text="just a plain response",
+                parts=[fake_part],
             )
             mock_client_cls.return_value = mock_client
 
@@ -111,7 +109,7 @@ class TestGeminiProviderCompleteWithToolsNoToolCalls:
     async def test_complete_with_tools_omits_system_instruction_when_system_empty(self):
         with patch("trinity_pilot.llm.gemini.genai.Client") as mock_client_cls:
             mock_client = MagicMock()
-            mock_client.aio.models.generate_content = AsyncMock(return_value=_mock_response())
+            mock_client.models.generate_content.return_value = _mock_response()
             mock_client_cls.return_value = mock_client
 
             from trinity_pilot.llm.base import LLMMessage
@@ -124,7 +122,7 @@ class TestGeminiProviderCompleteWithToolsNoToolCalls:
                 system="",
             )
 
-        config = mock_client.aio.models.generate_content.await_args.kwargs["config"]
+        config = mock_client.models.generate_content.call_args.kwargs["config"]
         assert config.system_instruction is None
 
 
@@ -142,7 +140,7 @@ class TestGeminiProviderSystemInstruction:
     async def test_complete_passes_system_instruction_to_model(self):
         with patch("trinity_pilot.llm.gemini.genai.Client") as mock_client_cls:
             mock_client = MagicMock()
-            mock_client.aio.models.generate_content = AsyncMock(return_value=_mock_response())
+            mock_client.models.generate_content.return_value = _mock_response()
             mock_client_cls.return_value = mock_client
 
             from trinity_pilot.llm.base import LLMMessage
@@ -154,13 +152,13 @@ class TestGeminiProviderSystemInstruction:
                 system="You are helpful",
             )
 
-        config = mock_client.aio.models.generate_content.await_args.kwargs["config"]
+        config = mock_client.models.generate_content.call_args.kwargs["config"]
         assert config.system_instruction == "You are helpful"
 
     async def test_complete_omits_system_instruction_kwarg_when_system_empty(self):
         with patch("trinity_pilot.llm.gemini.genai.Client") as mock_client_cls:
             mock_client = MagicMock()
-            mock_client.aio.models.generate_content = AsyncMock(return_value=_mock_response())
+            mock_client.models.generate_content.return_value = _mock_response()
             mock_client_cls.return_value = mock_client
 
             from trinity_pilot.llm.base import LLMMessage
@@ -172,5 +170,5 @@ class TestGeminiProviderSystemInstruction:
                 system="",
             )
 
-        config = mock_client.aio.models.generate_content.await_args.kwargs["config"]
+        config = mock_client.models.generate_content.call_args.kwargs["config"]
         assert config.system_instruction is None

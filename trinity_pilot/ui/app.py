@@ -7,9 +7,14 @@ import time
 from typing import Any
 
 import pyautogui
+from PySide6.QtCore import (
+    QEasingCurve, QObject, QPropertyAnimation,
+    QSequentialAnimationGroup, QTimer, Signal,
+)
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,10 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from PySide6.QtCore import QObject, Signal
-
 from trinity_pilot.ui.chat_widget import ChatState, ChatWidget
 from trinity_pilot.ui.stream_worker import StreamWorker
+from trinity_pilot.ui.theme import (
+    STATE_INPUT_BORDER, STATE_PLACEHOLDER, STATE_STRIPE,
+    apply_app_qss, tok,
+)
 
 # Kill path 3: PyAutoGUI pointer fail-safe — move mouse to any corner to abort
 pyautogui.FAILSAFE = True
@@ -105,6 +112,7 @@ class MainWindow(QMainWindow):
         self._stream_worker: StreamWorker | None = None
         self._pending_specs: list[dict] = []
         self._pending_request: str = ""
+        self._status_anim: QSequentialAnimationGroup | None = None
         self._planning_relay = _PlanningRelay(self)
         self._planning_relay.planned.connect(self._on_planning_done)
         self._planning_relay.error.connect(self._on_planning_error)
@@ -144,50 +152,57 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header bar
+        # ── State stripe — 3px accent line at top of window ──────────────
+        self._stripe = QWidget()
+        self._stripe.setFixedHeight(3)
+        self._stripe_effect = QGraphicsOpacityEffect(self._stripe)
+        self._stripe.setGraphicsEffect(self._stripe_effect)
+        self._stripe_anim: QSequentialAnimationGroup | None = None
+        self._stripe_pending_color: str | None = None
+        self._apply_stripe_color(tok("stripe_idle", self._dark))
+        layout.addWidget(self._stripe)
+
+        # ── Header bar ───────────────────────────────────────────────────
         self._header = QWidget()
-        self._header.setStyleSheet("background:#FFFFFF;border-bottom:1px solid #E0E0E0;")
         self._header.setFixedHeight(44)
+        self._apply_header_style()
         hrow = QHBoxLayout(self._header)
-        hrow.setContentsMargins(12, 0, 12, 0)
+        hrow.setContentsMargins(14, 0, 10, 0)
+        hrow.setSpacing(6)
+
+        # Brand mark
         title = QLabel("Trinity Pilot")
-        title.setStyleSheet("color:#FF6347;font-weight:700;font-size:15px;")
+        title.setStyleSheet(
+            "color:#FF6347;font-weight:800;font-size:15px;letter-spacing:-0.3px;"
+        )
         hrow.addWidget(title)
         hrow.addStretch()
+
+        # Status label
         self._status_label = QLabel("Ready")
-        self._status_label.setStyleSheet("color:#9E9E9E;font-size:12px;")
+        self._apply_status_style()
         hrow.addWidget(self._status_label)
+
         if self._debug_mode:
-            dbg = QLabel("DEBUG MODE")
+            dbg = QLabel("DEBUG")
             dbg.setStyleSheet(
                 "color:#FF6347;font-size:10px;font-weight:700;"
-                "background:#FFF3E0;padding:2px 8px;border-radius:8px;"
+                "background:#FFF0ED;padding:2px 8px;border-radius:8px;"
             )
             hrow.addWidget(dbg)
+
         # Dark mode toggle
         self._dark_btn = QToolButton()
-        self._dark_btn.setText("\U0001f319")
+        self._dark_btn.setText("🌙")
         self._dark_btn.setCheckable(True)
         self._dark_btn.setToolTip("Toggle dark mode")
-        self._dark_btn.setStyleSheet(
-            "QToolButton{border:none;font-size:16px;padding:2px 6px;"
-            "background:transparent;border-radius:4px;}"
-            "QToolButton:hover{background:#F0F0F0;}"
-            "QToolButton:checked{background:#2A2A2A;}"
-        )
         self._dark_btn.toggled.connect(self._toggle_dark)
         hrow.addWidget(self._dark_btn)
 
-        # Debug drawer toggle button (only in debug_mode)
         if self._debug_mode and self._debug_drawer is not None:
             self._debug_btn = QToolButton()
             self._debug_btn.setText("🛠")
             self._debug_btn.setToolTip("Toggle debug drawer (Ctrl+Shift+D)")
-            self._debug_btn.setStyleSheet(
-                "QToolButton{border:none;font-size:16px;padding:2px 6px;"
-                "background:transparent;border-radius:4px;}"
-                "QToolButton:hover{background:#F0F0F0;}"
-            )
             self._debug_btn.clicked.connect(self._toggle_debug_drawer)
             hrow.addWidget(self._debug_btn)
 
@@ -208,89 +223,151 @@ class MainWindow(QMainWindow):
         self._chat._confirm_bar.rejected.connect(self._on_confirm_rejected)
         self._chat._confirm_bar.edit_requested.connect(self._handle_confirmation)
 
-        # Input row
+        # ── Input bar ────────────────────────────────────────────────────
         self._input_bar = QWidget()
-        self._input_bar.setStyleSheet(
-            "background:#FFFFFF;border-top:1px solid #E0E0E0;"
-        )
-        self._input_bar.setFixedHeight(52)
+        self._input_bar.setFixedHeight(56)
+        self._apply_input_bar_style()
         row = QHBoxLayout(self._input_bar)
-        row.setContentsMargins(10, 8, 10, 8)
+        row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(8)
 
         self._input = QLineEdit()
         self._input.setPlaceholderText("Describe your task…")
         self._input.returnPressed.connect(self._handle_submit)
-        self._input.setStyleSheet(
-            "QLineEdit{border:1px solid #E0E0E0;border-radius:18px;"
-            "padding:6px 14px;font-size:13px;background:#F9F9F9;color:#212121;}"
-            "QLineEdit:focus{border-color:#FF6347;background:white;}"
-        )
+        self._apply_input_style(ChatState.IDLE)
         row.addWidget(self._input)
 
-        # Kill path 1: in-app stop button (hidden when not running)
-        self._stop_btn = QPushButton("Stop")
+        self._stop_btn = QPushButton("■ Stop")
         self._stop_btn.setEnabled(False)
         self._stop_btn.hide()
         self._stop_btn.clicked.connect(self._handle_stop)
-        self._stop_btn.setStyleSheet(
-            "QPushButton{background:#FFEBEE;color:#C62828;"
-            "border:1px solid #FFCDD2;border-radius:16px;"
-            "padding:6px 16px;font-size:12px;font-weight:600;}"
-            "QPushButton:hover{background:#FFCDD2;}"
-            "QPushButton:disabled{color:#BDBDBD;background:#F5F5F5;border-color:#E0E0E0;}"
-        )
+        self._apply_stop_btn_style()
         row.addWidget(self._stop_btn)
         layout.addWidget(self._input_bar)
 
+    # ------------------------------------------------------------------
+    # Theme helpers
+    # ------------------------------------------------------------------
+
+    def _t(self, name: str) -> str:
+        return tok(name, self._dark)
+
+    def _apply_header_style(self) -> None:
+        bg = self._t("surface")
+        border = self._t("border")
+        self._header.setStyleSheet(
+            f"background:{bg};border-bottom:1px solid {border};"
+        )
+
+    def _apply_status_style(self) -> None:
+        self._status_label.setStyleSheet(
+            f"color:{self._t('text_muted')};font-size:12px;"
+        )
+
+    def _apply_input_bar_style(self) -> None:
+        bg = self._t("surface")
+        border = self._t("border")
+        self._input_bar.setStyleSheet(
+            f"background:{bg};border-top:1px solid {border};"
+        )
+
+    def _apply_input_style(self, state: ChatState) -> None:
+        state_name = state.name
+        border_tok = STATE_INPUT_BORDER.get(state_name, "input_border")
+        border = self._t(border_tok)
+        bg = self._t("input_bg")
+        fg = self._t("text")
+        placeholder_text = STATE_PLACEHOLDER.get(state_name, "Describe your task…")
+        self._input.setPlaceholderText(placeholder_text)
+        self._input.setStyleSheet(
+            f"QLineEdit{{"
+            f"border:1.5px solid {border};border-radius:20px;"
+            f"padding:7px 16px;font-size:13px;background:{bg};color:{fg};"
+            f"}}"
+            f"QLineEdit:focus{{"
+            f"border:2px solid {border};"
+            f"background:{self._t('surface')};"
+            f"}}"
+        )
+
+    def _apply_stop_btn_style(self) -> None:
+        bg = self._t("btn_stop_bg")
+        fg = self._t("btn_stop_fg")
+        brd = self._t("btn_stop_brd")
+        self._stop_btn.setStyleSheet(
+            f"QPushButton{{background:{bg};color:{fg};"
+            f"border:1px solid {brd};border-radius:18px;"
+            f"padding:7px 18px;font-size:12px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{brd};}}"
+            f"QPushButton:disabled{{opacity:0.4;}}"
+        )
+
+    def _apply_stripe_color(self, color: str) -> None:
+        self._stripe.setStyleSheet(f"background:{color};")
+
+    def _animate_stripe(self, color: str) -> None:
+        """Crossfade the header stripe to a new color."""
+        if self._stripe_anim:
+            self._stripe_anim.stop()
+        self._stripe_pending_color = color
+
+        seq = QSequentialAnimationGroup(self._stripe)
+        out = QPropertyAnimation(self._stripe_effect, b"opacity", seq)
+        out.setDuration(80)
+        out.setStartValue(1.0)
+        out.setEndValue(0.0)
+
+        def _swap():
+            if self._stripe_pending_color:
+                self._apply_stripe_color(self._stripe_pending_color)
+                self._stripe_pending_color = None
+
+        out.finished.connect(_swap)
+
+        inn = QPropertyAnimation(self._stripe_effect, b"opacity", seq)
+        inn.setDuration(180)
+        inn.setStartValue(0.0)
+        inn.setEndValue(1.0)
+        inn.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        seq.addAnimation(out)
+        seq.addAnimation(inn)
+        seq.start()
+        self._stripe_anim = seq
+
     def _toggle_dark(self, dark: bool) -> None:
         self._dark = dark
-        from qt_material import apply_stylesheet
-        theme = "dark_teal.xml" if dark else "light_teal.xml"
-        apply_stylesheet(
-            QApplication.instance(),
-            theme,
-            extra={"QTextBrowser": {"background": "transparent"}},
-        )
-        hbg, hborder = ("#1A1A1A", "#2A2A2A") if dark else ("#FFFFFF", "#E0E0E0")
-        ibg, iborder = ("#1A1A1A", "#2A2A2A") if dark else ("#FFFFFF", "#E0E0E0")
-        self._header.setStyleSheet(f"background:{hbg};border-bottom:1px solid {hborder};")
-        self._input_bar.setStyleSheet(f"background:{ibg};border-top:1px solid {iborder};")
+        # Rebuild app-level QSS (replaces qt_material entirely)
+        apply_app_qss(QApplication.instance(), dark=dark, scale=self._ui_scale())
+        # Refresh all themed components
+        self._apply_header_style()
+        self._apply_status_style()
+        self._apply_input_bar_style()
+        self._apply_stop_btn_style()
+        current_state = self._chat.get_state()
+        self._apply_input_style(current_state)
+        stripe_tok = STATE_STRIPE.get(current_state.name, "stripe_idle")
+        self._apply_stripe_color(self._t(stripe_tok))
         self._chat.set_dark(dark)
-        # Re-apply input state styling for new theme
-        self._set_input_state(self._chat.get_state())
 
-    # State → (placeholder, light_bg, border_color)
-    _STATE_INPUT_LIGHT = {
-        ChatState.IDLE:                   ("Describe your task…",     "#F9F9F9", "#E0E0E0"),
-        ChatState.PLANNING:               ("Planning…",               "#FFF3E0", "#FF9800"),
-        ChatState.AWAITING_CLARIFICATION: ("Answer to clarify…",      "#E8F5E9", "#4CAF50"),
-        ChatState.AWAITING_CONFIRM:       ("or type an amendment…",   "#E3F2FD", "#1976D2"),
-        ChatState.EXECUTING:              ("Executing…",              "#E8EAF6", "#3F51B5"),
-        ChatState.DONE:                   ("Describe your next task…","#F9F9F9", "#E0E0E0"),
-        ChatState.ERROR:                  ("Describe your task…",     "#FFEBEE", "#F44336"),
-    }
-    _STATE_INPUT_DARK = {
-        ChatState.IDLE:                   ("Describe your task…",     "#2A2A2A", "#3A3A3A"),
-        ChatState.PLANNING:               ("Planning…",               "#2A1E00", "#FF9800"),
-        ChatState.AWAITING_CLARIFICATION: ("Answer to clarify…",      "#0D2010", "#4CAF50"),
-        ChatState.AWAITING_CONFIRM:       ("or type an amendment…",   "#0A1929", "#1976D2"),
-        ChatState.EXECUTING:              ("Executing…",              "#0D0D2A", "#3F51B5"),
-        ChatState.DONE:                   ("Describe your next task…","#2A2A2A", "#3A3A3A"),
-        ChatState.ERROR:                  ("Describe your task…",     "#2D0A0A", "#F44336"),
-    }
+    def _ui_scale(self) -> float:
+        """Compute text scale factor based on window height. Base = 800px → 1.0."""
+        h = self.height()
+        if h <= 0:
+            return 1.0
+        return max(0.75, min(1.6, h / 800.0))
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        scale = self._ui_scale()
+        self._chat.set_scale(scale)
+        apply_app_qss(QApplication.instance(), dark=self._dark, scale=scale)
 
     def _set_input_state(self, state: ChatState) -> None:
-        """Update input bar placeholder and border color to reflect current state."""
-        table = self._STATE_INPUT_DARK if self._dark else self._STATE_INPUT_LIGHT
-        placeholder, bg, border = table.get(state, ("Describe your task…", "#F9F9F9", "#E0E0E0"))
-        fg = "#E0E0E0" if self._dark else "#212121"
-        self._input.setPlaceholderText(placeholder)
-        self._input.setStyleSheet(
-            f"QLineEdit{{border:1px solid {border};border-radius:18px;"
-            f"padding:6px 14px;font-size:13px;background:{bg};color:{fg};}}"
-            f"QLineEdit:focus{{border-color:{border};background:{'#1A1A1A' if self._dark else 'white'};}}"
-        )
+        """Update input styling and header stripe for the new state."""
+        self._apply_input_style(state)
+        stripe_tok = STATE_STRIPE.get(state.name, "stripe_idle")
+        self._animate_stripe(self._t(stripe_tok))
 
     def _wire_kill_paths(self) -> None:
         # Kill path 2: global hotkey Ctrl+Shift+Q
@@ -328,7 +405,32 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def set_status(self, text: str) -> None:
-        self._status_label.setText(text)
+        if self._status_label.text() == text:
+            return
+        if self._status_anim:
+            self._status_anim.stop()
+            self._status_anim = None
+
+        effect = QGraphicsOpacityEffect(self._status_label)
+        self._status_label.setGraphicsEffect(effect)
+
+        seq = QSequentialAnimationGroup(self._status_label)
+
+        out = QPropertyAnimation(effect, b"opacity", seq)  # parent=seq prevents GC
+        out.setDuration(80)
+        out.setStartValue(1.0)
+        out.setEndValue(0.0)
+        out.finished.connect(lambda: self._status_label.setText(text))
+
+        inn = QPropertyAnimation(effect, b"opacity", seq)  # parent=seq prevents GC
+        inn.setDuration(120)
+        inn.setStartValue(0.0)
+        inn.setEndValue(1.0)
+        inn.setEasingCurve(QEasingCurve.Type.OutCubic)
+        seq.addAnimation(out)
+        seq.addAnimation(inn)
+        seq.start()
+        self._status_anim = seq
 
     def log(self, message: str) -> None:
         if self._debug_mode:
@@ -414,8 +516,20 @@ class MainWindow(QMainWindow):
 
     def _check_clarification_async(self, task: str) -> None:
         """Ask the LLM if the task needs clarification. Fires relay signal with result."""
+        import re
         import threading
         relay = self._clarification_relay
+
+        # Fast sync pre-check — handle obvious chat/greetings without any LLM call.
+        _GREETING_RE = re.compile(
+            r'^(hi|hello|hey|sup|yo|howdy|greetings|good (morning|afternoon|evening|night)|'
+            r'bye|goodbye|ciao|salut|bonjour|hola|thanks|thank you|cheers)[\s!?.]*$',
+            re.IGNORECASE,
+        )
+        if _GREETING_RE.match(task.strip()):
+            relay.direct_response.emit("chat", task)
+            return
+
         settings = self._settings
 
         def _run() -> None:
@@ -426,7 +540,8 @@ class MainWindow(QMainWindow):
                 from trinity_pilot.llm.base import LLMMessage
 
                 if not settings:
-                    relay.clear.emit()
+                    # No config — can't automate; respond as chat.
+                    relay.direct_response.emit("chat", task)
                     return
 
                 # Use the fast worker model (flash-lite) with a tight timeout so the
@@ -479,7 +594,9 @@ class MainWindow(QMainWindow):
                     else:
                         relay.clear.emit()
                 except Exception:
-                    relay.clear.emit()  # on any error, just proceed without clarifying
+                    # LLM classification failed — default to planning so automation
+                    # requests still work; chat messages hit the pre-classifier above.
+                    relay.clear.emit()
                 finally:
                     loop.close()
             except Exception:
@@ -546,6 +663,7 @@ class MainWindow(QMainWindow):
         self.set_status("Responding…")
 
     def _on_direct_response_done(self, _full_text: str) -> None:
+        self._chat.on_bubble_stream_done()
         self._chat.set_state(ChatState.DONE)
         self._input.setEnabled(True)
         self._set_input_state(ChatState.DONE)
@@ -830,14 +948,8 @@ def run_app(test_mode: bool = False) -> None:
     _window_ref: list[MainWindow] = [window]
     _install_qt_exception_hook(_window_ref)
 
-    # qt-material must import after PySide6
-    from qt_material import apply_stylesheet
-    apply_stylesheet(
-        app,
-        theme="light_teal.xml",
-        extra={"QTextBrowser": {"background": "transparent"}},
-    )
-    # _dark stays False (default), toggle stays unchecked — user can switch to dark
+    # Apply base QSS (token-based, no qt_material dependency)
+    apply_app_qss(app, dark=False)
 
     window.show()
     sys.exit(app.exec())
