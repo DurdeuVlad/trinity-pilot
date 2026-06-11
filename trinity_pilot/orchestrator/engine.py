@@ -348,7 +348,8 @@ class AsyncTaskOrchestrator:
                     )
                     return {"status": "failed", "failure_reason": "blocker_needs_user_input"}
             except WorkerError as exc:
-                last_evidence = {"error": str(exc)}
+                # Preserve any evidence built before the error; add error field.
+                last_evidence = {**last_evidence, "error": str(exc)}
                 self._attempt_store.log_attempt(
                     AttemptLog(
                         attempt_id,

@@ -236,7 +236,21 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
 
         if tool_name == "navigate":
             url = args["url"]
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            response = None
+            for _nav_attempt in range(2):
+                try:
+                    response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                except Exception as nav_err:
+                    return (
+                        f"NAVIGATION FAILED: {nav_err}. "
+                        "The URL is unreachable (DNS failure, connection refused, or timeout). "
+                        "Call finish with status=failure."
+                    )
+                if response is not None and response.status >= 500 and _nav_attempt == 0:
+                    import asyncio as _asyncio
+                    await _asyncio.sleep(5)
+                    continue
+                break
             evidence["page_url"] = page.url
             evidence["page_http_status"] = response.status if response is not None else None
             status_info = f" (HTTP {response.status})" if response is not None else ""

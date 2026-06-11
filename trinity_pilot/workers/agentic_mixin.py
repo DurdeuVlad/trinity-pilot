@@ -262,7 +262,7 @@ class AgenticWorkerMixin:
         used for tool turns so the model never sees "[tool_call]:" text in its history.
         """
         if max_steps is None:
-            max_steps = int(spec.metadata.get("max_agent_steps", 20))
+            max_steps = int(spec.metadata.get("max_agent_steps", 30))
 
         effective_signals = signals if signals is not None else self._signals_queue
         task_id = self._task_id or spec.objective_id
@@ -283,8 +283,16 @@ class AgenticWorkerMixin:
             )
             tokens_used += response.token_count
 
+            # Build transcript entry for this step (written to evidence after dispatch)
+            _tx_entry: dict[str, Any] = {
+                "step": steps_taken + 1,
+                "llm_text": response.content or "",
+            }
+
             # Case: empty response
             if not response.tool_calls and not response.content:
+                _tx_entry["tool_name"] = "(empty)"
+                evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 if steps_taken == 0:
                     raise WorkerError(
                         f"LLM returned empty response at step {steps_taken}"
@@ -313,6 +321,8 @@ class AgenticWorkerMixin:
 
             # Case: text-only response (no tool calls)
             if not response.tool_calls:
+                _tx_entry["tool_name"] = "(text-only)"
+                evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 messages.append(LLMMessage(role="model", content=response.content))
                 messages.append(
                     LLMMessage(
@@ -337,6 +347,8 @@ class AgenticWorkerMixin:
             tool_call = response.tool_calls[0]
             tool_name: str = tool_call["name"]
             args: dict[str, Any] = tool_call.get("args", {})
+            _tx_entry["tool_name"] = tool_name
+            _tx_entry["tool_args"] = {k: v for k, v in args.items() if k != "image_data"}
 
             # Emit proper FunctionCall part (model turn) — NOT "[tool_call]:" text.
             # Attach raw_provider_content so GeminiProvider can replay the original
@@ -389,6 +401,8 @@ class AgenticWorkerMixin:
 
             # Control-flow signals
             if isinstance(dispatch_result, _FinishSignal):
+                _tx_entry["tool_result"] = f"finish(status={dispatch_result.status}): {dispatch_result.summary}"
+                evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 return WorkerResult(
                     status=dispatch_result.status,
                     summary=dispatch_result.summary,
@@ -398,6 +412,8 @@ class AgenticWorkerMixin:
                 )
 
             if isinstance(dispatch_result, _BlockerSignal):
+                _tx_entry["tool_result"] = f"report_blocking: {dispatch_result.reason}"
+                evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 wr = WorkerResult(
                     status="partial_blocker",
                     summary=dispatch_result.reason,
@@ -418,6 +434,8 @@ class AgenticWorkerMixin:
             snapshot = self._worker_state_snapshot(evidence)
             if snapshot:
                 observation = f"{observation}\n\n[STATE]\n{snapshot}"
+            _tx_entry["tool_result"] = observation[:2000] if isinstance(observation, str) else str(observation)[:2000]
+            evidence.setdefault("llm_transcript", []).append(_tx_entry)
 
             # Emit proper FunctionResponse part (user turn).
             # When image bytes are attached (e.g. screenshot), include them
@@ -443,6 +461,8 @@ class AgenticWorkerMixin:
                     )
                 )
 
-        raise WorkerError(
-            f"Worker step budget exhausted after {max_steps} steps for '{spec.objective_id}'"
+        # Return failure result so evidence (action_log, transcript) is preserved for review.
+        return WorkerResult(
+            status="failure",
+            summary=f"Worker step budget exhausted after {max_steps} steps for '{spec.objective_id}'",
         )

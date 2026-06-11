@@ -80,6 +80,7 @@ Available tools:
 [ACTION] type_text: Type text into the currently focused window.
 [ACTION] press_hotkey: Press a keyboard hotkey combination.
 [ACTION] press_key: Press a single key.
+[ACTION] click_button: Click a UI button by its visible label text (e.g. 'Got it', 'OK').
 [ACTION] write_file: Write text content directly to a file at an absolute path.
 [ACTION] wait: Pause execution for a number of seconds.
 [ACTION] finish: Signal that the objective is complete or definitively failed.
@@ -108,6 +109,36 @@ CRITICAL RULES:
   final state, then call finish with a summary that includes any result values observed.
 - Use clipboard_read to read values that were copied to clipboard (e.g. Calculator result
   after pressing Ctrl+C).
+- NEVER call finish(success) for a task that required writing a file unless write_file
+  has returned successfully for that file. Include the written file path in your finish summary.
+- To CLOSE any application window: first use press_hotkey("alt", "F4") after focusing
+  the window. Do NOT use Ctrl+W, Ctrl+F4, or any other shortcut — they trigger
+  application-specific dialogs (e.g., Ctrl+W opens Resize/Skew in Paint, not close).
+  If a "Save changes?" dialog appears and click_button("Don't save") fails, use
+  kill_process(process_name="<exe>.exe") as a reliable direct termination fallback.
+  kill_process is always available and does not require cmd.exe — prefer it over
+  launching a terminal to type taskkill.
+[ACTION] kill_process: Force-kill a process by .exe name (e.g. 'mspaint.exe'). Use when alt+F4 or click_button fail.
+- Before performing actions in a freshly launched app, dismiss any welcome/popup
+  dialogs. Check the screenshot after launch — if a coaching tooltip or dialog with
+  a labeled button (e.g. "Got it", "OK", "Close") is visible, call
+  click_button(button_text="Got it") (or the appropriate label) to dismiss it.
+  Only fall back to press_key("escape") if no button label is visible.
+  Do NOT proceed with the main task until the popup is gone — failing to dismiss
+  a popup prevents subsequent key presses from reaching the target window.
+  For Microsoft Paint: a "Try Image Creator" tooltip with a "Got it" button appears
+  on launch. Call click_button(button_text="Got it") immediately after focus_window
+  to dismiss it before drawing or closing Paint.
+- For Windows Calculator (UWP) arithmetic: do NOT use type_text for the full expression.
+  Use press_key for EACH digit and operator separately:
+    Digits: press_key("0") through press_key("9")
+    Addition (+): press_key("add")          ← numpad VK_ADD — reliable in UWP Calculator
+    Subtraction (−): press_key("subtract")
+    Multiplication (×): press_key("multiply")
+    Division (÷): press_key("divide")
+    Equals / compute: press_key("return")
+  Always call focus_window immediately before the first press_key call.
+  After pressing return, use press_hotkey("ctrl", "c") then clipboard_read to read result.
 """
 
 # Domain tool declarations
@@ -206,6 +237,49 @@ _get_clipboard_decl = genai_types.FunctionDeclaration(
     parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
 )
 
+_click_button_decl = genai_types.FunctionDeclaration(
+    name="click_button",
+    description=(
+        "Click a UI button found by its visible label text. "
+        "Use this to dismiss dialog boxes, coaching tooltips, or popup buttons "
+        "(e.g. 'Got it', 'OK', 'Cancel', 'Close'). "
+        "Searches within the currently focused window if window_title_re is omitted."
+    ),
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "button_text": genai_types.Schema(
+                type=genai_types.Type.STRING,
+                description="Exact visible label of the button to click (e.g. 'Got it', 'OK').",
+            ),
+            "window_title_re": genai_types.Schema(
+                type=genai_types.Type.STRING,
+                description="Optional window title regex to search within. Defaults to the foreground window.",
+            ),
+        },
+        required=["button_text"],
+    ),
+)
+
+_kill_process_decl = genai_types.FunctionDeclaration(
+    name="kill_process",
+    description=(
+        "Force-kill a process by executable name using taskkill /F /IM. "
+        "Use this as a reliable fallback when alt+F4 or click_button fail to close a window. "
+        "Example: kill_process(process_name='mspaint.exe') closes Paint without save dialogs."
+    ),
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "process_name": genai_types.Schema(
+                type=genai_types.Type.STRING,
+                description="Executable filename to kill, e.g. 'mspaint.exe', 'notepad.exe'.",
+            ),
+        },
+        required=["process_name"],
+    ),
+)
+
 
 class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     """LLM-driven desktop worker using ReAct loop."""
@@ -233,6 +307,8 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             _type_text_decl,
             _press_hotkey_decl,
             _press_key_decl,
+            _click_button_decl,
+            _kill_process_decl,
             _desktop_write_file_decl,
             _wait_decl,
             _get_clipboard_decl,
@@ -324,7 +400,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             "degraded_mode": False,
             "error": None,
         }
-        timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 120))
         try:
             result = await asyncio.wait_for(
                 self.run_loop(spec, evidence),
@@ -356,7 +432,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         if tool_name == "launch_app":
             app = args["app"]
             raw_args = args.get("args", "")
-            app_args = raw_args.split() if raw_args else []
+            if isinstance(raw_args, list):
+                app_args = raw_args
+            elif raw_args:
+                app_args = raw_args.split()
+            else:
+                app_args = []
             app_args = [a.replace("/", "\\") if isinstance(a, str) else a for a in app_args]
             # Map exe names to window title patterns so we can detect existing instances.
             _EXE_TITLE_MAP = {
@@ -443,6 +524,43 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             evidence["action_log"].append(f"Press: {key}")
             return f"Pressed key: {key}"
 
+        elif tool_name == "click_button":
+            button_text = args["button_text"]
+            window_title_re = args.get("window_title_re")
+            try:
+                from pywinauto import Application
+                import win32gui
+                if window_title_re:
+                    app_obj = Application(backend="uia").connect(
+                        title_re=window_title_re, timeout=5
+                    )
+                    win_obj = app_obj.top_window()
+                else:
+                    hwnd = win32gui.GetForegroundWindow()
+                    app_obj = Application(backend="uia").connect(handle=hwnd)
+                    win_obj = app_obj.top_window()
+                # Try multiple strategies: exact → case-insensitive → any control type
+                _strategies = [
+                    dict(title=button_text, control_type="Button"),
+                    dict(title_re=f"(?i){re.escape(button_text)}", control_type="Button"),
+                    dict(title_re=f"(?i){re.escape(button_text)}"),
+                ]
+                _last_exc = None
+                for _s in _strategies:
+                    try:
+                        btn = win_obj.child_window(**_s)
+                        btn.click_input()
+                        await asyncio.sleep(0.3)
+                        evidence["action_log"].append(f"click_button: '{button_text}' strat={_s}")
+                        return f"Clicked button '{button_text}'"
+                    except Exception as _e:
+                        _last_exc = _e
+                evidence["action_log"].append(f"click_button all strategies failed: {_last_exc}")
+                return f"click_button failed (button '{button_text}' not found): {_last_exc}"
+            except Exception as exc:
+                evidence["action_log"].append(f"click_button failed: {exc}")
+                return f"click_button failed: {exc}"
+
         elif tool_name == "write_file":
             path = args["path"]
             content = args["content"]
@@ -465,6 +583,22 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             if self._target_window and not args.get("app_title"):
                 args = {**args, "mode": args.get("mode", "app"), "app_title": self._target_window}
             return await super()._dispatch_tool(tool_name, args, evidence)
+
+        elif tool_name == "kill_process":
+            import subprocess as _sp
+            process_name = args.get("process_name", "")
+            try:
+                result = _sp.run(
+                    ["taskkill", "/F", "/IM", process_name],
+                    capture_output=True, text=True, timeout=10,
+                )
+                await asyncio.sleep(0.5)
+                msg = f"kill_process {process_name}: exit={result.returncode} {result.stdout.strip()} {result.stderr.strip()}"
+                evidence["action_log"].append(msg)
+                return msg
+            except Exception as exc:
+                evidence["action_log"].append(f"kill_process failed: {exc}")
+                return f"kill_process failed: {exc}"
 
         elif tool_name == "clipboard_read":
             import subprocess

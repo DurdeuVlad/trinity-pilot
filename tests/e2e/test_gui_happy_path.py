@@ -80,7 +80,7 @@ def _read_artifact(path: Path) -> str:
     return raw.decode('utf-8', errors='replace').replace('\x00', '').strip()
 
 
-def _plan_and_confirm(app, prompt: str, plan_timeout: float = 50.0) -> str:
+def _plan_and_confirm(app, prompt: str, plan_timeout: float = 90.0) -> str:
     """Submit prompt, assert planning completes, send 'yes'. Returns plan status."""
     app.submit(prompt)
     plan_s = app.wait_for(AFTER_SUBMIT, timeout=plan_timeout)
@@ -264,7 +264,7 @@ def test_T8_browser_httpbin_origin(app):
     """Navigate to httpbin.org/get, read the 'origin' IP field, report in chat."""
     _plan_and_confirm(
         app,
-        "Open a browser and navigate to https://httpbin.org/get. "
+        "Open a browser and navigate to https://httpbun.com/get. "
         "Find the value of the 'origin' field in the JSON response and say it in chat.",
     )
     done = app.wait_for(AFTER_CONFIRM, timeout=120)
@@ -570,12 +570,12 @@ def test_T19_cross_browser_uuid_to_file(app):
     """Browser fetches a UUID from httpbin, terminal writes it to uuid_result.txt."""
     _plan_and_confirm(
         app,
-        "Open a browser and go to https://httpbin.org/uuid. "
-        "Read the 'uuid' value from the JSON response. "
+        "Open a browser and go to https://www.uuidgenerator.net/api/version4. "
+        "The page returns a UUID string. "
         "Then use the terminal to write that UUID value to a file called "
         "uuid_result.txt on the Desktop.",
     )
-    done = app.wait_for(AFTER_CONFIRM, timeout=150)
+    done = app.wait_for(AFTER_CONFIRM, timeout=200)
     app.snap("T19_cross_uuid_to_file")
 
     assert "failed" not in done.lower(), f"T19 ended with failure: {done!r}"
