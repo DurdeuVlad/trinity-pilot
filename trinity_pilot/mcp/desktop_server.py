@@ -5,6 +5,9 @@ Internal hot-path skips this server and calls DesktopWorker directly.
 
 MCP tools exposed
 -----------------
+High-level task tools:
+  desktop_run        — run a full agentic desktop objective
+
 Domain sensor tools (read-only, desktop-specific):
   uia_tree          — UIA accessibility tree of focused or named window
   focused_element   — currently focused UI element details
@@ -35,6 +38,10 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.workers.base import WorkerBlocker, WorkerError
+from trinity_pilot.workers.desktop_worker import DesktopWorker
+
 mcp = FastMCP(
     name="trinity-pilot-desktop",
     version="0.1.0",
@@ -53,6 +60,48 @@ def health() -> str:
 @mcp.resource("version://desktop")
 def version() -> str:
     return "0.1.0"
+
+
+# ---------------------------------------------------------------------------
+# High-level task tool
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def desktop_run(spec_dict: dict) -> dict:
+    """Execute a full desktop objective and return a tagged result envelope.
+
+    spec_dict is ObjectiveSpec.to_dict() — the complete objective spec,
+    including metadata (retry_context, steering_context, dependency_evidence,
+    timeout_seconds), dependencies, max_attempts, risk_class, etc. This is the
+    real dispatch boundary: a fresh DesktopWorker is constructed per call.
+
+    Returns one of three tagged shapes (WorkerBlocker/WorkerError cannot cross
+    the MCP JSON-RPC boundary as raised exceptions, so they are translated):
+      {"mcp_status": "ok", "evidence": {...}}
+      {"mcp_status": "blocker", "reason": str, "result": {status, summary,
+                                            evidence, steps_taken, tokens_used}}
+      {"mcp_status": "error", "message": str}
+    """
+    spec = ObjectiveSpec.from_dict(spec_dict)
+    worker = DesktopWorker()
+    try:
+        evidence = await worker.execute(spec)
+        return {"mcp_status": "ok", "evidence": evidence}
+    except WorkerBlocker as exc:
+        result = exc.result
+        return {
+            "mcp_status": "blocker",
+            "reason": str(exc),
+            "result": {
+                "status": result.status,
+                "summary": result.summary,
+                "evidence": result.evidence,
+                "steps_taken": result.steps_taken,
+                "tokens_used": result.tokens_used,
+            },
+        }
+    except WorkerError as exc:
+        return {"mcp_status": "error", "message": str(exc)}
 
 
 # ---------------------------------------------------------------------------

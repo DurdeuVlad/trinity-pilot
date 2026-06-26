@@ -33,11 +33,8 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from trinity_pilot.core.types import (
-    DomainType,
-    ObjectiveSpec,
-    RiskClass,
-)
+from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.browser_worker import BrowserWorker
 
 mcp = FastMCP(
@@ -65,28 +62,41 @@ def version() -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def browser_navigate(
-    objective_id: str,
-    goal: str,
-    success_tests: list[str],
-) -> dict:
-    """Navigate the browser and return evidence
-    (screenshot, dom_snapshot, page_title, page_url)."""
-    spec = ObjectiveSpec(
-        objective_id=objective_id,
-        goal=goal,
-        dependencies=[],
-        domain=DomainType.BROWSER,
-        required_capabilities=["browser_navigation"],
-        risk_class=RiskClass.LOW,
-        preconditions=[],
-        success_tests=success_tests,
-        evidence_bundle=["screenshot", "dom_snapshot", "page_title", "page_url"],
-        max_attempts=1,
-        rollback_or_abort_rule="abort",
-    )
+async def browser_navigate(spec_dict: dict) -> dict:
+    """Execute a full browser objective and return a tagged result envelope.
+
+    spec_dict is ObjectiveSpec.to_dict() — the complete objective spec,
+    including metadata (retry_context, steering_context, dependency_evidence,
+    timeout_seconds), dependencies, max_attempts, risk_class, etc. This is the
+    real dispatch boundary: a fresh BrowserWorker is constructed per call.
+
+    Returns one of three tagged shapes (WorkerBlocker/WorkerError cannot cross
+    the MCP JSON-RPC boundary as raised exceptions, so they are translated):
+      {"mcp_status": "ok", "evidence": {...}}
+      {"mcp_status": "blocker", "reason": str, "result": {status, summary,
+                                            evidence, steps_taken, tokens_used}}
+      {"mcp_status": "error", "message": str}
+    """
+    spec = ObjectiveSpec.from_dict(spec_dict)
     worker = BrowserWorker()
-    return await worker.execute(spec)
+    try:
+        evidence = await worker.execute(spec)
+        return {"mcp_status": "ok", "evidence": evidence}
+    except WorkerBlocker as exc:
+        result = exc.result
+        return {
+            "mcp_status": "blocker",
+            "reason": str(exc),
+            "result": {
+                "status": result.status,
+                "summary": result.summary,
+                "evidence": result.evidence,
+                "steps_taken": result.steps_taken,
+                "tokens_used": result.tokens_used,
+            },
+        }
+    except WorkerError as exc:
+        return {"mcp_status": "error", "message": str(exc)}
 
 
 # ---------------------------------------------------------------------------

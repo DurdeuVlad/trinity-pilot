@@ -21,6 +21,7 @@ class Settings:
     stuck_threshold_steps: int = 5
     db_path: str = "trinity_pilot.db"
     debug_mode: bool = False
+    mcp_dispatch_enabled: bool = False
 
     def validate(self) -> None:
         if not self.gemini_api_key:
@@ -38,6 +39,7 @@ class Settings:
             stuck_threshold_steps=int(os.getenv("STUCK_THRESHOLD_STEPS", "5")),
             db_path=os.getenv("DB_PATH", "trinity_pilot.db"),
             debug_mode=os.getenv("TRINITY_DEBUG_MODE", "false").strip().lower() in ("true", "1", "yes"),
+            mcp_dispatch_enabled=os.getenv("TRINITY_MCP_DISPATCH", "false").strip().lower() in ("true", "1", "yes"),
         )
         settings.validate()
         return settings

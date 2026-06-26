@@ -31,9 +31,33 @@ from trinity_pilot.orchestrator.signals import (
 from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
+from trinity_pilot.mcp.client_pool import MCPClientPool
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.router import WorkerRouter
 from trinity_pilot.workers.worker_result import WorkerResult
+
+# Evidence keys safe to forward into a dependent objective's prompt context —
+# small, text-only facts a downstream worker needs (e.g. a captured page title).
+# Excludes large/binary fields (screenshot, dom_snapshot) that would bloat the
+# next objective's LLM context without adding anything it can act on.
+_PORTABLE_EVIDENCE_KEYS = (
+    "page_title",
+    "page_url",
+    "written_files",
+    "written_files_verified",
+    "worker_result_summary",
+    "visible_text",
+)
+
+
+def _portable_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Extract the small, text-only subset of an objective's evidence that's
+    safe and useful to forward into a dependent objective's prompt context."""
+    portable: dict[str, Any] = {
+        k: v for k, v in evidence.items()
+        if k in _PORTABLE_EVIDENCE_KEYS or k.startswith("file_content_")
+    }
+    return portable
 
 
 @dataclass
@@ -61,6 +85,7 @@ class AsyncTaskOrchestrator:
         self._reflection_store = ReflectionStore(self._db_path)
         self._objective_store = ObjectiveStateStore(self._db_path)
         self._router = WorkerRouter()
+        self._mcp_pool = MCPClientPool()
         self._cancel_requested = asyncio.Event()
         self._snapshot = OrchestratorSnapshot()
 
@@ -111,10 +136,28 @@ class AsyncTaskOrchestrator:
                 )
             )
             results: dict[str, Any] = {}
+            prev_objective_id: str | None = None
             for spec in planned:
                 if self._cancel_requested.is_set():
                     return self._finish(task_id, TaskStatus.CANCELLED, results)
+                # Engine executes `planned` strictly in order regardless of the
+                # declared dependency graph, so always forward the immediately
+                # preceding objective's evidence too — not just explicitly
+                # declared dependencies, which the planner doesn't reliably set
+                # for naturally-sequential multi-domain tasks.
+                dep_ids = list(spec.dependencies or [])
+                if prev_objective_id and prev_objective_id not in dep_ids:
+                    dep_ids.append(prev_objective_id)
+                if dep_ids:
+                    dep_evidence = {
+                        dep_id: _portable_evidence(results[dep_id].get("evidence", {}))
+                        for dep_id in dep_ids
+                        if dep_id in results
+                    }
+                    if dep_evidence:
+                        spec.metadata["dependency_evidence"] = dep_evidence
                 results[spec.objective_id] = await self._run_objective(task_id, spec)
+                prev_objective_id = spec.objective_id
                 if results[spec.objective_id]["status"] != "passed":
                     return self._finish(task_id, TaskStatus.FAILED, results)
             return self._finish(task_id, TaskStatus.COMPLETED, results)
@@ -125,6 +168,8 @@ class AsyncTaskOrchestrator:
             self._task_store.update_status(task_id, TaskStatus.FAILED)
             self._snapshot.status = TaskStatus.FAILED
             return {"task_id": task_id, "status": "failed", "error": str(exc)}
+        finally:
+            await self._mcp_pool.aclose()
 
     async def _run_objective(self, task_id: str, spec: ObjectiveSpec) -> dict[str, Any]:
         budget = ObjectiveBudget.default()
@@ -133,9 +178,12 @@ class AsyncTaskOrchestrator:
         self._objective_store.upsert(task_id, objective_id, ObjectiveState.RUNNING)
         await self.signals.put(ObjectiveStarted(task_id, objective_id))
 
-        worker = self._router.route(spec)
-        worker._signals_queue = self.signals
-        worker._task_id = task_id
+        mcp_dispatch = getattr(self._settings, "mcp_dispatch_enabled", False)
+        worker = None
+        if not mcp_dispatch:
+            worker = self._router.route(spec)
+            worker._signals_queue = self.signals
+            worker._task_id = task_id
         reviewer_provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_worker_model,
@@ -172,7 +220,10 @@ class AsyncTaskOrchestrator:
             )
             try:
                 budget.charge_step()
-                evidence = await worker.execute(spec)
+                if mcp_dispatch:
+                    evidence = await self._mcp_pool.dispatch(spec.domain, spec)
+                else:
+                    evidence = await worker.execute(spec)
                 last_evidence = dict(evidence)
                 # If worker definitively failed, skip reviewer -- no need to retry
                 if evidence.get("worker_result_status") == "failure":
