@@ -54,10 +54,12 @@ class TestResolveExecutionOrder:
         with pytest.raises(CyclicDependencyError):
             resolve_execution_order(specs)
 
-    def test_unknown_dependency_raises(self):
+    def test_unknown_dependency_is_dropped_not_raised(self):
+        # Planner LLM occasionally hallucinates a dependency id — dag.py drops
+        # unknown ids instead of failing the whole plan (see dag.py comment).
         specs = [_spec("a", ["nonexistent"])]
-        with pytest.raises(ValueError, match="unknown id"):
-            resolve_execution_order(specs)
+        ids = [s.objective_id for s in resolve_execution_order(specs)]
+        assert ids == ["a"]
 
     def test_duplicate_objective_id_raises(self):
         specs = [_spec("a", []), _spec("a", [])]
