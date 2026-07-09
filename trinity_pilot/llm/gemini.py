@@ -107,16 +107,20 @@ def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
 
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
-        # Real socket-level deadline: without this, a stalled HTTP call run via
-        # run_in_executor() keeps the worker thread blocked forever even after
-        # asyncio.wait_for() times out on the asyncio side (cancelling that future
-        # does not interrupt the underlying thread). Bounding it here means a
-        # stuck call eventually dies on its own instead of leaking a thread.
-        self._client = genai.Client(
-            api_key=api_key,
-            http_options=genai_types.HttpOptions(timeout=150_000),
-        )
+        self._api_key = api_key
         self._model_name = model
+        self._client: genai.Client | None = None
+
+    def _get_client(self) -> genai.Client:
+        # Lazy init: defer genai.Client() until first use so that constructing
+        # a worker without an API key (e.g. in unit tests that only test routing)
+        # does not raise at import/init time.
+        if self._client is None:
+            self._client = genai.Client(
+                api_key=self._api_key,
+                http_options=genai_types.HttpOptions(timeout=150_000),
+            )
+        return self._client
 
     @property
     def model(self) -> str:
@@ -146,7 +150,7 @@ class GeminiProvider(LLMProvider):
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: _generate_with_retry(lambda: self._client.models.generate_content(
+                lambda: _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
@@ -203,7 +207,7 @@ class GeminiProvider(LLMProvider):
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: _generate_with_retry(lambda: self._client.models.generate_content(
+                lambda: _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
