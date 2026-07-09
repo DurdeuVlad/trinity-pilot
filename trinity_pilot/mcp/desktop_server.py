@@ -103,30 +103,9 @@ async def desktop_run(spec_dict: dict) -> dict:
                                             evidence, steps_taken, tokens_used}}
       {"mcp_status": "error", "message": str}
     """
-    import json
-    import time
-    from pathlib import Path
-
     spec = ObjectiveSpec.from_dict(spec_dict)
     timeout = float(spec.metadata.get("timeout_seconds", 180))
     worker = DesktopWorker()
-    # #region agent log
-    try:
-        log_path = Path(__file__).resolve().parents[2] / "debug-4f3dfc.log"
-        entry = {
-            "sessionId": "4f3dfc",
-            "timestamp": int(time.time() * 1000),
-            "location": "desktop_server.py:desktop_run",
-            "message": "desktop_run_start",
-            "data": {"objective_id": spec.objective_id, "timeout": timeout},
-            "hypothesisId": "mcp-hang",
-            "runId": "probe",
-        }
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
     try:
         evidence = await asyncio.wait_for(worker.execute(spec), timeout=timeout)
         return {"mcp_status": "ok", "evidence": evidence}

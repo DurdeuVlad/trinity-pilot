@@ -1,6 +1,6 @@
 """Desktop automation MCP server — low-level click, type, key actions.
 
-Provides Copilot with tools to drive the Trinity Pilot UI for automated testing.
+Provides automation tools to drive the Trinity Pilot UI for automated testing.
 ACTION tools only. Cross-cutting sensors (screenshot, find_window, locate_on_screen)
 have been moved to sensor_server.py.
 

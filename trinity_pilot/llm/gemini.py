@@ -173,7 +173,6 @@ class GeminiProvider(LLMProvider):
         if hasattr(response, "candidates") and response.candidates:
             finish_reason = getattr(response.candidates[0], "finish_reason", None)
         if finish_reason is not None and str(finish_reason) not in ("FinishReason.STOP", "STOP"):
-            # #region agent log
             from trinity_pilot.telemetry.trace import emit as _trace_non_stop_finish
 
             _trace_non_stop_finish(
@@ -185,7 +184,6 @@ class GeminiProvider(LLMProvider):
                     "token_count": token_count,
                 },
             )
-            # #endregion
         return LLMResponse(content=text, raw=response, token_count=token_count)
 
     async def complete_with_tools(
@@ -240,7 +238,6 @@ class GeminiProvider(LLMProvider):
                             text += getattr(part, "text", "") or ""
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
         if not text and not tool_calls:
-            # #region agent log
             from trinity_pilot.telemetry.trace import emit as _trace_empty_response
 
             finish_reason = None
@@ -257,7 +254,6 @@ class GeminiProvider(LLMProvider):
                     "token_count": token_count,
                 },
             )
-            # #endregion
         return LLMResponse(
             content=text,
             raw=response,

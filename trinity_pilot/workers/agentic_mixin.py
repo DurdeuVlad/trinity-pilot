@@ -344,7 +344,6 @@ class AgenticWorkerMixin:
         while steps_taken < max_steps:
             elapsed = time.monotonic() - loop_started
             if elapsed >= wall_limit:
-                # #region agent log
                 from trinity_pilot.telemetry.trace import emit
 
                 emit(
@@ -359,7 +358,6 @@ class AgenticWorkerMixin:
                     hypothesis_id="wall-timeout",
                     span="worker",
                 )
-                # #endregion
                 return WorkerResult(
                     status="failure",
                     summary=(
@@ -375,7 +373,6 @@ class AgenticWorkerMixin:
                 system=self._worker_system_prompt(),
             )
             tokens_used += response.token_count
-            # #region agent log
             from trinity_pilot.telemetry.trace import emit as _trace_llm_call
 
             _trace_llm_call(
@@ -389,7 +386,6 @@ class AgenticWorkerMixin:
                 },
                 span="llm_call",
             )
-            # #endregion
 
             # Build transcript entry for this step (written to evidence after dispatch)
             _tx_entry: dict[str, Any] = {

@@ -2441,6 +2441,7 @@ dependencies = [
     { name = "pywinauto" },
     { name = "pyyaml" },
     { name = "qt-material" },
+    { name = "tenacity" },
 ]
 
 [package.optional-dependencies]
@@ -2480,6 +2481,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "qt-material", specifier = ">=2.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "tenacity", specifier = ">=9.0.0" },
 ]
 provides-extras = ["dev"]
 

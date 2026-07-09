@@ -365,7 +365,6 @@ def _agent_dbg(
     *,
     hypothesis_id: str = "press-key",
 ) -> None:
-    # #region agent log
     try:
         from trinity_pilot.telemetry.trace import emit as trace_emit
 
@@ -379,7 +378,6 @@ def _agent_dbg(
         )
     except Exception:
         pass
-    # #endregion
 
 
 class DesktopWorker(AgenticWorkerMixin, DomainWorker):
