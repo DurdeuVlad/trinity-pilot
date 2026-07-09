@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 _TRACE_FILENAME = "trinity-trace.jsonl"
-_LEGACY_LOG = Path(__file__).resolve().parents[2] / "debug-4f3dfc.log"
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / ".trace"
 
 
@@ -71,7 +70,6 @@ def emit(
     entry: dict[str, Any] = {
         "ts": ts,
         "timestamp": ts,
-        "sessionId": "4f3dfc",
         "location": location,
         "message": message,
         "data": data or {},
@@ -149,14 +147,6 @@ def _write_line(line: str) -> None:
         written = True
     except Exception as exc:
         print(f"[trace] write failed ({exc}): {line[:200]}", file=sys.stderr)
-
-    # Legacy compatibility during transition
-    try:
-        with open(_LEGACY_LOG, "a", encoding="utf-8") as f:
-            f.write(line)
-        written = True
-    except Exception:
-        pass
 
     if not written:
         print(f"[trace] {line.rstrip()}", file=sys.stderr)

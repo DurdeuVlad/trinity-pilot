@@ -11,6 +11,4 @@ def dbg(
     hypothesis_id: str = "",
     run_id: str = "probe",
 ) -> None:
-    # #region agent log
     emit(location, message, data, hypothesis_id=hypothesis_id, run_id=run_id)
-    # #endregion

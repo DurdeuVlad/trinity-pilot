@@ -805,7 +805,6 @@ class AppDriver:
                         matched = True
 
             if matched:
-                # #region agent log
                 try:
                     from tests.e2e._debug_log import dbg
                     dbg("_gui_driver.py:wait_for", "target_matched", {
@@ -816,7 +815,6 @@ class AppDriver:
                     }, hypothesis_id="B")
                 except Exception:
                     pass
-                # #endregion
                 return s
 
             # One-shot stall nudge: only once execution has genuinely started,

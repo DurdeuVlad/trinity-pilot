@@ -34,7 +34,6 @@ One JSON object per line:
 | `span` | string | Optional grouping: `bridge`, `orchestrator`, `worker`, `signal`, `evidence` |
 | `hypothesisId` | string | Optional debug tag (E2E probes) |
 | `runId` | string | Optional run label (default `probe`) |
-| `sessionId` | string | Legacy session tag (`4f3dfc`) |
 
 Orchestrator signals appear as `span=signal` with `message` set to the signal class name (`ObjectiveStarted`, `StepCompleted`, etc.).
 
@@ -57,7 +56,6 @@ Tracing turns on automatically when any of:
 - `python -m trinity_pilot --test-mode` (sets `TRINITY_TRACE=1` at startup)
 - E2E driver sets `TRINITY_TRACE=1` in the child process environment
 
-Legacy `debug-4f3dfc.log` is still written during the transition period.
 
 ## Reading traces
 
@@ -84,7 +82,6 @@ Raw NDJSON is also valid input for `jq`, log aggregators, or custom analysis.
 
 - `pytest_logs/traces/` — per-scenario trace dirs (copied to host as `traces/`)
 - `trace_default/` — `.trace/` fallback dir if present
-- `debug-4f3dfc.log` — legacy log (transition)
 - `attempts-*.json` — inside each trace dir
 
 Host results land under `.ai/vm-results/<timestamp>/`.
