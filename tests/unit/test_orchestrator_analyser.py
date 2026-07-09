@@ -17,8 +17,10 @@ from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecis
 class MockAnalyserLLM(LLMProvider):
     def __init__(self, response_json: str) -> None:
         self._json = response_json
+        self.complete_calls = 0
 
     async def complete(self, messages, system="", **kwargs) -> LLMResponse:
+        self.complete_calls += 1
         return LLMResponse(content=self._json)
 
     async def complete_with_tools(self, messages, tools, system="", **kwargs) -> LLMResponse:
@@ -33,14 +35,14 @@ class FailingLLM(LLMProvider):
         raise NotImplementedError
 
 
-def _spec() -> ObjectiveSpec:
+def _spec(risk_class: RiskClass = RiskClass.LOW) -> ObjectiveSpec:
     return ObjectiveSpec(
         objective_id="obj-analyser",
         goal="do something complex",
         dependencies=[],
         domain=DomainType.TERMINAL,
         required_capabilities=[],
-        risk_class=RiskClass.LOW,
+        risk_class=risk_class,
         preconditions=[],
         success_tests=[],
         evidence_bundle=[],
@@ -89,6 +91,19 @@ async def test_analyser_falls_back_on_parse_failure():
     analyser = OrchestratorAnalyser(llm)
     decision = await analyser.analyse(_spec(), [], "some blocker")
     assert decision.action == "auto_steer"
+
+
+@pytest.mark.asyncio
+async def test_analyser_high_risk_asks_user_without_llm():
+    """HIGH risk is a deterministic human gate, not an LLM judgment."""
+    llm = MockAnalyserLLM('{"action": "auto_steer", "guidance": "ignore risk", "question": ""}')
+    analyser = OrchestratorAnalyser(llm)
+
+    decision = await analyser.analyse(_spec(RiskClass.HIGH), [], "dangerous blocker")
+
+    assert decision.action == "ask_user"
+    assert "dangerous blocker" in decision.question
+    assert llm.complete_calls == 0
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ def test_apply_stylesheet_called_in_run_app():
     src_path = pathlib.Path(__file__).parents[2] / "trinity_pilot" / "ui" / "app.py"
     src = src_path.read_text(encoding="utf-8")
     in_run_app = src[src.index("def run_app"):]
-    assert "apply_stylesheet" in in_run_app, "apply_stylesheet not called in run_app"
+    assert "apply_app_qss" in in_run_app, "apply_app_qss not called in run_app"
 
 
 pytest.importorskip("PySide6")

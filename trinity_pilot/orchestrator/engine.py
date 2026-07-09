@@ -10,28 +10,31 @@ from trinity_pilot.core.types import (
     AttemptLog,
     FailureReason,
     ObjectiveSpec,
+    RiskClass,
     TaskRecord,
     TaskStatus,
 )
 from trinity_pilot.llm.gemini import GeminiProvider
+from trinity_pilot.mcp.client_pool import MCPClientPool
 from trinity_pilot.memory.reflection import ReflectionStore
 from trinity_pilot.memory.store import AttemptStore, ObjectiveStateStore, TaskStore
+from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
 from trinity_pilot.orchestrator.budget import BudgetExceeded, ObjectiveBudget
 from trinity_pilot.orchestrator.fsm import ObjectiveState
+from trinity_pilot.orchestrator.scheduler import DAGScheduler
 from trinity_pilot.orchestrator.signals import (
     BudgetWarning,
     ObjectiveDone,
     ObjectiveFailed,
     ObjectiveStarted,
     Signal,
-    StepCompleted,
     SteeringMessage,
+    StepCompleted,
     StuckSignal,
 )
-from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
+from trinity_pilot.planner.dag import infer_cross_domain_independence, resolve_execution_order
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
-from trinity_pilot.mcp.client_pool import MCPClientPool
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.router import WorkerRouter
 from trinity_pilot.workers.worker_result import WorkerResult
@@ -47,6 +50,9 @@ _PORTABLE_EVIDENCE_KEYS = (
     "written_files_verified",
     "worker_result_summary",
     "visible_text",
+    "stdout",
+    "exit_code",
+    "workspace",
 )
 
 
@@ -114,7 +120,15 @@ class AsyncTaskOrchestrator:
         task_id: str | None = None,
         objectives: list[ObjectiveSpec] | None = None,
     ) -> dict[str, Any]:
+        from trinity_pilot.telemetry.trace import emit
+
         task_id = task_id or str(uuid.uuid4())
+        emit(
+            "engine.py:run",
+            "orchestrator_run_start",
+            {"task_id": task_id, "request_preview": user_request[:120]},
+            span="orchestrator",
+        )
         self._snapshot.status = TaskStatus.RUNNING
         self._task_store.save_task(
             TaskRecord(
@@ -126,7 +140,8 @@ class AsyncTaskOrchestrator:
         )
 
         try:
-            planned = objectives if objectives is not None else await self.plan(user_request)
+            raw_plan = objectives if objectives is not None else await self.plan(user_request)
+            planned = infer_cross_domain_independence(resolve_execution_order(raw_plan))
             self._task_store.save_task(
                 TaskRecord(
                     task_id=task_id,
@@ -136,19 +151,15 @@ class AsyncTaskOrchestrator:
                 )
             )
             results: dict[str, Any] = {}
-            prev_objective_id: str | None = None
-            for spec in planned:
+
+            async def run_scheduled_objective(spec: ObjectiveSpec) -> dict[str, Any]:
                 if self._cancel_requested.is_set():
-                    return self._finish(task_id, TaskStatus.CANCELLED, results)
-                # Engine executes `planned` strictly in order regardless of the
-                # declared dependency graph, so always forward the immediately
-                # preceding objective's evidence too — not just explicitly
-                # declared dependencies, which the planner doesn't reliably set
-                # for naturally-sequential multi-domain tasks.
+                    return {"status": "cancelled", "failure_reason": "cancelled"}
                 dep_ids = list(spec.dependencies or [])
-                if prev_objective_id and prev_objective_id not in dep_ids:
-                    dep_ids.append(prev_objective_id)
                 if dep_ids:
+                    # Safe under concurrent dispatch: the scheduler only starts
+                    # this objective after dependencies are complete, and each
+                    # objective writes exclusively to results[objective_id].
                     dep_evidence = {
                         dep_id: _portable_evidence(results[dep_id].get("evidence", {}))
                         for dep_id in dep_ids
@@ -156,10 +167,14 @@ class AsyncTaskOrchestrator:
                     }
                     if dep_evidence:
                         spec.metadata["dependency_evidence"] = dep_evidence
-                results[spec.objective_id] = await self._run_objective(task_id, spec)
-                prev_objective_id = spec.objective_id
-                if results[spec.objective_id]["status"] != "passed":
-                    return self._finish(task_id, TaskStatus.FAILED, results)
+                return await self._run_objective(task_id, spec)
+
+            scheduler = DAGScheduler(planned, run_scheduled_objective, results=results)
+            await scheduler.run()
+            if any(result.get("status") == "cancelled" for result in results.values()):
+                return self._finish(task_id, TaskStatus.CANCELLED, results)
+            if any(result.get("status") != "passed" for result in results.values()):
+                return self._finish(task_id, TaskStatus.FAILED, results)
             return self._finish(task_id, TaskStatus.COMPLETED, results)
         except asyncio.CancelledError:
             self.cancel()
@@ -172,9 +187,17 @@ class AsyncTaskOrchestrator:
             await self._mcp_pool.aclose()
 
     async def _run_objective(self, task_id: str, spec: ObjectiveSpec) -> dict[str, Any]:
+        from trinity_pilot.telemetry.trace import emit
+
         budget = ObjectiveBudget.default()
         objective_id = spec.objective_id
         self._snapshot.current_objective = objective_id
+        emit(
+            "engine.py:_run_objective",
+            "objective_start",
+            {"task_id": task_id, "objective_id": objective_id, "domain": spec.domain.value},
+            span="orchestrator",
+        )
         self._objective_store.upsert(task_id, objective_id, ObjectiveState.RUNNING)
         await self.signals.put(ObjectiveStarted(task_id, objective_id))
 
@@ -333,6 +356,17 @@ class AsyncTaskOrchestrator:
                 )
                 await self.signals.put(ObjectiveFailed(task_id, objective_id, exc.budget_type))
                 return {"status": "failed", "failure_reason": exc.budget_type}
+            except asyncio.TimeoutError:
+                await self.signals.put(ObjectiveFailed(task_id, objective_id, "worker_timeout"))
+                self._objective_store.upsert(
+                    task_id,
+                    objective_id,
+                    ObjectiveState.FAILED,
+                    step_count=budget.steps_used(),
+                    token_count=budget.tokens_used(),
+                    failure_reason="worker_timeout",
+                )
+                return {"status": "failed", "failure_reason": "worker_timeout"}
             except WorkerBlocker as exc:
                 last_evidence = {**exc.result.evidence, "blocker_reason": str(exc)}
                 self._attempt_store.log_attempt(
@@ -412,6 +446,24 @@ class AsyncTaskOrchestrator:
                         last_evidence,
                     )
                 )
+                err_lower = str(exc).lower()
+                if "timeout" in err_lower or "timed out" in err_lower:
+                    self._objective_store.upsert(
+                        task_id,
+                        objective_id,
+                        ObjectiveState.FAILED,
+                        step_count=budget.steps_used(),
+                        token_count=budget.tokens_used(),
+                        failure_reason="worker_timeout",
+                    )
+                    await self.signals.put(
+                        ObjectiveFailed(task_id, objective_id, "worker_timeout")
+                    )
+                    return {
+                        "status": "failed",
+                        "failure_reason": "worker_timeout",
+                        "evidence": last_evidence,
+                    }
 
             stuck = attempt_number >= getattr(self._settings, "stuck_threshold_steps", 5)
             if stuck:
@@ -446,11 +498,12 @@ class AsyncTaskOrchestrator:
         retry_context: list[dict],
         blocker_reason: str,
     ) -> SteerDecision:
-        """Call the analyser with a 15-second timeout; fall back to auto_steer on any failure."""
+        """Call the analyser with a risk-tier timeout; fall back to auto_steer on any failure."""
+        timeout = 8.0 if spec.risk_class == RiskClass.LOW else 15.0
         try:
             return await asyncio.wait_for(
                 analyser.analyse(spec, retry_context, blocker_reason),
-                timeout=15.0,
+                timeout=timeout,
             )
         except Exception:
             return SteerDecision(action="auto_steer", guidance=blocker_reason)
@@ -461,7 +514,122 @@ class AsyncTaskOrchestrator:
         status: TaskStatus,
         results: dict[str, Any],
     ) -> dict[str, Any]:
+        from trinity_pilot.telemetry.trace import emit, export_attempts_json, _trace_dir
+        import sys
+        from pathlib import Path
+
         self._task_store.update_status(task_id, status)
         self._snapshot.current_objective = None
         self._snapshot.status = status
-        return {"task_id": task_id, "status": status.value, "results": results}
+        attempts_path = export_attempts_json(
+            task_id, self._attempt_store.get_attempts_by_task(task_id)
+        )
+        emit(
+            "engine.py:_finish",
+            "orchestrator_run_finish",
+            {
+                "task_id": task_id,
+                "status": status.value,
+                "attempts_file": str(attempts_path) if attempts_path else None,
+            },
+            span="orchestrator",
+        )
+
+        try:
+            write_run_reports(task_id, status.value, results, _trace_dir())
+        except Exception as e:
+            print(f"[orchestrator] Failed to write reports: {e}", file=sys.stderr)
+
+        out: dict[str, Any] = {"task_id": task_id, "status": status.value, "results": results}
+        if attempts_path:
+            out["attempts_file"] = str(attempts_path)
+        return out
+
+
+def write_run_reports(task_id: str, status: str, results: dict[str, Any], trace_dir: Path) -> None:
+    import json
+    from datetime import datetime
+    
+    trace_path = trace_dir / "trinity-trace.jsonl"
+    events = []
+    if trace_path.exists():
+        try:
+            with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        data = entry.get("data", {})
+                        matches = False
+                        if isinstance(data, dict):
+                            if data.get("task_id") == task_id or data.get("taskId") == task_id:
+                                matches = True
+                        if matches:
+                            events.append(entry)
+                    except Exception:
+                        continue
+        except Exception as e:
+            import sys
+            print(f"[trace] Error reading trace file: {e}", file=sys.stderr)
+
+    # Build report dict
+    report_json = {
+        "task_id": task_id,
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "results": results,
+        "events": events,
+    }
+    
+    # Write to unique file and also static filename (for easy E2E pull)
+    for name in (f"run_report_{task_id}.json", "run_report.json"):
+        report_json_path = trace_dir / name
+        try:
+            report_json_path.write_text(json.dumps(report_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            import sys
+            print(f"[trace] Error writing {name}: {e}", file=sys.stderr)
+
+    # Build run_report.md
+    md = []
+    md.append(f"# Trinity Pilot Task Report — {task_id}")
+    md.append("")
+    md.append(f"- **Status:** {status}")
+    md.append(f"- **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    md.append("")
+    
+    md.append("## Objectives Results")
+    if results:
+        for obj_id, res in results.items():
+            st = res.get("status", "unknown")
+            md.append(f"### Objective: `{obj_id}` — **{st.upper()}**")
+            for k, v in res.items():
+                if k not in ("status", "objective_id"):
+                    md.append(f"- **{k}:** `{v}`")
+            md.append("")
+    else:
+        md.append("No objective results logged.")
+        md.append("")
+
+    md.append("## Execution Timeline")
+    if events:
+        md.append("| Timestamp | Location | Event | Details |")
+        md.append("|---|---|---|---|")
+        for ev in sorted(events, key=lambda x: x.get("ts", 0)):
+            ts_str = datetime.fromtimestamp(ev.get("ts", 0) / 1000.0).strftime('%H:%M:%S.%f')[:-3]
+            loc = ev.get("location", "")
+            msg = ev.get("message", "")
+            data_str = json.dumps(ev.get("data", {}))
+            md.append(f"| {ts_str} | `{loc}` | {msg} | `{data_str}` |")
+    else:
+        md.append("No trace events found for this task.")
+        
+    for name in (f"run_report_{task_id}.md", "run_report.md"):
+        report_md_path = trace_dir / name
+        try:
+            report_md_path.write_text("\n".join(md), encoding="utf-8")
+        except Exception as e:
+            import sys
+            print(f"[trace] Error writing {name}: {e}", file=sys.stderr)
+

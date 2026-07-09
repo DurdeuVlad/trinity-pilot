@@ -1,0 +1,27 @@
+﻿%%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#f5f5f5', 'primaryBorderColor': '#333', 'primaryTextColor': '#111', 'lineColor': '#555', 'edgeLabelBackground': '#ffffff', 'fontSize': '16px'}}}%%
+flowchart LR
+ accTitle: Worker Inner Loop  STAO (Sense-Think-Act-Observe)
+ classDef sense  fill:#eef4ff,stroke:#555,stroke-width:2px,color:#111
+ classDef think  fill:#f0eeff,stroke:#333,stroke-width:2px,color:#111
+ classDef act fill:#fff0f4,stroke:#555,stroke-width:2px,color:#111
+ classDef obs fill:#efffef,stroke:#555,stroke-width:2px,color:#111
+ classDef ok fill:#efffef,stroke:#444,stroke-width:2px,color:#111
+ classDef fail fill:#f5f5f5,stroke:#888,stroke-width:2px,stroke-dasharray:4,color:#111
+
+ S["SENSE<br/>state snapshot<br/>evidence dict<br/>screen / stdout"]:::sense
+
+ T["THINK<br/>LLM reads full state<br/>decides next action"]:::think
+
+ A["ACT<br/>tool call<br/>run_command / navigate<br/>click / type_text"]:::act
+
+ O["OBSERVE<br/>append result<br/>to evidence dict"]:::obs
+
+ DONE(["DONE<br/>return evidence"]):::ok
+ FAIL(["FAILED<br/>step budget hit<br/>or blocker"]):::fail
+
+ S --> T
+ T -->|tool_call| A
+ A --> O
+ O -->|next step| S
+ T -->|finish_success| DONE
+ T -->|finish_failure| FAIL

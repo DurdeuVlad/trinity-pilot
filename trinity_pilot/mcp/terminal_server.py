@@ -34,12 +34,29 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.terminal_worker import TerminalWorker, _CMD_TIMEOUT
 
 mcp = FastMCP(
     name="trinity-pilot-terminal",
     version="0.1.0",
+)
+
+SERVER_NAME = "trinity-pilot-terminal"
+
+TOOL_MANIFEST: ToolManifest = (
+    ToolMetadata("terminal_run", SERVER_NAME, "task", "Run a full terminal objective."),
+    ToolMetadata("read_stdout", SERVER_NAME, "sensor", "Read recent terminal stdout."),
+    ToolMetadata("current_directory", SERVER_NAME, "sensor", "Read the terminal working directory."),
+    ToolMetadata("env_vars", SERVER_NAME, "sensor", "Read process environment variables."),
+    ToolMetadata("last_exit_code", SERVER_NAME, "sensor", "Read the last command exit code."),
+    ToolMetadata("command_history", SERVER_NAME, "sensor", "Read recent command history."),
+    ToolMetadata("list_created_files", SERVER_NAME, "sensor", "Read workspace file listing."),
+    ToolMetadata("run_command", SERVER_NAME, "action", "Execute a shell command."),
+    ToolMetadata("write_file", SERVER_NAME, "action", "Write text to a file."),
+    ToolMetadata("finish", SERVER_NAME, "control", "Signal objective completion."),
+    ToolMetadata("report_blocking", SERVER_NAME, "control", "Signal an unresolvable blocker."),
 )
 
 

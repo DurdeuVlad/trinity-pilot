@@ -1,15 +1,23 @@
 import pytest
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
-from trinity_pilot.planner.dag import CyclicDependencyError, resolve_execution_order
+from trinity_pilot.planner.dag import (
+    CyclicDependencyError,
+    infer_cross_domain_independence,
+    resolve_execution_order,
+)
 
 
-def _spec(obj_id: str, deps: list[str]) -> ObjectiveSpec:
+def _spec(
+    obj_id: str,
+    deps: list[str],
+    domain: DomainType = DomainType.BROWSER,
+) -> ObjectiveSpec:
     return ObjectiveSpec(
         objective_id=obj_id,
         goal=f"Do {obj_id}",
         dependencies=deps,
-        domain=DomainType.BROWSER,
+        domain=domain,
         required_capabilities=["cap"],
         risk_class=RiskClass.LOW,
         preconditions=[],
@@ -68,3 +76,39 @@ class TestResolveExecutionOrder:
 
     def test_empty_list_returns_empty(self):
         assert resolve_execution_order([]) == []
+
+
+class TestInferCrossDomainIndependence:
+    def test_different_domains_without_declared_deps_stay_independent(self):
+        specs = [
+            _spec("browser", [], DomainType.BROWSER),
+            _spec("terminal", [], DomainType.TERMINAL),
+        ]
+
+        inferred = infer_cross_domain_independence(specs)
+
+        assert inferred[0].dependencies == []
+        assert inferred[1].dependencies == []
+
+    def test_same_domain_without_declared_deps_gets_previous_same_domain_edge(self):
+        specs = [
+            _spec("first", [], DomainType.BROWSER),
+            _spec("other-domain", [], DomainType.TERMINAL),
+            _spec("second", [], DomainType.BROWSER),
+        ]
+
+        inferred = infer_cross_domain_independence(specs)
+
+        assert inferred[0].dependencies == []
+        assert inferred[1].dependencies == []
+        assert inferred[2].dependencies == ["first"]
+
+    def test_explicit_declared_dependency_wins_regardless_of_domain(self):
+        specs = [
+            _spec("browser", [], DomainType.BROWSER),
+            _spec("terminal", ["browser"], DomainType.TERMINAL),
+        ]
+
+        inferred = infer_cross_domain_independence(specs)
+
+        assert inferred[1].dependencies == ["browser"]

@@ -13,7 +13,20 @@ import time
 import pyautogui as pg
 from fastmcp import FastMCP
 
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
+
 mcp = FastMCP("desktop-automation")
+
+SERVER_NAME = "desktop-automation"
+
+TOOL_MANIFEST: ToolManifest = (
+    ToolMetadata("click", SERVER_NAME, "action", "Click at screen coordinates."),
+    ToolMetadata("move_to", SERVER_NAME, "action", "Move the mouse cursor."),
+    ToolMetadata("type_text", SERVER_NAME, "action", "Type text at the cursor."),
+    ToolMetadata("press_key", SERVER_NAME, "action", "Press a key or hotkey."),
+    ToolMetadata("focus_window", SERVER_NAME, "action", "Focus a window by title."),
+    ToolMetadata("sleep", SERVER_NAME, "action", "Wait during automation."),
+)
 
 # Fail-safe: move mouse to corner to abort
 pg.FAILSAFE = True

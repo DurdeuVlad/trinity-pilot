@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.2.0",
     "pyyaml>=6.0.0",
     "httpx>=0.28.0",
+    "tenacity>=9.0.0",
     # SQLite is stdlib — no extra dep needed
     "aiosqlite>=0.19",
     # LLM

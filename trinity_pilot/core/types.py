@@ -34,6 +34,33 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+@dataclass(frozen=True, slots=True)
+class ChecklistItem:
+    """One planner-authored, guided-LLM-checkable verification item for an objective.
+
+    No predicate/deterministic tier here by design — a planner picking the wrong
+    deterministic check for an objective is a mismatch failure mode (see the
+    MIXED-domain router crash precedent), so every checklist item is scoped
+    narrowly via `instruction` and answered by the reviewer LLM against the
+    named `sensors`' fresh data, not judged from the full evidence blob.
+    """
+
+    instruction: str
+    sensors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"instruction": self.instruction, "sensors": list(self.sensors)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChecklistItem":
+        instruction = str(data.get("instruction", "")).strip()
+        sensors = data.get("sensors") or []
+        return cls(instruction=instruction, sensors=tuple(str(s) for s in sensors))
+
+    def is_valid(self) -> bool:
+        return bool(self.instruction) and bool(self.sensors)
+
+
 _REQUIRED_SPEC_FIELDS = (
     "objective_id",
     "goal",
@@ -63,6 +90,7 @@ class ObjectiveSpec:
     max_attempts: int
     rollback_or_abort_rule: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    verification_checklist: tuple[ChecklistItem, ...] = ()
 
     def validate(self) -> None:
         # String fields must be non-empty (strip whitespace before check)
@@ -101,6 +129,7 @@ class ObjectiveSpec:
             "max_attempts": self.max_attempts,
             "rollback_or_abort_rule": self.rollback_or_abort_rule,
             "metadata": self.metadata,
+            "verification_checklist": [item.to_dict() for item in self.verification_checklist],
         }
 
     @classmethod
@@ -118,6 +147,11 @@ class ObjectiveSpec:
             max_attempts=data["max_attempts"],
             rollback_or_abort_rule=data["rollback_or_abort_rule"],
             metadata=data.get("metadata", {}),
+            verification_checklist=tuple(
+                ChecklistItem.from_dict(item)
+                for item in (data.get("verification_checklist") or [])
+                if isinstance(item, dict)
+            ),
         )
 
 

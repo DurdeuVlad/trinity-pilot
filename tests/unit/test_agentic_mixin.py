@@ -23,13 +23,22 @@ from trinity_pilot.workers.worker_result import WorkerResult
 # ---------------------------------------------------------------------------
 
 class MockLLMProvider(LLMProvider):
-    def __init__(self, responses: list[LLMResponse]) -> None:
+    def __init__(
+        self,
+        responses: list[LLMResponse],
+        reflection_responses: list[LLMResponse] | None = None,
+    ) -> None:
         self._responses = iter(responses)
+        self._reflection_responses = iter(reflection_responses or [])
+        self.reflection_calls: list[list[LLMMessage]] = []
+        self.tool_messages: list[list[LLMMessage]] = []
 
     async def complete(self, messages, system="") -> LLMResponse:
-        raise NotImplementedError
+        self.reflection_calls.append(messages)
+        return next(self._reflection_responses)
 
     async def complete_with_tools(self, messages, tools, system="") -> LLMResponse:
+        self.tool_messages.append(list(messages))
         return next(self._responses)
 
 
@@ -81,10 +90,14 @@ def _finish_response(status="success", summary="done", token_count=0) -> LLMResp
     )
 
 
-def _domain_tool_response(tool_name="run_command", token_count=0) -> LLMResponse:
+def _domain_tool_response(
+    tool_name="run_command",
+    token_count=0,
+    args: dict | None = None,
+) -> LLMResponse:
     return LLMResponse(
         content="",
-        tool_calls=[{"name": tool_name, "args": {"command": "ls"}}],
+        tool_calls=[{"name": tool_name, "args": args or {"command": "ls"}}],
         token_count=token_count,
     )
 
@@ -125,13 +138,14 @@ async def test_loop_raises_blocker_on_report_blocking():
 
 @pytest.mark.asyncio
 async def test_loop_enforces_max_steps():
-    """AC-03: loop raises WorkerError after max_steps domain tool calls."""
+    """AC-03: loop returns failure after max_steps domain tool calls."""
     # Provide more responses than max_steps
     responses = [_domain_tool_response("run_command")] * 10
     llm = MockLLMProvider(responses)
     worker = _ConcreteWorker(llm)
-    with pytest.raises(WorkerError, match="step budget exhausted"):
-        await worker.run_loop(_spec(), {}, max_steps=3)
+    result = await worker.run_loop(_spec(), {}, max_steps=3)
+    assert result.status == "failure"
+    assert "step budget exhausted" in result.summary
 
 
 def test_shared_tool_schemas_are_valid():
@@ -154,12 +168,28 @@ async def test_loop_handles_empty_text_response_without_tool():
 
 
 @pytest.mark.asyncio
-async def test_loop_raises_on_fully_empty_llm_response():
-    """Fully empty first response (no tool calls, no content) raises WorkerError."""
-    llm = MockLLMProvider([LLMResponse(content="", tool_calls=[])])
+async def test_loop_recovers_from_empty_response_at_step_zero():
+    """A fully empty first response (e.g. Gemini MALFORMED_FUNCTION_CALL) gets a
+    bounded nudge and retries instead of hard-failing immediately."""
+    llm = MockLLMProvider([
+        LLMResponse(content="", tool_calls=[]),
+        _finish_response("success", "done after empty first turn"),
+    ])
     worker = _ConcreteWorker(llm)
-    with pytest.raises(WorkerError):
-        await worker.run_loop(_spec(), {})
+    result = await worker.run_loop(_spec(), {}, max_steps=5)
+    assert result.status == "success"
+    assert result.summary == "done after empty first turn"
+
+
+@pytest.mark.asyncio
+async def test_loop_exhausts_budget_on_all_empty_responses():
+    """If every turn is empty, the loop returns a failure result once max_steps
+    is exhausted rather than looping forever or raising."""
+    llm = MockLLMProvider([LLMResponse(content="", tool_calls=[]) for _ in range(5)])
+    worker = _ConcreteWorker(llm)
+    result = await worker.run_loop(_spec(), {}, max_steps=3)
+    assert result.status == "failure"
+    assert "step budget exhausted" in result.summary
 
 
 @pytest.mark.asyncio
@@ -204,3 +234,124 @@ async def test_worker_step_signal_emitted_per_step():
     from trinity_pilot.orchestrator.signals import WorkerStepSignal
     assert isinstance(sig, WorkerStepSignal)
     assert sig.tool_name == "run_command"
+
+
+@pytest.mark.asyncio
+async def test_mid_episode_reflection_default_off_on_repeated_call():
+    llm = MockLLMProvider([
+        _domain_tool_response("run_command"),
+        _domain_tool_response("run_command"),
+        _finish_response("success", "done"),
+    ])
+    worker = _ConcreteWorker(llm)
+
+    result = await worker.run_loop(_spec(), {}, max_steps=5)
+
+    assert result.status == "success"
+    assert llm.reflection_calls == []
+    third_call_messages = llm.tool_messages[2]
+    tool_result = third_call_messages[-1]
+    assert "REPEATED CALL" in tool_result.content
+    assert "LIVE REFLECTION" not in tool_result.content
+
+
+@pytest.mark.asyncio
+async def test_mid_episode_reflection_opt_in_fires_once_on_second_identical_call():
+    llm = MockLLMProvider(
+        [
+            _domain_tool_response("run_command"),
+            _domain_tool_response("run_command"),
+            _finish_response("success", "done"),
+        ],
+        reflection_responses=[
+            LLMResponse(content="Try inspecting the directory before running ls again.")
+        ],
+    )
+    worker = _ConcreteWorker(llm)
+    evidence: dict = {}
+
+    result = await worker.run_loop(
+        _spec(metadata={"mid_episode_reflection": True}),
+        evidence,
+        max_steps=5,
+    )
+
+    assert result.status == "success"
+    assert len(llm.reflection_calls) == 1
+    third_call_messages = llm.tool_messages[2]
+    tool_result = third_call_messages[-1]
+    assert "REPEATED CALL" in tool_result.content
+    assert "LIVE REFLECTION: Try inspecting the directory" in tool_result.content
+    assert evidence["llm_transcript"][1]["mid_episode_reflection"] is True
+
+
+@pytest.mark.asyncio
+async def test_mid_episode_reflection_ignores_first_call_before_warning():
+    llm = MockLLMProvider([
+        _domain_tool_response("run_command"),
+        _finish_response("success", "done"),
+    ])
+    worker = _ConcreteWorker(llm)
+
+    result = await worker.run_loop(
+        _spec(metadata={"mid_episode_reflection": True}),
+        {},
+        max_steps=5,
+    )
+
+    assert result.status == "success"
+    assert llm.reflection_calls == []
+
+
+@pytest.mark.asyncio
+async def test_mid_episode_reflection_truncates_injected_text():
+    long_suggestion = "x" * 5000
+    llm = MockLLMProvider(
+        [
+            _domain_tool_response("run_command"),
+            _domain_tool_response("run_command"),
+            _finish_response("success", "done"),
+        ],
+        reflection_responses=[LLMResponse(content=long_suggestion)],
+    )
+    worker = _ConcreteWorker(llm)
+
+    result = await worker.run_loop(
+        _spec(metadata={"mid_episode_reflection": True}),
+        {},
+        max_steps=5,
+    )
+
+    assert result.status == "success"
+    tool_result = llm.tool_messages[2][-1].content
+    assert f"LIVE REFLECTION: {'x' * 3000}" in tool_result
+    assert "x" * 3001 not in tool_result
+
+
+@pytest.mark.asyncio
+async def test_third_identical_call_still_hard_blocks_with_reflection_enabled():
+    llm = MockLLMProvider(
+        [
+            _domain_tool_response("run_command"),
+            _domain_tool_response("run_command"),
+            _domain_tool_response("run_command"),
+            _finish_response("success", "done"),
+        ],
+        reflection_responses=[
+            LLMResponse(content="Try a different command before repeating.")
+        ],
+    )
+    worker = _ConcreteWorker(llm)
+
+    result = await worker.run_loop(
+        _spec(metadata={"mid_episode_reflection": True}),
+        {},
+        max_steps=5,
+    )
+
+    assert result.status == "success"
+    assert len(llm.reflection_calls) == 1
+    finish_call_messages = llm.tool_messages[3]
+    blocked_result = finish_call_messages[-1]
+    assert "BLOCKED" in blocked_result.content
+    assert "called with identical arguments 3 times" in blocked_result.content

@@ -1,0 +1,27 @@
+﻿%%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#f5f5f5', 'primaryBorderColor': '#333', 'primaryTextColor': '#111', 'lineColor': '#555', 'edgeLabelBackground': '#ffffff', 'fontSize': '16px'}}}%%
+flowchart TD
+ accTitle: Extensibility  New Worker via MCP Server, Zero Core Changes
+ classDef base fill:#f0eeff,stroke:#333,stroke-width:2px,color:#111
+ classDef worker  fill:#fff0f4,stroke:#555,stroke-width:2px,color:#111
+ classDef orch fill:#f5f0ff,stroke:#555,stroke-width:1px,color:#111
+ classDef new fill:#fffde0,stroke:#444,stroke-width:2px,stroke-dasharray:5,color:#111
+
+ Mixin["AgenticWorkerMixin<br/>shared STAO engine<br/>inherit / override domain<br/>add MCP tool set"]:::base
+
+ subgraph BuiltIn ["Built-in Workers (shipped)"]
+ TW["TerminalWorker<br/>domain = terminal<br/>MCP: terminal-server"]:::worker
+ BW["BrowserWorker<br/>domain = browser<br/>MCP: browser-pilot"]:::worker
+ DW["DesktopWorker<br/>domain = desktop<br/>MCP: trinity-pilot2"]:::worker
+ end
+
+ subgraph Plug ["Plugin  zero core changes"]
+ NS["New MCP Server<br/>e.g. api-gateway-server"]:::new
+ NW["CustomWorker<br/>domain = api<br/>extends AgenticWorkerMixin"]:::new
+ end
+
+ O["Orchestrator<br/>routes by objective.domain<br/>auto-discovers registered workers"]:::orch
+
+ Mixin -->|inherits| TW & BW & DW
+ Mixin -->|inherits| NW
+ NS -->|provides tools to| NW
+ TW & BW & DW & NW -->|register domain| O

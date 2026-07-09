@@ -135,7 +135,48 @@ def app(request):
 
     safe_name = request.node.name.replace("/", "_").replace("\\", "_")[:60]
     driver.snap(f"teardown_{safe_name}")
+    checkpoints = getattr(driver, "infra_checkpoints", {})
     driver.close()
+    try:
+        import json
+        temp_file = Path(__file__).resolve().parent.parent.parent / "temp_infra.json"
+        temp_file.write_text(json.dumps(checkpoints), encoding="utf-8")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# app_single_agent — function-scoped GUI driver in single-agent (ablation) mode
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def app_single_agent(request):
+    """Fresh Trinity Pilot GUI instance in single-agent mode per test.
+
+    Launches with --mode single_agent so there is no confirm step.
+    Skipped automatically on non-Windows or if GEMINI_API_KEY is absent.
+    """
+    if sys.platform != "win32":
+        pytest.skip("GUI tests require Windows")
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        pytest.skip("GEMINI_API_KEY not set — skipping GUI e2e tests")
+
+    from tests.e2e._gui_driver import AppDriver
+
+    driver = AppDriver.launch(mode="single_agent")
+    yield driver
+
+    safe_name = request.node.name.replace("/", "_").replace("\\", "_")[:60]
+    driver.snap(f"sa_teardown_{safe_name}")
+    checkpoints = getattr(driver, "infra_checkpoints", {})
+    driver.close()
+    try:
+        import json
+        temp_file = Path(__file__).resolve().parent.parent.parent / "temp_infra.json"
+        temp_file.write_text(json.dumps(checkpoints), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

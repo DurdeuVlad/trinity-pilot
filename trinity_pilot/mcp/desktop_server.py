@@ -39,12 +39,33 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.desktop_worker import DesktopWorker
 
 mcp = FastMCP(
     name="trinity-pilot-desktop",
     version="0.1.0",
+)
+
+SERVER_NAME = "trinity-pilot-desktop"
+
+TOOL_MANIFEST: ToolManifest = (
+    ToolMetadata("desktop_run", SERVER_NAME, "task", "Run a full desktop objective."),
+    ToolMetadata("uia_tree", SERVER_NAME, "sensor", "Read a UIA accessibility tree."),
+    ToolMetadata("focused_element", SERVER_NAME, "sensor", "Read the focused UI element."),
+    ToolMetadata("window_hierarchy", SERVER_NAME, "sensor", "Read desktop window hierarchy."),
+    ToolMetadata("get_element_value", SERVER_NAME, "sensor", "Read a UI element value."),
+    ToolMetadata("app_state", SERVER_NAME, "sensor", "Read application running state."),
+    ToolMetadata("launch_app", SERVER_NAME, "action", "Launch an application."),
+    ToolMetadata("focus_window", SERVER_NAME, "action", "Focus a window."),
+    ToolMetadata("type_text", SERVER_NAME, "action", "Type text into the focused window."),
+    ToolMetadata("press_hotkey", SERVER_NAME, "action", "Press a hotkey."),
+    ToolMetadata("press_key", SERVER_NAME, "action", "Press a key."),
+    ToolMetadata("write_file", SERVER_NAME, "action", "Write text to a file."),
+    ToolMetadata("wait", SERVER_NAME, "action", "Pause desktop execution."),
+    ToolMetadata("finish", SERVER_NAME, "control", "Signal objective completion."),
+    ToolMetadata("report_blocking", SERVER_NAME, "control", "Signal an unresolvable blocker."),
 )
 
 
@@ -82,10 +103,32 @@ async def desktop_run(spec_dict: dict) -> dict:
                                             evidence, steps_taken, tokens_used}}
       {"mcp_status": "error", "message": str}
     """
+    import json
+    import time
+    from pathlib import Path
+
     spec = ObjectiveSpec.from_dict(spec_dict)
+    timeout = float(spec.metadata.get("timeout_seconds", 180))
     worker = DesktopWorker()
+    # #region agent log
     try:
-        evidence = await worker.execute(spec)
+        log_path = Path(__file__).resolve().parents[2] / "debug-4f3dfc.log"
+        entry = {
+            "sessionId": "4f3dfc",
+            "timestamp": int(time.time() * 1000),
+            "location": "desktop_server.py:desktop_run",
+            "message": "desktop_run_start",
+            "data": {"objective_id": spec.objective_id, "timeout": timeout},
+            "hypothesisId": "mcp-hang",
+            "runId": "probe",
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    try:
+        evidence = await asyncio.wait_for(worker.execute(spec), timeout=timeout)
         return {"mcp_status": "ok", "evidence": evidence}
     except WorkerBlocker as exc:
         result = exc.result
@@ -100,6 +143,11 @@ async def desktop_run(spec_dict: dict) -> dict:
                 "tokens_used": result.tokens_used,
             },
         }
+    except asyncio.TimeoutError:
+        return {
+            "mcp_status": "error",
+            "message": f"Desktop MCP dispatch timed out after {timeout:.0f}s",
+        }
     except WorkerError as exc:
         return {"mcp_status": "error", "message": str(exc)}
 
@@ -107,7 +155,7 @@ async def desktop_run(spec_dict: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Domain sensor tools (read-only, desktop-specific)
 # Cross-cutting sensors (screenshot, window_list, clipboard_read, file_stat)
-# live in sensor_server.py — call that server for those.
+# live in sensor_server.py. Domain-specific desktop sensors stay here.
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -372,16 +420,12 @@ async def press_hotkey(keys: str) -> dict:
 
 @mcp.tool()
 async def press_key(key: str) -> dict:
-    """Press a single key by name e.g. 'enter', 'tab', 'escape'."""
-    try:
-        from pywinauto.keyboard import send_keys
-        send_keys(f"{{{key.upper()}}}")
-    except Exception:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        pyautogui.press(key)
+    """Press a single key by name e.g. 'enter', 'multiply', '1'."""
+    worker = DesktopWorker.__new__(DesktopWorker)
+    evidence: dict = {"action_log": []}
+    await worker._press_key(key, evidence)
     await asyncio.sleep(0.2)
-    return {"key": key}
+    return {"key": key, "log": evidence["action_log"][-1] if evidence["action_log"] else ""}
 
 
 @mcp.tool()

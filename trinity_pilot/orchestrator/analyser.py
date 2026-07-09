@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.core.types import ObjectiveSpec, RiskClass
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 
 
@@ -53,6 +53,15 @@ class OrchestratorAnalyser:
         Returns:
             SteerDecision with action and either guidance or question.
         """
+        if spec.risk_class == RiskClass.HIGH:
+            return SteerDecision(
+                action="ask_user",
+                question=(
+                    "This high-risk objective is blocked and needs human input before "
+                    f"continuing: {blocker_reason}"
+                ),
+            )
+
         context_text = "\n".join(
             f"Attempt {i+1}: {r.get('failure_reason', 'unknown')} -- {r.get('recovery_hint', '')}"
             for i, r in enumerate(retry_context)

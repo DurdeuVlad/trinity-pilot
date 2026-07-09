@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from trinity_pilot.core.types import AttemptLog, DomainType, ObjectiveSpec, Revi
 from trinity_pilot.memory.reflection import ReflectionStore
 from trinity_pilot.memory.store import AttemptStore
 from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
+from trinity_pilot.orchestrator.scheduler import DAGScheduler
+from trinity_pilot.planner.dag import infer_cross_domain_independence, resolve_execution_order
 
 
 def _json_safe(value: Any) -> Any:
@@ -126,6 +129,135 @@ def desktop_typing_objective(expected_text: str) -> ObjectiveSpec:
         rollback_or_abort_rule="close spawned editor",
         metadata={"expected_text": expected_text, "audit_requires_visible_text": True},
     )
+
+
+def _synthetic_objective(
+    objective_id: str,
+    domain: DomainType,
+    dependencies: list[str] | None = None,
+    *,
+    duration: float = 0.02,
+) -> ObjectiveSpec:
+    return ObjectiveSpec(
+        objective_id=objective_id,
+        goal=f"Synthetic W2 ablation objective {objective_id}",
+        dependencies=dependencies or [],
+        domain=domain,
+        required_capabilities=[domain.value],
+        risk_class=RiskClass.LOW,
+        preconditions=[],
+        success_tests=["synthetic runner passed"],
+        evidence_bundle=["duration"],
+        max_attempts=1,
+        rollback_or_abort_rule="none",
+        metadata={"synthetic_duration": duration},
+    )
+
+
+def dag_parallel_ablation_fixtures() -> dict[str, list[ObjectiveSpec]]:
+    return {
+        "fully_sequential": [
+            _synthetic_objective("a", DomainType.BROWSER),
+            _synthetic_objective("b", DomainType.TERMINAL, ["a"]),
+            _synthetic_objective("c", DomainType.DESKTOP, ["b"]),
+            _synthetic_objective("d", DomainType.MIXED, ["c"]),
+        ],
+        "one_independent_tail": [
+            _synthetic_objective("a", DomainType.BROWSER),
+            _synthetic_objective("b", DomainType.TERMINAL, ["a"]),
+            _synthetic_objective("c", DomainType.DESKTOP, ["b"]),
+            _synthetic_objective("d", DomainType.MIXED),
+        ],
+        "two_parallel_chains": [
+            _synthetic_objective("a", DomainType.BROWSER),
+            _synthetic_objective("b", DomainType.BROWSER),
+            _synthetic_objective("c", DomainType.TERMINAL),
+            _synthetic_objective("d", DomainType.DESKTOP, ["c"]),
+        ],
+        "fully_independent": [
+            _synthetic_objective("a", DomainType.BROWSER),
+            _synthetic_objective("b", DomainType.TERMINAL),
+            _synthetic_objective("c", DomainType.DESKTOP),
+            _synthetic_objective("d", DomainType.MIXED),
+        ],
+    }
+
+
+def _has_path(adjacency: dict[str, list[str]], source: str, target: str) -> bool:
+    stack = list(adjacency.get(source, []))
+    seen: set[str] = set()
+    while stack:
+        objective_id = stack.pop()
+        if objective_id == target:
+            return True
+        if objective_id in seen:
+            continue
+        seen.add(objective_id)
+        stack.extend(adjacency.get(objective_id, []))
+    return False
+
+
+def cross_domain_independence_fraction(specs: list[ObjectiveSpec]) -> float:
+    from trinity_pilot.planner.dag import build_graph
+
+    _, adjacency = build_graph(specs)
+    pair_count = 0
+    independent_count = 0
+    for index, left in enumerate(specs):
+        for right in specs[index + 1:]:
+            pair_count += 1
+            if left.domain == right.domain:
+                continue
+            if not _has_path(adjacency, left.objective_id, right.objective_id) and not _has_path(
+                adjacency, right.objective_id, left.objective_id
+            ):
+                independent_count += 1
+    return independent_count / pair_count if pair_count else 0.0
+
+
+async def run_dag_parallel_ablation() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name, fixture in dag_parallel_ablation_fixtures().items():
+        specs = infer_cross_domain_independence(resolve_execution_order(fixture))
+        sequential_seconds = sum(float(spec.metadata["synthetic_duration"]) for spec in specs)
+
+        async def runner(spec: ObjectiveSpec) -> dict[str, Any]:
+            duration = float(spec.metadata["synthetic_duration"])
+            await asyncio.sleep(duration)
+            return {"status": "passed", "evidence": {"duration": duration}}
+
+        started = time.monotonic()
+        results = await DAGScheduler(specs, runner).run()
+        elapsed = time.monotonic() - started
+        rows.append(
+            {
+                "fixture": name,
+                "objective_count": len(specs),
+                "cross_domain_independence_fraction": round(
+                    cross_domain_independence_fraction(specs), 3
+                ),
+                "sequential_seconds": round(sequential_seconds, 4),
+                "parallel_seconds": round(elapsed, 4),
+                "wall_clock_savings_ratio": round(sequential_seconds / elapsed, 3)
+                if elapsed
+                else None,
+                "statuses": {objective_id: result["status"] for objective_id, result in results.items()},
+            }
+        )
+    return rows
+
+
+def format_dag_parallel_ablation_table(rows: list[dict[str, Any]]) -> str:
+    lines = [
+        "fixture,cross_domain_independence_fraction,sequential_seconds,parallel_seconds,wall_clock_savings_ratio"
+    ]
+    for row in rows:
+        lines.append(
+            "{fixture},{cross_domain_independence_fraction},{sequential_seconds},{parallel_seconds},{wall_clock_savings_ratio}".format(
+                **row
+            )
+        )
+    return "\n".join(lines)
 
 
 async def run_orchestrator_audit(

@@ -9,19 +9,21 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-DELIVERABLE = Path(r"C:\Users\User\Desktop\my_ip.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+DELIVERABLE = DESKTOP / "my_ip.txt"
 
 TASK = (
     "Open a browser and navigate to https://httpbin.org/get. "
     "The page returns a JSON response. "
     "Find the value of the 'origin' key in the JSON (it will be an IP address). "
-    "Write only that IP address to the file C:/Users/User/Desktop/my_ip.txt. "
+    f"Write only that IP address to the file {DELIVERABLE}. "
     "The file must contain a valid IPv4 address (e.g. 1.2.3.4)."
 )
 

@@ -2,12 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import time
+from typing import Any, Callable
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
+
+_MAX_RETRIES = 2
+_RETRY_BACKOFF_S = 1.5
+
+
+def _generate_with_retry(call: Callable[[], Any]) -> Any:
+    """Retry a blocking generate_content call on transient server overload.
+
+    Gemini returns 503 UNAVAILABLE ("high demand") under sustained load, which
+    is common when running large evaluation suites back-to-back. Retrying with
+    a short backoff clears most of these without surfacing a planning failure.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return call()
+        except genai_errors.ServerError as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            raise
+    raise last_exc  # pragma: no cover — unreachable, satisfies type checkers
 
 
 def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
@@ -82,7 +107,15 @@ def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
 
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
-        self._client = genai.Client(api_key=api_key)
+        # Real socket-level deadline: without this, a stalled HTTP call run via
+        # run_in_executor() keeps the worker thread blocked forever even after
+        # asyncio.wait_for() times out on the asyncio side (cancelling that future
+        # does not interrupt the underlying thread). Bounding it here means a
+        # stuck call eventually dies on its own instead of leaking a thread.
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=150_000),
+        )
         self._model_name = model
 
     @property
@@ -101,6 +134,10 @@ class GeminiProvider(LLMProvider):
         contents = _build_contents(messages)
         config = genai_types.GenerateContentConfig(
             system_instruction=system if system else None,
+            # Explicit generous ceiling — seen the planner's JSON response truncated
+            # mid-object on a 6-objective plan under the SDK default, causing a hard
+            # "Planner returned invalid JSON" failure (HH04, 2026-06-29).
+            max_output_tokens=16384,
         )
         # Run in thread so asyncio.wait_for can reliably cancel if needed.
         # google-genai's async client holds HTTP connections open (SSE/chunked),
@@ -109,11 +146,11 @@ class GeminiProvider(LLMProvider):
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: self._client.models.generate_content(
+                lambda: _generate_with_retry(lambda: self._client.models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
-                ),
+                )),
             ),
             timeout=timeout,
         )
@@ -128,6 +165,23 @@ class GeminiProvider(LLMProvider):
                 for part in (getattr(response.candidates[0].content, "parts", None) or []):
                     if not getattr(part, "thought", False):
                         text += getattr(part, "text", "") or ""
+        finish_reason = None
+        if hasattr(response, "candidates") and response.candidates:
+            finish_reason = getattr(response.candidates[0], "finish_reason", None)
+        if finish_reason is not None and str(finish_reason) not in ("FinishReason.STOP", "STOP"):
+            # #region agent log
+            from trinity_pilot.telemetry.trace import emit as _trace_non_stop_finish
+
+            _trace_non_stop_finish(
+                "gemini.py:complete",
+                "non_stop_finish_reason",
+                {
+                    "finish_reason": str(finish_reason),
+                    "text_len": len(text),
+                    "token_count": token_count,
+                },
+            )
+            # #endregion
         return LLMResponse(content=text, raw=response, token_count=token_count)
 
     async def complete_with_tools(
@@ -149,11 +203,11 @@ class GeminiProvider(LLMProvider):
         response = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: self._client.models.generate_content(
+                lambda: _generate_with_retry(lambda: self._client.models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
-                ),
+                )),
             ),
             timeout=timeout,
         )
@@ -162,9 +216,12 @@ class GeminiProvider(LLMProvider):
         raw_model_content: Any = None
         if hasattr(response, "candidates") and response.candidates:
             raw_model_content = response.candidates[0].content
-            for part in (raw_model_content.parts or []):
-                if fn := getattr(part, "function_call", None):
-                    tool_calls.append({"name": fn.name, "args": dict(fn.args)})
+            # content can be None if the candidate finished with no content (e.g. blocked,
+            # MAX_TOKENS with nothing generated yet, or other non-STOP finish reasons).
+            if raw_model_content is not None:
+                for part in (raw_model_content.parts or []):
+                    if fn := getattr(part, "function_call", None):
+                        tool_calls.append({"name": fn.name, "args": dict(fn.args)})
 
         # Only access .text when no function_calls — avoids SDK warning about
         # "non-text parts in response: ['function_call']"
@@ -178,6 +235,25 @@ class GeminiProvider(LLMProvider):
                         if not getattr(part, "thought", False):
                             text += getattr(part, "text", "") or ""
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
+        if not text and not tool_calls:
+            # #region agent log
+            from trinity_pilot.telemetry.trace import emit as _trace_empty_response
+
+            finish_reason = None
+            safety_ratings = None
+            if hasattr(response, "candidates") and response.candidates:
+                finish_reason = getattr(response.candidates[0], "finish_reason", None)
+                safety_ratings = getattr(response.candidates[0], "safety_ratings", None)
+            _trace_empty_response(
+                "gemini.py:complete_with_tools",
+                "empty_response",
+                {
+                    "finish_reason": str(finish_reason),
+                    "safety_ratings": str(safety_ratings),
+                    "token_count": token_count,
+                },
+            )
+            # #endregion
         return LLMResponse(
             content=text,
             raw=response,

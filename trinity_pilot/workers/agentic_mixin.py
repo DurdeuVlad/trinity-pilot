@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from google.genai import types as genai_types
@@ -12,6 +14,7 @@ from google.genai import types as genai_types
 from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 from trinity_pilot.orchestrator.signals import WorkerStepSignal
+from trinity_pilot.workers.action_verification import verify_action
 from trinity_pilot.workers.base import WorkerError, WorkerBlocker
 from trinity_pilot.workers.worker_result import WorkerResult
 
@@ -174,8 +177,10 @@ class AgenticWorkerMixin:
                     f"Screenshot captured: mode={mode} desc={desc!r}"
                 )
                 return (
-                    f"Screenshot captured ({desc}). Image attached — read the screen carefully "
-                    "to determine the current state and what is visible.",
+                    f"Screenshot captured ({desc}). Image attached — read the window carefully: "
+                    "identify every visible number, label, and display field. "
+                    "Use what you see in the image for your finish summary."
+                    ,
                     img_bytes,
                 )
             except Exception as exc:
@@ -203,6 +208,27 @@ class AgenticWorkerMixin:
     def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:
         """Return a compact snapshot of current domain state after each domain tool dispatch."""
         return ""
+
+    def _action_sensor_check(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):
+        """Return an eventually-consistent-tier sensor check for `tool_name`, or None.
+
+        Only relevant for actions registered as ActionTier.EVENTUALLY_CONSISTENT
+        in action_verification.TIER_REGISTRY (e.g. launch_app, navigate). Workers
+        override this to supply a real poll predicate; the default is a no-op so
+        unregistered/unsupported actions get no tiered verification, unchanged
+        from today's behavior.
+        """
+        return None
+
+    def _action_sensor_read(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):
+        """Return an LLM-grounded-tier sensor read for `tool_name`, or None.
+
+        Only relevant for actions registered as ActionTier.LLM_GROUNDED (e.g.
+        click_button, type_text). The returned text is folded into the *same*
+        next-turn observation the acting LLM already reads — no extra LLM call
+        is made here; judgment is left to that next turn.
+        """
+        return None
 
     def _shared_sensor_context(self) -> str:
         """Best-effort cross-cutting sensor snapshot injected at worker startup. Never raises."""
@@ -240,11 +266,49 @@ class AgenticWorkerMixin:
         env_ctx = self._worker_environment_context(spec, evidence)
         if env_ctx:
             parts.append(env_ctx)
+        dep_evidence = spec.metadata.get("dependency_evidence")
+        if dep_evidence:
+            import json as _json
+            parts.append(
+                "DEPENDENCY EVIDENCE (real facts/output from completed prior objectives "
+                "this one depends on — use these actual values, don't guess or invent them):\n"
+                + _json.dumps(dep_evidence, indent=2, default=str)[:3000]
+            )
         parts.append(f"GOAL: {spec.goal}")
         if steering:
             parts.append(f"STEERING CONTEXT: {steering}")
         parts.append("Begin.")
         return "\n\n".join(parts)
+
+    async def _mid_episode_reflection(
+        self,
+        *,
+        spec: ObjectiveSpec,
+        evidence: dict[str, Any],
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> str:
+        """Ask for a short live recovery hint when the dedup guard warns."""
+        transcript = json.dumps(
+            evidence.get("llm_transcript", []),
+            indent=2,
+            default=str,
+        )[:3000]
+        prompt = (
+            "The worker is about to repeat a tool call it already tried with identical "
+            "arguments during the same attempt.\n\n"
+            f"Objective: {spec.goal}\n"
+            f"Tool: {tool_name}\n"
+            f"Arguments: {json.dumps(args, sort_keys=True, default=str)[:3000]}\n\n"
+            f"Recent transcript:\n{transcript}\n\n"
+            "Give one concise sentence suggesting a fundamentally different next approach. "
+            "Do not restate the repeated call."
+        )
+        response = await self._llm.complete(
+            [LLMMessage(role="user", content=prompt)],
+            system="You are a live reflection helper for a ReAct worker.",
+        )
+        return (response.content or "").strip()[:3000]
 
     async def run_loop(
         self,
@@ -274,14 +338,58 @@ class AgenticWorkerMixin:
         steps_taken = 0
         tokens_used = 0
         recent_calls: dict[tuple[str, str], int] = {}
+        loop_started = time.monotonic()
+        wall_limit = float(spec.metadata.get("timeout_seconds", 120))
 
         while steps_taken < max_steps:
+            elapsed = time.monotonic() - loop_started
+            if elapsed >= wall_limit:
+                # #region agent log
+                from trinity_pilot.telemetry.trace import emit
+
+                emit(
+                    "agentic_mixin.py:run_loop",
+                    "wall_clock_timeout",
+                    {
+                        "objective_id": spec.objective_id,
+                        "steps_taken": steps_taken,
+                        "wall_limit": wall_limit,
+                        "elapsed": round(elapsed, 1),
+                    },
+                    hypothesis_id="wall-timeout",
+                    span="worker",
+                )
+                # #endregion
+                return WorkerResult(
+                    status="failure",
+                    summary=(
+                        f"Worker wall-clock timeout after {wall_limit:.0f}s "
+                        f"({steps_taken} steps) for '{spec.objective_id}'"
+                    ),
+                )
+
+            _llm_call_started = time.monotonic()
             response: LLMResponse = await self._llm.complete_with_tools(
                 messages,
                 cast(list[Any], self._worker_tools()),
                 system=self._worker_system_prompt(),
             )
             tokens_used += response.token_count
+            # #region agent log
+            from trinity_pilot.telemetry.trace import emit as _trace_llm_call
+
+            _trace_llm_call(
+                "agentic_mixin.py:run_loop",
+                "llm_call",
+                {
+                    "objective_id": spec.objective_id,
+                    "step": steps_taken + 1,
+                    "elapsed_ms": round((time.monotonic() - _llm_call_started) * 1000),
+                    "token_count": response.token_count,
+                },
+                span="llm_call",
+            )
+            # #endregion
 
             # Build transcript entry for this step (written to evidence after dispatch)
             _tx_entry: dict[str, Any] = {
@@ -293,10 +401,11 @@ class AgenticWorkerMixin:
             if not response.tool_calls and not response.content:
                 _tx_entry["tool_name"] = "(empty)"
                 evidence.setdefault("llm_transcript", []).append(_tx_entry)
-                if steps_taken == 0:
-                    raise WorkerError(
-                        f"LLM returned empty response at step {steps_taken}"
-                    )
+                # Was a hard fail at step 0. Gemini can return a genuinely empty
+                # response (finish_reason MALFORMED_FUNCTION_CALL — model emitted
+                # an invalid tool call structure) on the very first step; nudging
+                # and retrying recovers cleanly, same as the later-step path below,
+                # and is bounded by max_steps so it can't loop forever. (HH06)
                 messages.append(
                     LLMMessage(
                         role="user",
@@ -374,6 +483,16 @@ class AgenticWorkerMixin:
                         f"⚠️ REPEATED CALL: You already called {tool_name!r} with these exact "
                         "arguments. Try a fundamentally different approach."
                     )
+                    if spec.metadata.get("mid_episode_reflection", False):
+                        suggestion = await self._mid_episode_reflection(
+                            spec=spec,
+                            evidence=evidence,
+                            tool_name=tool_name,
+                            args=args,
+                        )
+                        if suggestion:
+                            _dedup_prefix = f"{_dedup_prefix}\n\nLIVE REFLECTION: {suggestion}"
+                        _tx_entry["mid_episode_reflection"] = True
                 elif _prior >= 2:
                     _blocked_obs = (
                         f"🛑 BLOCKED: {tool_name!r} called with identical arguments {_prior + 1} "
@@ -397,10 +516,35 @@ class AgenticWorkerMixin:
                     continue
 
             # Dispatch through unified tool routing (finish/blocking handled at base)
+            from trinity_pilot.telemetry.trace import emit as trace_emit
+
+            trace_emit(
+                "agentic_mixin.py:run_loop",
+                "tool_dispatch",
+                {
+                    "objective_id": spec.objective_id,
+                    "step": steps_taken + 1,
+                    "tool": tool_name,
+                    "args_preview": {k: str(v)[:80] for k, v in args.items()},
+                },
+                span="worker",
+            )
             dispatch_result = await self._dispatch_tool(tool_name, args, evidence)
 
             # Control-flow signals
             if isinstance(dispatch_result, _FinishSignal):
+                trace_emit(
+                    "agentic_mixin.py:run_loop",
+                    "tool_result",
+                    {
+                        "objective_id": spec.objective_id,
+                        "step": steps_taken + 1,
+                        "tool": tool_name,
+                        "success": dispatch_result.status == "success",
+                        "result_preview": dispatch_result.summary[:200],
+                    },
+                    span="worker",
+                )
                 _tx_entry["tool_result"] = f"finish(status={dispatch_result.status}): {dispatch_result.summary}"
                 evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 return WorkerResult(
@@ -412,6 +556,18 @@ class AgenticWorkerMixin:
                 )
 
             if isinstance(dispatch_result, _BlockerSignal):
+                trace_emit(
+                    "agentic_mixin.py:run_loop",
+                    "tool_result",
+                    {
+                        "objective_id": spec.objective_id,
+                        "step": steps_taken + 1,
+                        "tool": tool_name,
+                        "success": False,
+                        "result_preview": dispatch_result.reason[:200],
+                    },
+                    span="worker",
+                )
                 _tx_entry["tool_result"] = f"report_blocking: {dispatch_result.reason}"
                 evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 wr = WorkerResult(
@@ -429,6 +585,31 @@ class AgenticWorkerMixin:
                 observation, img_bytes = dispatch_result
             else:
                 observation = dispatch_result  # type: ignore[assignment]
+            _obs_str = observation if isinstance(observation, str) else str(observation)
+            trace_emit(
+                "agentic_mixin.py:run_loop",
+                "tool_result",
+                {
+                    "objective_id": spec.objective_id,
+                    "step": steps_taken + 1,
+                    "tool": tool_name,
+                    "success": not (
+                        _obs_str.startswith("🛑")
+                        or _obs_str.lower().startswith("failed")
+                        or " failed" in _obs_str.lower()[:120]
+                    ),
+                    "result_preview": _obs_str[:200],
+                },
+                span="worker",
+            )
+            verify_result = await verify_action(
+                tool_name,
+                evidence,
+                sensor_check=self._action_sensor_check(tool_name, args, evidence),
+                sensor_read=self._action_sensor_read(tool_name, args, evidence),
+            )
+            if verify_result is not None:
+                observation = f"{observation}\n\n[VERIFY:{verify_result.tier.value}] {verify_result.detail}"
             if _dedup_prefix:
                 observation = f"{_dedup_prefix}\n\n{observation}"
             snapshot = self._worker_state_snapshot(evidence)

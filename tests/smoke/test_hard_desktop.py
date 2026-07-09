@@ -12,21 +12,23 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-TODO_FILE = Path(r"C:\Users\User\Desktop\todo_list.txt")
-SUMMARY_FILE = Path(r"C:\Users\User\Desktop\todo_summary.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+TODO_FILE = DESKTOP / "todo_list.txt"
+SUMMARY_FILE = DESKTOP / "todo_summary.txt"
 
 TASK = (
     "Use write_file to create TWO files on the Desktop. "
-    "First file C:/Users/User/Desktop/todo_list.txt must contain a structured to-do list "
+    f"First file {TODO_FILE} must contain a structured to-do list "
     "with EXACTLY 3 categories: Work, Personal, and Health. "
     "Under each category write EXACTLY 3 numbered items. "
     "Example structure:\nWork:\n1. item\n2. item\n3. item\nPersonal:\n1. item\n2. item\n3. item\nHealth:\n1. item\n2. item\n3. item\n"
-    "Second file C:/Users/User/Desktop/todo_summary.txt must contain EXACTLY this text: "
+    f"Second file {SUMMARY_FILE} must contain EXACTLY this text: "
     "'3 categories, 9 items total'. "
     "Do NOT open Notepad. Use write_file actions directly for both files. Both files must exist when done."
 )

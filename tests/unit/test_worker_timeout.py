@@ -68,7 +68,7 @@ class TestDesktopWorkerTimeout:
         async def slow_run(*args, **kwargs):
             await asyncio.sleep(10)
 
-        with patch.object(worker, "_run_objective", side_effect=slow_run):
+        with patch.object(worker, "run_loop", side_effect=slow_run):
             with pytest.raises(WorkerError, match="timeout"):
                 await worker.execute(spec)
 

@@ -10,18 +10,20 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-DELIVERABLE = Path(r"C:\Users\User\Desktop\spring_poem.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+DELIVERABLE = DESKTOP / "spring_poem.txt"
 
 TASK = (
     "Open Notepad. Write a poem about spring. "
     "The poem MUST have EXACTLY 4 stanzas, each stanza with 4 lines, "
     "separated by a blank line. "
-    "Save the complete poem (all 4 stanzas) to C:/Users/User/Desktop/spring_poem.txt"
+    f"Save the complete poem (all 4 stanzas) to {DELIVERABLE}"
 )
 
 MIN_STANZAS = 4

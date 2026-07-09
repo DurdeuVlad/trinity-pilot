@@ -115,6 +115,47 @@ class TestDesktopWorkerAgenticPath:
         assert any("Wrote file" in entry for entry in evidence["action_log"])
 
 
+class TestDesktopWorkerPressKey:
+    def test_pywinauto_key_sequence_maps_calculator_operators(self):
+        assert DesktopWorker._pywinauto_key_sequence("multiply") == "{*}"
+        assert DesktopWorker._pywinauto_key_sequence("add") == "{+}"
+        assert DesktopWorker._pywinauto_key_sequence("return") == "{ENTER}"
+        assert DesktopWorker._pywinauto_key_sequence("1") == "1"
+
+    def test_pyautogui_key_name_maps_calculator_operators(self):
+        assert DesktopWorker._pyautogui_key_name("multiply") == "multiply"
+        assert DesktopWorker._pyautogui_key_name("equals") == "enter"
+
+    def test_is_meaningful_ui_text_filters_accessibility_labels(self):
+        assert not DesktopWorker._is_meaningful_ui_text("Display is 0", "Text")
+        assert DesktopWorker._is_meaningful_ui_text("144", "Text")
+        assert DesktopWorker._is_meaningful_ui_text("hello world", "Edit")
+
+    def test_score_ui_snippet_prefers_numeric_results(self):
+        assert DesktopWorker._score_ui_snippet("144", "Text") > DesktopWorker._score_ui_snippet(
+            "Display is 0", "Text"
+        )
+
+    def test_uia_snippets_show_result_value(self):
+        assert DesktopWorker._uia_snippets_show_result_value(["144"])
+        assert DesktopWorker._uia_snippets_show_result_value(["Expression is 12 × 12=144"])
+        assert not DesktopWorker._uia_snippets_show_result_value(
+            ["Expression is 12 × 12=", "Calculator", "Standard"]
+        )
+
+    def test_calculator_text_to_keys_parses_expressions(self):
+        assert DesktopWorker._calculator_text_to_keys("12*12") == [
+            "1", "2", "multiply", "1", "2", "equals",
+        ]
+        assert DesktopWorker._calculator_text_to_keys("12 multiplied by 12") == [
+            "1", "2", "multiply", "1", "2", "equals",
+        ]
+        assert DesktopWorker._calculator_text_to_keys("1024+768") == [
+            "1", "0", "2", "4", "add", "7", "6", "8", "equals",
+        ]
+        assert DesktopWorker._calculator_text_to_keys("hello") is None
+
+
 class TestDesktopWorkerLegacyHelpers:
     """Test legacy helper methods that are still on the class."""
 

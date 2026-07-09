@@ -262,6 +262,7 @@ def summary_bubble(elapsed_s: float, status: str, results: dict, dark: bool = Fa
 
 def debug_block(label: str, content: str) -> str:
     """Monospace debug JSON block."""
+    label_html = "<b style='color:" + _DARK["header_fg"] + ";'>" + _esc(label) + "</b><br/>"
     return (
         "<div style='"
         "background:#212121;"
@@ -273,9 +274,9 @@ def debug_block(label: str, content: str) -> str:
         "margin:4px 4px;"
         "white-space:pre-wrap;"
         "'>"
-        f"<b style='color:#FFD54F;'>{_esc(label)}</b><br/>"
-        f"{_esc(content)}"
-        "</div>"
+        + label_html
+        + _esc(content)
+        + "</div>"
     )
 
 
@@ -373,4 +374,19 @@ def execution_row(
         f"'>"
         f"{icon}&nbsp;{_esc(label)}"
         f"</div>"
+    )
+
+
+def confirmation_prompt(dark: bool = False, scale: float = 1.0) -> str:
+    """Inline prompt asking the user to confirm or cancel an action."""
+    c = _DARK if dark else _LIGHT
+    return (
+        "<div style='"
+        "text-align:center;"
+        f"color:{c['system_fg']};"
+        f"font-size:{_px(12, scale)};"
+        "margin:6px 0;"
+        "'>"
+        "Proceed? — type <b>yes</b> to confirm or <b>no</b> to cancel."
+        "</div>"
     )

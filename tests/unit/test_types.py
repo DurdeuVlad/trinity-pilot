@@ -2,6 +2,7 @@ import pytest
 
 from trinity_pilot.core.types import (
     AttemptLog,
+    ChecklistItem,
     DomainType,
     FailureReason,
     ObjectiveSpec,
@@ -148,6 +149,66 @@ class TestObjectiveSpecValidateEdgeCases:
         spec = _make_spec(goal="   ")
         with pytest.raises(ValueError, match="goal"):
             spec.validate()
+
+
+class TestChecklistItem:
+    def test_valid_item(self):
+        item = ChecklistItem(instruction="verify the sum is correct", sensors=("read_file",))
+        assert item.is_valid()
+
+    def test_missing_instruction_is_invalid(self):
+        item = ChecklistItem(instruction="", sensors=("read_file",))
+        assert not item.is_valid()
+
+    def test_missing_sensors_is_invalid(self):
+        item = ChecklistItem(instruction="verify the sum is correct", sensors=())
+        assert not item.is_valid()
+
+    def test_to_dict_and_from_dict_roundtrip(self):
+        item = ChecklistItem(instruction="check it", sensors=("read_file", "screenshot"))
+        restored = ChecklistItem.from_dict(item.to_dict())
+        assert restored == item
+
+    def test_from_dict_malformed_missing_sensors_does_not_raise(self):
+        item = ChecklistItem.from_dict({"instruction": "check it"})
+        assert item.instruction == "check it"
+        assert item.sensors == ()
+        assert not item.is_valid()
+
+    def test_from_dict_empty_dict_does_not_raise(self):
+        item = ChecklistItem.from_dict({})
+        assert not item.is_valid()
+
+    def test_is_frozen(self):
+        item = ChecklistItem(instruction="check it", sensors=("read_file",))
+        with pytest.raises(AttributeError):
+            item.instruction = "changed"  # type: ignore[misc]
+
+
+class TestObjectiveSpecVerificationChecklist:
+    def test_defaults_to_empty_tuple(self):
+        spec = _make_spec()
+        assert spec.verification_checklist == ()
+
+    def test_roundtrip_via_to_dict_from_dict(self):
+        items = (ChecklistItem(instruction="check it", sensors=("read_file",)),)
+        spec = _make_spec(verification_checklist=items)
+        restored = ObjectiveSpec.from_dict(spec.to_dict())
+        assert restored.verification_checklist == items
+
+    def test_from_dict_skips_non_dict_entries_without_raising(self):
+        spec = _make_spec()
+        d = spec.to_dict()
+        d["verification_checklist"] = ["not-a-dict", 42, None]
+        restored = ObjectiveSpec.from_dict(d)
+        assert restored.verification_checklist == ()
+
+    def test_from_dict_defaults_when_key_absent(self):
+        spec = _make_spec()
+        d = spec.to_dict()
+        del d["verification_checklist"]
+        restored = ObjectiveSpec.from_dict(d)
+        assert restored.verification_checklist == ()
 
 
 class TestTaskRecordObjectives:

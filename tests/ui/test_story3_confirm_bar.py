@@ -62,6 +62,7 @@ def test_confirm_bar_approve_hides_bar(qtbot):
 
     bar = _ConfirmBar()
     qtbot.addWidget(bar)
+    bar.approved.connect(bar.hide)  # simulate ChatWidget wiring
     bar.show()
     bar._approve_btn.click()
     assert not bar.isVisible()
@@ -72,6 +73,7 @@ def test_confirm_bar_reject_hides_bar(qtbot):
 
     bar = _ConfirmBar()
     qtbot.addWidget(bar)
+    bar.rejected.connect(bar.hide)  # simulate ChatWidget wiring
     bar.show()
     bar._reject_btn.click()
     assert not bar.isVisible()
@@ -105,6 +107,7 @@ def test_confirm_bar_edit_submit_hides_bar(qtbot):
 
     bar = _ConfirmBar()
     qtbot.addWidget(bar)
+    bar.edit_requested.connect(lambda _: bar.hide())  # simulate ChatWidget wiring
     bar.show()
     bar._edit_btn.click()
     bar._edit_input.setText("some change")

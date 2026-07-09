@@ -1,0 +1,39 @@
+﻿%%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#f5f5f5', 'primaryBorderColor': '#333', 'primaryTextColor': '#111', 'lineColor': '#555', 'edgeLabelBackground': '#ffffff', 'fontSize': '16px'}}}%%
+flowchart TD
+ accTitle: Runtime Architecture  Components and Data Flow
+ classDef ui fill:#eef8ff,stroke:#444,stroke-width:2px,color:#111
+ classDef orch fill:#f0eeff,stroke:#333,stroke-width:2px,color:#111
+ classDef worker fill:#fff0f4,stroke:#555,stroke-width:2px,color:#111
+ classDef llm fill:#fffde0,stroke:#444,stroke-width:2px,color:#111
+ classDef db fill:#efffef,stroke:#555,stroke-width:2px,color:#111
+
+ U(["User<br/>plain text request"]):::ui
+
+ B["Qt Desktop UI<br/>WorkflowBridge"]:::ui
+
+ O["Orchestrator<br/>ordered objectives<br/>selects Worker by domain"]:::orch
+
+ subgraph WP ["Workers  one active per objective"]
+ W1["TerminalWorker<br/>domain = terminal"]:::worker
+ W2["BrowserWorker<br/>domain = browser"]:::worker
+ W3["DesktopWorker<br/>domain = desktop"]:::worker
+ end
+
+ LLM["Gemini 2.5-flash<br/>all reasoning happens here"]:::llm
+
+ R["Reviewer<br/>pass / retry / steer"]:::orch
+
+ DB[("SQLite<br/>task history")]:::db
+
+ U -->|types task| B
+ B -->|start| O
+ O -->|domain=terminal| W1
+ O -->|domain=browser| W2
+ O -->|domain=desktop| W3
+ W1 & W2 & W3 <-->|STAO loop| LLM
+ W1 & W2 & W3 -->|evidence| R
+ R <-->|grade| LLM
+ R -->|pass / fail| O
+ O -->|save| DB
+ O -->|result| B
+ B -->|shows result| U

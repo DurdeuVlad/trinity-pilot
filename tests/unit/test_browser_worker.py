@@ -79,7 +79,7 @@ def _make_mock_context():
     mock_page.url = "https://example.com"
     mock_page.content = AsyncMock(return_value="<html/>")
     mock_page.screenshot = AsyncMock(return_value=b"fake-png")
-    mock_page.goto = AsyncMock()
+    mock_page.goto = AsyncMock(return_value=MagicMock(status=200))
 
     mock_tracing = AsyncMock()
     mock_tracing.start = AsyncMock()

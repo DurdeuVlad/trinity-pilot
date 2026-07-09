@@ -23,9 +23,56 @@ from trinity_pilot.workers.agentic_mixin import (
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
+from trinity_pilot.workers.write_verification import verify_and_write_file
 
 _MAX_OUTPUT_CHARS = 10_000
 _CMD_TIMEOUT = 30.0
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all of its descendants.
+
+    On Windows, killing only the immediate child (e.g. powershell.exe) leaves any
+    grandchild it spawned (e.g. git.exe) running, which can hold a duplicate handle
+    to the redirected stdout/stderr pipe open and prevent asyncio's
+    proc.communicate() from ever seeing EOF.
+    """
+    try:
+        import psutil
+
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            parent.kill()
+        except psutil.NoSuchProcess:
+            pass
+        psutil.wait_procs([parent, *children], timeout=3)
+    except Exception:
+        pass
+
+_QUOTED_WIN_PATH_RE = re.compile(r'"([A-Za-z]:\\[^"]+\.[A-Za-z0-9]{1,8})"')
+
+
+def _record_created_files_from_command(command: str, evidence: dict[str, Any]) -> None:
+    """Detect files created via run_command (e.g. New-Item, Out-File, redirection) and
+    append them to evidence["created_files"], which otherwise only gets populated by the
+    write_file tool. Planner-authored checklists checking "created_files" false-fail
+    real, successful run_command-based file creation without this — a recurring bug class
+    (see CHANGELOG "Fixes" entries for T6 and HH04).
+
+    Heuristic: any quoted absolute Windows path mentioned in the command that exists as a
+    file on disk after the command succeeded was very likely just created or written by it.
+    """
+    created_files = evidence.setdefault("created_files", [])
+    for path in _QUOTED_WIN_PATH_RE.findall(command):
+        if path not in created_files and os.path.isfile(path):
+            created_files.append(path)
+
 
 _TERMINAL_SYSTEM = """\
 You are a terminal automation agent on Windows (PowerShell 5.1).
@@ -58,6 +105,24 @@ RULES:
   Without -Recurse you only see the top-level folder — that is almost always wrong.
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
+- If write_file returns PERMISSION DENIED, call finish immediately with status=failure — OS permission errors are definitive and cannot be retried.
+- For file copy or move operations, ALWAYS use absolute paths for BOTH source and destination.
+  Example: Copy-Item "C:\\Users\\trinity\\Desktop\\source.txt" "C:\\Users\\trinity\\Desktop\\dest.txt"
+  Never use relative paths for Desktop file operations.
+- After any file copy or move, verify the destination exists before calling finish:
+  run_command: Test-Path "C:\\Users\\trinity\\Desktop\\dest.txt"
+  If False, retry before reporting success.
+- When creating multiple files, create them in a single atomic command and verify all exist before finish:
+  New-Item -ItemType File "C:\\path\\a.txt","C:\\path\\b.txt" -Force
+  Then: Get-ChildItem "C:\\path" to confirm all files are present.
+- PREFER PowerShell-native cmdlets/variables over launching a separate .exe when an equivalent
+  exists — launching a standalone executable (git.exe, hostname.exe, etc.) can hang for the full
+  command timeout in this environment, while built-in cmdlets (Test-Path, Get-ChildItem,
+  Get-Process, Get-Command, Get-Content) never do. Examples: use $env:COMPUTERNAME instead of
+  hostname.exe; use $env:USERNAME instead of whoami.exe; use (Get-Command <name>).Version instead
+  of invoking the program with --version.
+  When no native equivalent exists (e.g. running a .py script requires python.exe), launching the
+  external process is unavoidable — accept that it may be slow.
 """
 
 # Patterns for direct command extraction from goal strings
@@ -230,17 +295,26 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             evidence["stderr"] = stderr[-_MAX_OUTPUT_CHARS:]
             evidence["exit_code"] = exit_code
             evidence["action_log"].append(f"run_command: exit={exit_code} cmd={command[:100]}")
+            if exit_code == 0:
+                _record_created_files_from_command(command, evidence)
             if exit_code != 0 and not allow_failure:
                 return f"FAILED exit={exit_code}\nstderr: {stderr[:500]}\nstdout: {stdout[:200]}"
             return f"exit={exit_code}\nstdout: {stdout[:1000]}\nstderr: {stderr[:200]}"
         elif tool_name == "write_file":
             path = args["path"]
             content = args["content"]
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            Path(path).write_text(content, encoding="utf-8")
-            evidence["created_files"].append(path)
-            evidence["action_log"].append(f"write_file: {path} ({len(content)} chars)")
-            return f"File written: {path} ({len(content)} chars)"
+            result = verify_and_write_file(path, content, evidence)
+            if evidence.get("write_file_failures") and any(
+                "PermissionError" in f.get("error", "") for f in evidence["write_file_failures"]
+            ):
+                return (
+                    f"PERMISSION DENIED: Cannot write to {path} — "
+                    "the file is read-only or the path is OS-protected. "
+                    "This is a definitive system restriction. Call finish with status=failure."
+                )
+            if path not in evidence["created_files"]:
+                evidence["created_files"].append(path)
+            return result
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)
 
@@ -345,7 +419,13 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
                 proc.communicate(), timeout=_CMD_TIMEOUT
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            # Killing only `proc` (powershell.exe) does not kill grandchildren it
+            # spawned (e.g. git.exe). If a grandchild is still alive holding a
+            # duplicate handle to the stdout/stderr pipe, the pipe's write end never
+            # closes and proc.communicate() blocks forever even after proc.kill() —
+            # a known Windows ProactorEventLoop subprocess-pipe gotcha. Kill the
+            # whole process tree, not just the immediate child.
+            _kill_process_tree(proc.pid)
             try:
                 await asyncio.wait_for(proc.communicate(), timeout=5)
             except asyncio.TimeoutError as exc:

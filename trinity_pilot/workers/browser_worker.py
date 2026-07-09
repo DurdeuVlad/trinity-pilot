@@ -22,6 +22,7 @@ from trinity_pilot.workers.agentic_mixin import (
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
+from trinity_pilot.workers.write_verification import verify_and_write_file
 
 _BROWSER_SYNTH_SYSTEM = """\
 You are a browser automation agent that has just navigated to a web page.
@@ -189,7 +190,14 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         trace_path = str(trace_dir / "trace.zip")
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=False, args=["--no-sandbox"])
+            # Software rendering bypasses VirtualBox SVGA3D D3D cold-start, same
+            # fix already applied to the Qt app via QT_OPENGL=software in
+            # tests/e2e/_gui_driver.py. Without --disable-gpu, Chromium's first
+            # GPU init on a freshly-booted VM can block indefinitely.
+            browser = await pw.chromium.launch(
+                headless=False,
+                args=["--no-sandbox", "--disable-gpu", "--use-gl=swiftshader"],
+            )
             context = await browser.new_context()
             try:
                 await context.tracing.start(screenshots=True, snapshots=True)
@@ -298,7 +306,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         metadata_actions = spec.metadata.get("actions")
         if metadata_actions and isinstance(metadata_actions, list) and len(metadata_actions) > 0:
             for action in metadata_actions:
-                await self._dispatch_action(page, action)
+                await self._dispatch_action(page, action, evidence)
             actions_executed = True
 
         if not actions_executed:
@@ -308,7 +316,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
                     action_data = json.loads(json_match.group(0))
                     actions = action_data.get("actions", [])
                     for action in actions:
-                        await self._dispatch_action(page, action)
+                        await self._dispatch_action(page, action, evidence)
                     actions_executed = True
                 except Exception:
                     pass
@@ -327,7 +335,9 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         evidence["page_url"] = page.url
 
     @staticmethod
-    async def _dispatch_action(page: Any, action: dict[str, Any]) -> None:
+    async def _dispatch_action(
+        page: Any, action: dict[str, Any], evidence: dict[str, Any] | None = None
+    ) -> None:
         kind = action.get("type", "")
         if kind == "navigate":
             await page.goto(action["url"], wait_until="domcontentloaded", timeout=30_000)
@@ -338,7 +348,9 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         elif kind == "wait_for":
             await page.wait_for_selector(action["selector"], timeout=10_000)
         elif kind == "read_text":
-            pass
+            title = await page.title()
+            if evidence is not None:
+                evidence["page_title"] = title
 
     @staticmethod
     def _extract_url(text: str) -> str | None:
@@ -385,8 +397,5 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             if step.get("action") == "write_file":
                 path = step["path"]
                 content = step["content"]
-                Path(path).parent.mkdir(parents=True, exist_ok=True)
-                Path(path).write_text(content, encoding="utf-8")
-                evidence.setdefault("action_log", []).append(
-                    f"Wrote file: {path} ({len(content)} chars)"
-                )
+                verify_and_write_file(path, content, evidence)
+                evidence.setdefault("created_files", []).append(path)

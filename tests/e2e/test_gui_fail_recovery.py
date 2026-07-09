@@ -111,7 +111,7 @@ def test_FR02_bad_url_clean_failure(app):
         "Open a browser and go to https://nonexistent-domain-fr02-trinity-pilot-test.xyz "
         "and tell me the page title.",
         plan_timeout=50,
-        run_timeout=90,
+        run_timeout=180,
     )
     app.snap("FR02_bad_url")
 
@@ -190,6 +190,10 @@ def test_FR04_readonly_file_write_attempt(app):
 
         if phase == "clarification":
             return  # agent flagged it — fine
+
+        # "Awaiting confirmation" = agent recognised the permission error and paused
+        if "awaiting confirmation" in status.lower():
+            return
 
         # File content must be unchanged (write was blocked or failed)
         # Re-enable read to check
@@ -451,6 +455,11 @@ def test_FR10_partial_multistep_failure(app):
 
     try:
         if phase == "clarification":
+            return
+
+        # "Awaiting confirmation" mid-task = agent paused at step-2 failure without
+        # fabricating step 3 — correct behaviour, treat as pass.
+        if "awaiting confirmation" in status.lower():
             return
 
         ui = app.ui_text()

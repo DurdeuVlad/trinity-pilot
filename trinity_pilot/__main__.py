@@ -93,6 +93,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip crash hooks and enable graceful WM_CLOSE shutdown (used by E2E tests).",
     )
     parser.add_argument(
+        "--test-port",
+        type=int,
+        default=None,
+        help="Embedded HTTP Bridge port for E2E status querying.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["multi", "single_agent"],
+        default="multi",
+        help="Orchestration mode: 'multi' (default) or 'single_agent' (ablation baseline).",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="trinity-pilot 0.1.0",
@@ -106,13 +118,20 @@ def main() -> None:
 
     if not args.test_mode:
         _install_crash_hooks()
+    else:
+        # In test mode the full crash-hooks suite is skipped to keep the
+        # crashes directory clean, but we still want faulthandler active so
+        # C-level Qt/GPU crashes produce a traceback in stderr (= startup log
+        # captured by AppDriver) instead of a silent empty log.
+        import faulthandler
+        faulthandler.enable()  # writes to sys.stderr
 
     if args.worker:
         print("--worker is deprecated; orchestration now runs in-process.", file=sys.stderr)
     else:
         try:
             from trinity_pilot.ui.app import run_app
-            run_app(test_mode=args.test_mode)
+            run_app(test_mode=args.test_mode, mode=args.mode, test_port=args.test_port)
         except ImportError as exc:
             print(f"UI unavailable (PySide6 not installed?): {exc}", file=sys.stderr)
             sys.exit(1)

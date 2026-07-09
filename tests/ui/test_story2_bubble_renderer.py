@@ -59,7 +59,7 @@ def test_no_inline_hex_in_function_bodies():
     src_path = pathlib.Path(__file__).parents[2] / "trinity_pilot" / "ui" / "bubble_renderer.py"
     src = src_path.read_text(encoding="utf-8")
     # Find last occurrence of _DARK dict definition; everything after is function bodies
-    dark_idx = src.rindex("_DARK")
+    dark_idx = src.rindex("_DARK: dict")
     # Move past the closing brace of the _DARK dict block
     after_dark_block = src[dark_idx:]
     # Find end of dict (closing brace at column 0)

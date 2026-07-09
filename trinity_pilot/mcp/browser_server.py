@@ -34,12 +34,34 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.browser_worker import BrowserWorker
 
 mcp = FastMCP(
     name="trinity-pilot-browser",
     version="0.1.0",
+)
+
+SERVER_NAME = "trinity-pilot-browser"
+
+TOOL_MANIFEST: ToolManifest = (
+    ToolMetadata("browser_navigate", SERVER_NAME, "task", "Run a full browser objective."),
+    ToolMetadata("navigate", SERVER_NAME, "action", "Navigate the active browser page."),
+    ToolMetadata("click", SERVER_NAME, "action", "Click a CSS selector on the active page."),
+    ToolMetadata("fill", SERVER_NAME, "action", "Fill an input on the active page."),
+    ToolMetadata("read_page", SERVER_NAME, "sensor", "Read page title, URL, and text preview."),
+    ToolMetadata("dom_snapshot", SERVER_NAME, "sensor", "Read the current page DOM."),
+    ToolMetadata("accessibility_tree", SERVER_NAME, "sensor", "Read the page accessibility tree."),
+    ToolMetadata("current_url", SERVER_NAME, "sensor", "Read the active page URL."),
+    ToolMetadata("page_title", SERVER_NAME, "sensor", "Read the active page title."),
+    ToolMetadata("get_cookies", SERVER_NAME, "sensor", "Read browser cookies."),
+    ToolMetadata("list_open_tabs", SERVER_NAME, "sensor", "Read open browser tab metadata."),
+    ToolMetadata("network_log", SERVER_NAME, "sensor", "Read recent network request metadata."),
+    ToolMetadata("get_element_text", SERVER_NAME, "sensor", "Read text from a CSS-selected element."),
+    ToolMetadata("get_element_attribute", SERVER_NAME, "sensor", "Read an element attribute."),
+    ToolMetadata("finish", SERVER_NAME, "control", "Signal objective completion."),
+    ToolMetadata("report_blocking", SERVER_NAME, "control", "Signal an unresolvable blocker."),
 )
 
 

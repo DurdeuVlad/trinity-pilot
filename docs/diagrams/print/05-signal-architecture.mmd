@@ -1,0 +1,25 @@
+﻿%%{init: {'theme': 'base', 'themeVariables': {'background': '#ffffff', 'primaryColor': '#f5f5f5', 'primaryBorderColor': '#333', 'primaryTextColor': '#111', 'lineColor': '#555', 'edgeLabelBackground': '#ffffff', 'fontSize': '16px'}}}%%
+flowchart LR
+ accTitle: Async Signal Bus  Orchestrator to Qt UI
+ classDef orch fill:#f0eeff,stroke:#333,stroke-width:2px,color:#111
+ classDef bus fill:#eef4ff,stroke:#555,stroke-width:2px,color:#111
+ classDef ok fill:#efffef,stroke:#555,stroke-width:1px,color:#111
+ classDef bad fill:#f5f5f5,stroke:#888,stroke-width:1px,stroke-dasharray:4,color:#111
+ classDef info fill:#fffde0,stroke:#555,stroke-width:1px,color:#111
+ classDef ui fill:#eef8ff,stroke:#444,stroke-width:2px,color:#111
+
+ O["Orchestrator<br/>+ Workers"]:::orch
+ Q[("asyncio.Queue<br/>signal bus")]:::bus
+
+ S1["ObjectiveDone"]:::ok
+ S2["ObjectiveFailed"]:::bad
+ S3["StuckSignal<br/>needs user input"]:::bad
+ S4["SteeringMessage<br/>StepCompleted<br/>BudgetWarning"]:::info
+
+ UI["Qt UI<br/>MainWindow"]:::ui
+
+ O -->|await put| Q
+ Q --> S1 & S2 & S3 & S4
+ S1 -->|task done| UI
+ S2 & S3 -->|failure / blocked| UI
+ S4 -->|live progress| UI

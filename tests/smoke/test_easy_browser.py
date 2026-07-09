@@ -9,18 +9,20 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-DELIVERABLE = Path(r"C:\Users\User\Desktop\browser_title.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+DELIVERABLE = DESKTOP / "browser_title.txt"
 
 TASK = (
     "Open a browser and navigate to https://example.com. "
     "Find the page title (it should be 'Example Domain'). "
     "Write the exact page title text to the file "
-    "C:/Users/User/Desktop/browser_title.txt. "
+    f"{DELIVERABLE}. "
     "The file must contain the text 'Example Domain'."
 )
 

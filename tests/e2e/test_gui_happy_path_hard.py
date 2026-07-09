@@ -48,7 +48,7 @@ CASES: list[HardCase] = [
             "2) Inside it create alpha.txt with text alpha-01 and beta.txt with text beta-01. "
             "3) List files in that folder. "
             "4) Compute total file count and total bytes. "
-            f"5) Write {DESKTOP / 'hh01_summary.txt'} containing token HH01_OK plus file_count and byte_count. "
+            f"5) Write {DESKTOP / 'hh01_summary.txt'} containing token HH01_OK and the labels 'file_count' and 'byte_count' with their values. "
             "6) Print the summary content."
         ),
         artifact=DESKTOP / "hh01_summary.txt",
@@ -72,7 +72,9 @@ CASES: list[HardCase] = [
         case_id="HH03",
         prompt=(
             "Complete this 7-objective workflow: "
-            "1) Open browser at https://httpbin.org/uuid. "
+            # httpbin.org/uuid is flaky (observed repeated 503s 2026-06-29) — httpbingo.org
+            # is a more reliable Go rewrite of httpbin with the same {"uuid": "..."} response shape.
+            "1) Open browser at https://httpbingo.org/uuid. "
             "2) Extract the UUID value. "
             f"3) Create {DESKTOP / 'hh03_uuid.txt'} with token HH03_OK and that UUID. "
             f"4) Create backup file {DESKTOP / 'hh03_uuid_backup.txt'}. "
@@ -92,11 +94,11 @@ CASES: list[HardCase] = [
             "2) Compute sum and average. "
             "3) Compute max and min. "
             f"4) Create {DESKTOP / 'hh04_metrics.txt'}. "
-            "5) Write token HH04_OK plus sum, avg, min, max. "
+            "5) Write token HH04_OK plus sum, average, min, max. "
             "6) Print metrics file content."
         ),
         artifact=DESKTOP / "hh04_metrics.txt",
-        must_have=("HH04_OK", "sum", "avg", "min", "max"),
+        must_have=("HH04_OK", "sum", "average", "min", "max"),
     ),
     HardCase(
         case_id="HH05",

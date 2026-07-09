@@ -13,20 +13,21 @@ import os
 from pathlib import Path
 from typing import Any
 
-# Bounds a single dispatch end-to-end. Without this, a stalled MCP server
-# subprocess (e.g. its own LLM tool-call stuck on a transient API outage)
-# hangs call_tool() forever with no way for the orchestrator to recover —
-# the GUI sits at "Executing..." indefinitely. 900s covers the slowest
-# documented legitimate single-objective runs (~950s cold-start cases)
-# while still turning a genuine stall into a clean, recoverable failure.
-_DISPATCH_TIMEOUT_S = 900.0
-
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import WorkerError, WorkerBlocker
 from trinity_pilot.workers.worker_result import WorkerResult
+
+# Bounds a single dispatch end-to-end. Without this, a stalled MCP server
+# subprocess hangs call_tool() forever. Per-objective metadata.timeout_seconds
+# overrides these domain defaults when set by the planner.
+_DISPATCH_TIMEOUT_DEFAULTS: dict[DomainType, float] = {
+    DomainType.DESKTOP: 180.0,
+    DomainType.BROWSER: 600.0,
+    DomainType.TERMINAL: 120.0,
+}
 
 _MCP_DIR = Path(__file__).parent
 
@@ -77,14 +78,16 @@ class MCPClientPool:
             raise WorkerError(f"No MCP tool configured for domain '{domain.value}'")
 
         client = await self._get_client(domain)
+        default_timeout = _DISPATCH_TIMEOUT_DEFAULTS.get(domain, 180.0)
+        dispatch_timeout = float(spec.metadata.get("timeout_seconds", default_timeout))
         try:
             result = await asyncio.wait_for(
                 client.call_tool(tool_name, {"spec_dict": spec.to_dict()}),
-                timeout=_DISPATCH_TIMEOUT_S,
+                timeout=dispatch_timeout,
             )
         except asyncio.TimeoutError as exc:
             raise WorkerError(
-                f"MCP dispatch to '{domain.value}' timed out after {_DISPATCH_TIMEOUT_S:.0f}s"
+                f"MCP dispatch to '{domain.value}' timed out after {dispatch_timeout:.0f}s"
             ) from exc
         except Exception as exc:  # transport failure, server crash, etc.
             raise WorkerError(f"MCP transport failure dispatching '{domain.value}': {exc}") from exc

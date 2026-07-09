@@ -148,12 +148,12 @@ def test_thinking_indicator_hides_on_stop(qtbot):
 
 
 def test_thinking_indicator_label_cycles(qtbot):
-    from trinity_pilot.ui.thinking_indicator import ThinkingIndicator, _FRAMES
+    from trinity_pilot.ui.thinking_indicator import ThinkingIndicator, _FRAMES_PLANNING
     widget = ThinkingIndicator()
     qtbot.addWidget(widget)
     widget.start()
     initial = widget._label.text()
-    assert initial in _FRAMES
+    assert initial in _FRAMES_PLANNING
 
 
 # ---------------------------------------------------------------------------
@@ -211,4 +211,4 @@ def test_chips_mark_running_starts_pulse(qtbot):
     qtbot.addWidget(w)
     w.set_objectives([{"objective_id": "obj_r"}])
     w.mark_running("obj_r")
-    assert "obj_r" in w._pulse_timers
+    assert "obj_r" in w._pulse_anims

@@ -28,9 +28,23 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
+
 mcp = FastMCP(
     name="trinity-pilot-sensor",
     version="0.1.0",
+)
+
+SERVER_NAME = "trinity-pilot-sensor"
+
+TOOL_MANIFEST: ToolManifest = (
+    ToolMetadata("screenshot", SERVER_NAME, "sensor", "Capture a desktop screenshot."),
+    ToolMetadata("find_window", SERVER_NAME, "sensor", "Find a window by title pattern."),
+    ToolMetadata("locate_on_screen", SERVER_NAME, "sensor", "Locate a template image on screen."),
+    ToolMetadata("window_list", SERVER_NAME, "sensor", "Enumerate visible windows."),
+    ToolMetadata("process_list", SERVER_NAME, "sensor", "Enumerate running processes."),
+    ToolMetadata("clipboard_read", SERVER_NAME, "sensor", "Read clipboard text."),
+    ToolMetadata("file_stat", SERVER_NAME, "sensor", "Read file metadata without content."),
 )
 
 

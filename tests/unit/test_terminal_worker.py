@@ -182,6 +182,36 @@ class TestTerminalWorker:
         evidence = await worker.execute(spec)
         assert out_path in evidence["created_files"]
 
+    async def test_deterministic_tier_verify_tag_folded_into_transcript_observation(self):
+        llm = _MockLLM([
+            _run_command("echo hello"),
+            _finish("success", "ran it"),
+        ])
+        spec = ObjectiveSpec(
+            objective_id="obj-verify",
+            goal="run a command",
+            dependencies=[],
+            domain=DomainType.TERMINAL,
+            required_capabilities=["shell_raw"],
+            risk_class=RiskClass.LOW,
+            preconditions=[],
+            success_tests=[],
+            evidence_bundle=["stdout"],
+            max_attempts=1,
+            rollback_or_abort_rule="abort",
+        )
+        worker = TerminalWorker(llm=llm)
+        evidence = await worker.execute(spec)
+
+        transcript = evidence.get("llm_transcript", [])
+        run_command_entries = [t for t in transcript if t.get("tool_name") == "run_command"]
+        assert run_command_entries, "expected a run_command transcript entry"
+        assert "[VERIFY:deterministic]" in run_command_entries[0]["tool_result"]
+        assert "exit_code=0" in run_command_entries[0]["tool_result"]
+        # Tiered verify is in-loop only — never written to evidence directly.
+        assert "verify_action" not in evidence
+        assert all(not k.startswith("VERIFY") for k in evidence)
+
     def test_extract_command_backtick_wins_over_run_prefix(self):
         cmd = TerminalWorker._extract_command("run echo hello and also run `ls -la`")
         assert cmd == "ls -la"

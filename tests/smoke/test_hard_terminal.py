@@ -10,20 +10,21 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-SCRIPT_FILE = Path(r"C:\Users\User\Desktop\fib.py")
-OUTPUT_FILE = Path(r"C:\Users\User\Desktop\fib_output.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+SCRIPT_FILE = DESKTOP / "fib.py"
+OUTPUT_FILE = DESKTOP / "fib_output.txt"
 
 TASK = (
     "Do the following in a terminal (cmd or PowerShell), step by step:\n"
-    "1. Write a Python script to C:/Users/User/Desktop/fib.py that prints the "
+    f"1. Write a Python script to {SCRIPT_FILE} that prints the "
     "first 10 Fibonacci numbers, one per line (1 1 2 3 5 8 13 21 34 55).\n"
-    "2. Run that script with Python and save the output to "
-    "C:/Users/User/Desktop/fib_output.txt.\n"
+    f"2. Run that script with Python and save the output to {OUTPUT_FILE}.\n"
     "Both files must exist when done."
 )
 

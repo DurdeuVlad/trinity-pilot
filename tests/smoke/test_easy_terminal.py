@@ -9,6 +9,7 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from datetime import date
@@ -16,12 +17,13 @@ from pathlib import Path
 
 from _harness import run_smoke, kill_windows_matching
 
-DELIVERABLE = Path(r"C:\Users\User\Desktop\sysinfo.txt")
+DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+DELIVERABLE = DESKTOP / "sysinfo.txt"
 
 TASK = (
     "Open a terminal (cmd or PowerShell). "
     "Run a command that writes the current date and hostname to "
-    "C:/Users/User/Desktop/sysinfo.txt. "
+    f"{DELIVERABLE}. "
     "The file must exist and contain today's date and the machine hostname."
 )
 

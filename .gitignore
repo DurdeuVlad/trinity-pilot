@@ -102,4 +102,20 @@ eval_screenshots/
 adversarial_test.py
 run_adv.bat
 rerun_inj01.bat
+
+# Dev / debug scripts
+_live_test.py
+agency_collect.py
+agency_retest.py
+run_vm_official.bat
+report.txt
+
+# Runtime trace data
+.trace/
+
+# Internal planning docs (AI sprint notes, probe logs)
+docs/codex-tasks/
+docs/ch6-probe-run-log.md
+docs/ch6-probe-and-fullrun-plan.md
+docs/ch6-per-model-probe-results.md
 *.db

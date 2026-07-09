@@ -89,6 +89,7 @@ trinity_pilot/
 - **SQLite state**: WAL mode, task records, attempts, and objective state tracking.
 - **Evidence schema validation**: workers validate output dicts before returning.
 - **Reflections**: failed attempts produce structured reflections used in retry prompts.
+- **NDJSON tracing**: unified timeline for E2E/VM debugging — see [docs/TRACING.md](docs/TRACING.md).
 
 ## License
 

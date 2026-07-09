@@ -185,7 +185,10 @@ class ObjectiveChipsWidget(QFrame):
     # ------------------------------------------------------------------
 
     def _entrance_fade(self, label: QLabel, effect: QGraphicsOpacityEffect) -> None:
-        anim = QPropertyAnimation(effect, b"opacity", label)
+        try:
+            anim = QPropertyAnimation(effect, b"opacity", label)
+        except RuntimeError:
+            return
         anim.setDuration(220)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
