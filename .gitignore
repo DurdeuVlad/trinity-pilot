@@ -27,6 +27,7 @@ ENV/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 *.key
 *.pem
 secrets.json
