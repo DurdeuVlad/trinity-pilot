@@ -12,9 +12,8 @@ _DEFAULT_EVENTUALLY_DEADLINE_SECONDS = 10.0
 class ActionTier(StrEnum):
     """Which verification strategy a dispatched action gets, per C5's design.
 
-    No predicate-checkable tier here — that idea was deliberately dropped (see
-    contribution-ledger.md C1 notes for the same reasoning applied to checklist
-    items): letting a planner or registry improvise *which* deterministic check
+    No predicate-checkable tier here — that idea was deliberately dropped:
+    letting a planner or registry improvise *which* deterministic check
     applies to an arbitrary action is its own mismatch failure mode. Every
     action maps to exactly one of these three, chosen by us at registration
     time, not guessed at runtime.

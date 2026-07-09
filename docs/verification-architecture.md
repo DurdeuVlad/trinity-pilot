@@ -101,4 +101,4 @@ live VM scenario yet** — that requires `scripts/vm_pipeline.py` against a
 booted VM, which this build session did not have access to. Do not claim
 end-to-end validation in the thesis until a VM smoke run (checklist pass,
 checklist fail, real eventually-tier wait on a cold launch) has actually been
-observed; see `docs/contribution-ledger.md` for the corresponding claim status.
+observed; unit tests cover the dispatch logic, behavioral validation requires a live VM run.
