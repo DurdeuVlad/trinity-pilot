@@ -44,15 +44,19 @@ class _RecoveryReviewer:
 
 async def test_active_orchestrator_audit_with_stubs(tmp_path, monkeypatch):
     import trinity_pilot.orchestrator.engine as engine
+    from trinity_pilot.config import Settings
 
     monkeypatch.setattr(engine, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine, "ObjectiveReviewer", _RecoveryReviewer)
     monkeypatch.setattr(engine.WorkerRouter, "route", lambda self, spec: _ChangingWorker())
 
+    stub_settings = Settings(gemini_api_key="stub-key-for-testing")
+
     record = await run_orchestrator_audit(
         desktop_typing_objective("visible audit text"),
         output_root=tmp_path / "runs",
         db_path=tmp_path / "audit.db",
+        settings=stub_settings,
     )
 
     assert record["execution_path"] == "AsyncTaskOrchestrator"
