@@ -189,6 +189,8 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             "dom_snapshot": None,
             "page_title": None,
             "page_url": None,
+            "page_http_status": None,
+            "extracted_content": None,
             "trace_path": None,
             "error": None,
         }
@@ -239,7 +241,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
 
                 if self._has_planned_actions(spec):
                     await self._run_objective(page, spec, evidence)
-                    summary = evidence.get("summary")
+                    summary = self._read_result_summary(spec, evidence)
                     result = WorkerResult(
                         status="success",
                         summary=str(summary) if summary else (
@@ -292,6 +294,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             for _nav_attempt in range(2):
                 try:
                     response = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                    await page.wait_for_selector("body", state="attached", timeout=10_000)
                 except Exception as nav_err:
                     return (
                         f"NAVIGATION FAILED: {nav_err}. "
@@ -320,21 +323,16 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             return f"Filled {selector} with {value!r}"
 
         elif tool_name == "read_page":
-            title = await page.title()
-            url = page.url
-            dom_raw = await page.content()
             dom_text = await self._visible_page_text(page)
-            evidence["page_title"] = title
-            evidence["page_url"] = url
-            evidence["dom_snapshot"] = dom_raw
-            evidence["visible_text"] = dom_text
-            screenshot_bytes = await page.screenshot()
-            evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
-            return f"title={title!r} url={url}\ntext={dom_text}"
+            self._record_extracted_content(evidence, dom_text, source="read_page")
+            await self._capture_read_evidence(page, evidence, "read_page", dom_text)
+            return f"title={evidence['page_title']!r} url={evidence['page_url']}\ntext={dom_text}"
 
         elif tool_name == "read_text":
             selector = args["selector"]
             text = (await page.locator(selector).first.inner_text(timeout=10_000)).strip()
+            self._record_extracted_content(evidence, text, source=f"read_text:{selector}")
+            await self._capture_read_evidence(page, evidence, "read_text", text, selector=selector)
             evidence.setdefault("extracted_text", {})[selector] = text
             evidence.setdefault("action_log", []).append(f"read_text: {selector}")
             return text
@@ -359,6 +357,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             for action in metadata_actions:
                 await self._dispatch_action(page, action, evidence)
             actions_executed = True
+            self._record_read_completion(metadata_actions, evidence)
 
         if not actions_executed:
             json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
@@ -391,6 +390,33 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         return isinstance(actions, list) and bool(actions)
 
     @staticmethod
+    def _record_read_completion(actions: list[dict[str, Any]], evidence: dict[str, Any]) -> None:
+        """Declare completion for read-only browser objectives from fresh sensors."""
+        read_only_actions = {"navigate", "wait_for", "read_page", "read_text", "summarize_page"}
+        if any(action.get("type") not in read_only_actions for action in actions):
+            return
+        content = evidence.get("extracted_content")
+        if not isinstance(content, str) or not content.strip():
+            return
+        evidence["completion"] = {
+            "passed": True,
+            "summary": "Browser content was read and verified from the live page.",
+            "page_url": evidence.get("page_url"),
+            "page_title": evidence.get("page_title"),
+            "http_status": evidence.get("page_http_status"),
+            "extracted_content_length": len(content),
+        }
+
+    @staticmethod
+    def _read_result_summary(spec: ObjectiveSpec, evidence: dict[str, Any]) -> Any:
+        """Return the requested browser fact, not a generic action-status line."""
+        if re.search(r"\b(?:exact\s+)?(?:page\s+)?title\b", spec.goal, re.IGNORECASE):
+            title = evidence.get("page_title")
+            if isinstance(title, str) and title.strip():
+                return title
+        return evidence.get("summary") or evidence.get("extracted_content")
+
+    @staticmethod
     async def _visible_page_text(page: Any) -> str:
         """Return meaningful visible content rather than regex-stripped document markup."""
         try:
@@ -399,12 +425,57 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             text = await page.locator("body").first.inner_text(timeout=5_000)
         return re.sub(r"\s+", " ", text).strip()[:4_000]
 
+    @staticmethod
+    def _record_extracted_content(evidence: dict[str, Any], text: str, *, source: str) -> None:
+        """Store every browser read in the one completion/review contract."""
+        content = text.strip()
+        if not content:
+            raise WorkerError(f"{source} returned empty visible text")
+        evidence["extracted_content"] = content
+        # Keep legacy evidence consumers working while they migrate to the
+        # canonical field above.
+        evidence["visible_text"] = content
+
+    @staticmethod
+    async def _capture_read_evidence(
+        page: Any,
+        evidence: dict[str, Any],
+        kind: str,
+        text: str,
+        *,
+        selector: str | None = None,
+    ) -> None:
+        """Capture fresh, observable state for a successful browser read."""
+        evidence["page_title"] = await page.title()
+        evidence["page_url"] = page.url
+        evidence["dom_snapshot"] = await page.content()
+        screenshot_bytes = await page.screenshot()
+        evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
+        result: dict[str, Any] = {
+            "type": kind,
+            "text": text,
+            "text_length": len(text),
+            "title": evidence["page_title"],
+            "url": evidence["page_url"],
+            "http_status": evidence.get("page_http_status"),
+        }
+        if selector:
+            result["selector"] = selector
+        evidence.setdefault("action_results", []).append(result)
+
     async def _dispatch_action(
         self, page: Any, action: dict[str, Any], evidence: dict[str, Any] | None = None
     ) -> None:
         kind = action.get("type", "")
         if kind == "navigate":
-            await page.goto(action["url"], wait_until="domcontentloaded", timeout=30_000)
+            response = await page.goto(action["url"], wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_selector("body", state="attached", timeout=10_000)
+            if evidence is not None:
+                evidence["page_url"] = page.url
+                evidence["page_http_status"] = response.status if response is not None else None
+                evidence.setdefault("action_log", []).append(
+                    f"planned navigate: {page.url} (HTTP {evidence['page_http_status']})"
+                )
         elif kind == "click":
             await page.click(action["selector"], timeout=10_000)
         elif kind == "fill":
@@ -414,36 +485,30 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         elif kind == "read_page":
             text = await self._visible_page_text(page)
             if evidence is not None:
-                evidence["visible_text"] = text
-                evidence.setdefault("action_results", []).append({
-                    "type": "read_page", "text": text,
-                })
+                self._record_extracted_content(evidence, text, source="read_page")
+                await self._capture_read_evidence(page, evidence, "read_page", text)
                 evidence.setdefault("action_log", []).append("planned read_page")
         elif kind == "read_text":
             selector = action.get("selector")
             if not selector:
                 text = await BrowserWorker._visible_page_text(page)
                 if evidence is not None:
-                    evidence["visible_text"] = text
-                    evidence.setdefault("action_results", []).append({
-                        "type": "read_page", "text": text,
-                    })
+                    self._record_extracted_content(evidence, text, source="read_page")
+                    await self._capture_read_evidence(page, evidence, "read_page", text)
                     evidence.setdefault("action_log", []).append(
                         "planned read_text without selector normalized to read_page"
                     )
                 return
             text = (await page.locator(selector).first.inner_text(timeout=10_000)).strip()
             if evidence is not None:
-                evidence["page_title"] = await page.title()
+                self._record_extracted_content(evidence, text, source=f"read_text:{selector}")
+                await self._capture_read_evidence(page, evidence, "read_text", text, selector=selector)
                 evidence.setdefault("extracted_text", {})[selector] = text
-                evidence.setdefault("action_results", []).append({
-                    "type": "read_text", "selector": selector, "text": text,
-                })
                 evidence.setdefault("action_log", []).append(f"planned read_text: {selector}")
         elif kind == "summarize_page":
-            if evidence is None or not evidence.get("visible_text"):
+            if evidence is None or not evidence.get("extracted_content"):
                 raise WorkerError("summarize_page requires a preceding read_page or read_text action")
-            source_text = str(evidence["visible_text"])
+            source_text = str(evidence["extracted_content"])
             max_chars = int(action.get("max_chars", 700))
             prompt = (
                 "Summarize the following extracted page content in one concise, factual paragraph. "

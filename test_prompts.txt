@@ -1,0 +1,19 @@
+Create a file called tp_e2e.txt on the Desktop containing exactly the text 'hello-e2e'.
+
+Open https://example.com, read the visible page content, and report its title.
+
+Create a folder called tp_test_dir on the Desktop. Inside that folder create three empty files: a.txt, b.txt, and c.txt. Then list the contents of that folder in the terminal and print the result.
+
+Use the terminal to list all running processes named 'python' or 'python.exe'. Count them and write the count as a single number to a file called py_procs.txt on the Desktop.
+
+Using the terminal: create a file called tp_source.txt on the Desktop containing the text 'copy-source'. Then copy that file to a new file called tp_source_copy.txt on the Desktop.
+
+Open a browser and go to https://quotes.toscrape.com. Read the first quote displayed on the page and say it in chat.
+
+Open a browser and go to https://en.wikipedia.org/wiki/Python_(programming_language). Read the exact title of the page and report it in chat.
+
+Use the terminal to count how many .txt files are currently on the Desktop. Report the exact number in chat.
+
+Open the Wikipedia pages for Cat and Dog. Read the main content of each page and produce one concise factual paragraph summarizing each article in chat.
+
+Open https://en.wikipedia.org/wiki/Dog, read the main article content, and provide one concise factual paragraph in chat.
