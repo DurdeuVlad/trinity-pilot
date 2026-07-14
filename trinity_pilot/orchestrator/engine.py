@@ -56,6 +56,25 @@ _PORTABLE_EVIDENCE_KEYS = (
 )
 
 
+def _resolve_dependency_templates(value: Any, dependency_evidence: dict[str, dict[str, Any]]) -> Any:
+    """Resolve planner references to output from prerequisite objectives."""
+    if isinstance(value, dict):
+        return {key: _resolve_dependency_templates(item, dependency_evidence) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_resolve_dependency_templates(item, dependency_evidence) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    import re
+
+    def replace(match: re.Match[str]) -> str:
+        objective_id, field = match.group(1), match.group(2)
+        found = dependency_evidence.get(objective_id, {}).get(field)
+        return str(found) if found is not None else match.group(0)
+
+    return re.sub(r"\{\{dependency:([^:}]+):([^}]+)\}\}", replace, value)
+
+
 def _portable_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     """Extract the small, text-only subset of an objective's evidence that's
     safe and useful to forward into a dependent objective's prompt context."""
@@ -167,6 +186,7 @@ class AsyncTaskOrchestrator:
                     }
                     if dep_evidence:
                         spec.metadata["dependency_evidence"] = dep_evidence
+                        spec.metadata = _resolve_dependency_templates(spec.metadata, dep_evidence)
                 return await self._run_objective(task_id, spec)
 
             scheduler = DAGScheduler(planned, run_scheduled_objective, results=results)
@@ -447,23 +467,21 @@ class AsyncTaskOrchestrator:
                     )
                 )
                 err_lower = str(exc).lower()
-                if "timeout" in err_lower or "timed out" in err_lower:
-                    self._objective_store.upsert(
-                        task_id,
-                        objective_id,
-                        ObjectiveState.FAILED,
-                        step_count=budget.steps_used(),
-                        token_count=budget.tokens_used(),
-                        failure_reason="worker_timeout",
-                    )
-                    await self.signals.put(
-                        ObjectiveFailed(task_id, objective_id, "worker_timeout")
-                    )
-                    return {
-                        "status": "failed",
-                        "failure_reason": "worker_timeout",
-                        "evidence": last_evidence,
-                    }
+                reason = "worker_timeout" if "timeout" in err_lower or "timed out" in err_lower else "worker_error"
+                self._objective_store.upsert(
+                    task_id,
+                    objective_id,
+                    ObjectiveState.FAILED,
+                    step_count=budget.steps_used(),
+                    token_count=budget.tokens_used(),
+                    failure_reason=reason,
+                )
+                await self.signals.put(ObjectiveFailed(task_id, objective_id, reason))
+                return {
+                    "status": "failed",
+                    "failure_reason": reason,
+                    "evidence": last_evidence,
+                }
 
             stuck = attempt_number >= getattr(self._settings, "stuck_threshold_steps", 5)
             if stuck:

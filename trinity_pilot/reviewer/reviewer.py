@@ -42,6 +42,22 @@ class ObjectiveReviewer:
         *,
         shadow_llm_on_floor_trigger: bool = False,
     ) -> ReviewResult:
+        # An exact, sensor-backed completion result is stronger than a model
+        # narrative. Workers use it when a final state can be read directly.
+        completion = evidence.get("completion")
+        if isinstance(completion, dict) and isinstance(completion.get("passed"), bool):
+            if completion["passed"]:
+                return ReviewResult(
+                    passed=True,
+                    notes=f"Programmatic completion check passed: {completion.get('summary', 'all postconditions met')}",
+                )
+            return ReviewResult(
+                passed=False,
+                failure_reason=FailureReason.FAILED_ASSERTION,
+                notes=f"Programmatic completion check failed: {completion.get('summary', 'postcondition unmet')}",
+                recovery_hint="Bring the target application into the required final state and capture a fresh readback.",
+            )
+
         # Programmatic ground-truth floor: a write_file action that errored or
         # left no file on disk is an objective failure regardless of what the
         # action_log narrates. Don't let the LLM's text-based judgment override this.

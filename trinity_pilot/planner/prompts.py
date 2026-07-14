@@ -110,15 +110,21 @@ Metadata rules (REQUIRED — always populate for these domains):
   The terminal domain is ONLY for commands that run in a console/CMD/PowerShell window without a GUI.
   Do NOT use terminal domain for launching GUI applications.
 - browser domain: always set metadata.actions to a JSON array of action objects.
-  Each action: {"type": "navigate"|"click"|"fill"|"wait_for"|"read_text", ...fields}
+  Each action: {"type": "navigate"|"click"|"fill"|"wait_for"|"read_page"|"read_text"|"summarize_page", ...fields}
   navigate: {"type": "navigate", "url": "https://..."}
   click:    {"type": "click", "selector": "CSS selector"}
   fill:     {"type": "fill", "selector": "CSS selector", "value": "text"}
   wait_for: {"type": "wait_for", "selector": "CSS selector"}
-  read_text:{"type": "read_text"}
+  read_page: {"type": "read_page"} (read the visible article/main content; use when no precise element is required)
+  read_text: {"type": "read_text", "selector": "CSS selector"} (selector is REQUIRED)
+  summarize_page: {"type": "summarize_page", "max_chars": 700} (requires an earlier read_page or read_text;
+  creates the worker_result_summary used by dependent objectives)
   Example: "metadata": {"actions": [{"type": "navigate", "url": "https://github.com"}, {"type": "fill", "selector": "input[name=q]", "value": "fastmcp"}]}
   Group ALL browser steps for a task into ONE objective with a complete actions list.
   Do NOT split multi-step browser tasks into separate objectives.
+  A read action only extracts source content; it does NOT summarize it. If the objective says to summarize,
+  its actions MUST include summarize_page after the read action. Do not claim a transformation was completed
+  unless the corresponding executable action is present.
 - desktop domain: use for launching GUI applications (Notepad, Calculator, Paint, File Explorer,
   Microsoft Word, etc.), clicking buttons or UI elements in application windows, typing text into
   application windows, or capturing desktop screenshots. ALWAYS use desktop domain for GUI app
@@ -131,6 +137,27 @@ Metadata rules (REQUIRED — always populate for these domains):
   Do NOT create a separate objective just for launching — put launch + interact + report all
   in a single objective goal string.
   Do NOT split multi-step desktop tasks into separate objectives.
+  ALWAYS populate metadata.actions and metadata.postconditions for desktop objectives.
+  actions is an ordered list of direct desktop tools, e.g.
+  {"type":"launch_app","app":"notepad.exe"},
+  {"type":"focus_window","title_re":"(?i)notepad"},
+  {"type":"press_hotkey","keys":"ctrl,a"}, {"type":"press_key","key":"backspace"},
+  {"type":"type_text","text":"hello"}.
+  Allowed action types: launch_app, focus_window, type_text, press_hotkey, press_key,
+  click_button, wait, screenshot, and write_file. Use ctrl+a then backspace before
+  typing into an editor so an existing document cannot create a false pass.
+  postconditions must be machine-checkable. Supported types are window_exists, window_focused,
+  control_exists, control_enabled, control_checked, control_value_equals, control_text_contains,
+  dialog_present, dialog_absent, clipboard_contains, file_exists, file_content_contains, and file_hash_equals.
+  UI controls require a `control` locator with automation_id (preferred), title/title_re, and/or control_type.
+  File conditions require `path`; value/text/hash conditions require expected_text or expected_value.
+  For on-screen editor text use
+  {"type":"clipboard_contains","window_title_re":"(?i)notepad",
+   "expected_text":"the exact final text"}. The worker copies the final document and compares it.
+  When an action needs an earlier objective's finish summary, use exactly
+  {{dependency:objective-id:worker_result_summary}} in BOTH type_text and expected_text.
+  It is resolved to the actual runtime value immediately before execution. For multiple summaries,
+  concatenate the templates with literal newlines. Never leave postconditions empty.
 """
 
 PLANNER_USER_TEMPLATE = """\

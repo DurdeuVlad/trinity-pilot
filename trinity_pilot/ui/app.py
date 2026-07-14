@@ -1008,6 +1008,25 @@ class MainWindow(QMainWindow):
             status=final_status,
             results=results,
         )
+        if final_status in ("failed", "cancelled"):
+            failed_details: list[str] = []
+            for obj_id, entry in results.items():
+                status = str(entry.get("status", "unknown"))
+                if final_status == "cancelled" or status in ("failed", "skipped", "not_run"):
+                    reason = (
+                        entry.get("failure_reason")
+                        or entry.get("reason")
+                        or entry.get("summary")
+                        or entry.get("evidence", {}).get("worker_result_summary")
+                        or "not completed"
+                    )
+                    failed_details.append(f"{obj_id}: {reason}")
+            label = "Task cancelled" if final_status == "cancelled" else "Task failed"
+            detail_text = "\n".join(f"- {detail}" for detail in failed_details[:3])
+            self._chat.add_ai_message(
+                f"{label}.\n{detail_text or '- No objective completed.'}",
+                thought_prompt=error_msg or detail_text or label,
+            )
         terminal = ChatState.DONE if final_status == "completed" else ChatState.ERROR
         self._chat.set_state(terminal)
         self._input.setEnabled(True)
@@ -1208,6 +1227,7 @@ def run_app(test_mode: bool = False, mode: str = "multi", test_port: int | None 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     settings = Settings.from_env()
+    browser_ready, browser_preflight_message = settings.playwright_preflight()
 
     bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)
 
@@ -1215,6 +1235,10 @@ def run_app(test_mode: bool = False, mode: str = "multi", test_port: int | None 
     window.set_bridge(bridge)
     window.set_settings(settings)
     window.log("[SYSTEM] Local orchestrator ready.")
+    if browser_ready:
+        window.log(f"[SYSTEM] {browser_preflight_message}")
+    else:
+        window.log(f"[WARNING] Browser automation unavailable. {browser_preflight_message}")
 
     _window_ref: list[MainWindow] = [window]
     _install_qt_exception_hook(_window_ref)

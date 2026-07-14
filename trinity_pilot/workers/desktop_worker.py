@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from trinity_pilot.workers.agentic_mixin import (
 )
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
+from trinity_pilot.workers.worker_result import WorkerResult
 
 def _snapshot_pids() -> set[int]:
     """Return the set of all currently running PIDs (best-effort, never raises)."""
@@ -528,10 +530,15 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         }
         timeout_seconds = int(spec.metadata.get("timeout_seconds", 120))
         try:
-            result = await asyncio.wait_for(
-                self.run_loop(spec, evidence),
-                timeout=timeout_seconds,
-            )
+            actions = spec.metadata.get("actions")
+            if isinstance(actions, list) and actions:
+                result = await asyncio.wait_for(
+                    self._run_planned_actions(spec, evidence), timeout=timeout_seconds
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self.run_loop(spec, evidence), timeout=timeout_seconds
+                )
             evidence["worker_result_status"] = result.status
             evidence["worker_result_summary"] = result.summary
         except asyncio.TimeoutError:
@@ -549,6 +556,206 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             ) from exc
         validate_evidence(DomainType.DESKTOP, evidence)
         return evidence
+
+    async def _run_planned_actions(
+        self, spec: ObjectiveSpec, evidence: dict[str, Any]
+    ) -> WorkerResult:
+        """Run planner-supplied actions and finish from fresh sensor evidence."""
+        actions = spec.metadata.get("actions", [])
+        for index, action in enumerate(actions, start=1):
+            if not isinstance(action, dict):
+                raise WorkerError(f"Invalid planner desktop action at index {index}")
+            tool_name = str(action.get("type", "")).strip()
+            args = {key: value for key, value in action.items() if key != "type"}
+            if tool_name == "type_text" and isinstance(args.get("text"), str):
+                # Interactive model calls are limited to 500 characters. Planned
+                # content can be safely chunked without changing the final text.
+                text = args.pop("text")
+                for offset in range(0, len(text), 500):
+                    await self._dispatch_tool(
+                        "type_text", {**args, "text": text[offset:offset + 500]}, evidence
+                    )
+                continue
+            result = await self._dispatch_tool(tool_name, args, evidence)
+            if isinstance(result, str) and " failed" in result.lower()[:160]:
+                raise WorkerError(f"Planned desktop action {tool_name!r} failed: {result}")
+
+        completion = await self._verify_planned_completion(spec, evidence)
+        evidence["completion"] = completion
+        return WorkerResult(
+            status="success" if completion["passed"] else "failure",
+            summary=completion["summary"],
+        )
+
+    async def _verify_planned_completion(
+        self, spec: ObjectiveSpec, evidence: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Evaluate declared desktop postconditions with fresh UI/file sensors."""
+        conditions = spec.metadata.get("postconditions") or []
+        if not isinstance(conditions, list) or not conditions:
+            return {
+                "passed": False,
+                "summary": "Planner supplied desktop actions without postconditions",
+            }
+
+        checks: list[dict[str, Any]] = []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                checks.append({"passed": False, "detail": "Invalid postcondition"})
+                continue
+            checks.append(await self._evaluate_postcondition(condition, evidence))
+
+        passed = bool(checks) and all(check["passed"] for check in checks)
+        if self._target_window:
+            await self._dispatch_tool(
+                "screenshot", {"mode": "app", "app_title": self._target_window}, evidence
+            )
+        return {
+            "passed": passed,
+            "checks": checks,
+            "summary": "All declared desktop postconditions passed" if passed else "One or more declared desktop postconditions failed",
+        }
+
+    async def _evaluate_postcondition(
+        self, condition: dict[str, Any], evidence: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return one structured result; unsupported/inaccessible is never success."""
+        kind = str(condition.get("type", ""))
+        title_re = str(condition.get("window_title_re") or self._target_window or "")
+        expected = str(
+            condition.get("expected_text", condition.get("expected_value", condition.get("expected", "")))
+        )
+        base: dict[str, Any] = {"type": kind, "target": title_re, "passed": False}
+
+        if kind in {"window_exists", "window_focused", "dialog_present", "dialog_absent"}:
+            exists = self._window_exists(title_re)
+            if kind == "window_exists":
+                base.update(passed=exists, detail="Window found" if exists else "Window not found")
+            elif kind == "window_focused":
+                active = self._get_active_window_title() or ""
+                base.update(passed=bool(title_re and re.search(title_re, active, re.I)), observed=active,
+                            detail="Target window is foreground" if base["passed"] else "Target window is not foreground")
+            elif kind == "dialog_present":
+                base.update(passed=exists, detail="Dialog found" if exists else "Dialog not found")
+            else:
+                base.update(passed=not exists, detail="Dialog absent" if not exists else "Unexpected dialog remains")
+            return base
+
+        if kind == "clipboard_contains":
+            if not expected:
+                base["detail"] = "clipboard_contains requires expected_text"
+                return base
+            if title_re:
+                if not await self._focus_window(title_re, evidence):
+                    base["detail"] = "Could not focus target window for clipboard readback"
+                    return base
+                self._target_window = title_re
+                await self._dispatch_tool("press_hotkey", {"keys": "ctrl,a"}, evidence)
+                await self._dispatch_tool("press_hotkey", {"keys": "ctrl,c"}, evidence)
+            actual = self._read_clipboard_text()
+            evidence["clipboard_text"] = actual
+            base.update(
+                passed=expected in actual,
+                expected_length=len(expected), actual_length=len(actual),
+                detail="Clipboard readback contains expected text" if expected in actual else "Clipboard readback does not contain expected text",
+            )
+            return base
+
+        if kind in {"file_exists", "file_content_contains", "file_hash_equals"}:
+            raw_path = str(condition.get("path", "")).strip()
+            if not raw_path:
+                base["detail"] = f"{kind} requires path"
+                return base
+            path = Path(raw_path)
+            exists = path.is_file()
+            if kind == "file_exists":
+                base.update(passed=exists, observed=str(path), detail="File exists" if exists else "File missing")
+                return base
+            if not exists:
+                base["detail"] = "File missing"
+                return base
+            if kind == "file_content_contains":
+                if not expected:
+                    base["detail"] = "file_content_contains requires expected_text"
+                    return base
+                try:
+                    actual = path.read_text(encoding="utf-8")
+                except Exception as exc:
+                    base["detail"] = f"Cannot read file: {exc}"
+                    return base
+                base.update(passed=expected in actual, actual_length=len(actual),
+                            detail="File contains expected text" if expected in actual else "File does not contain expected text")
+                return base
+            actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            base.update(passed=bool(expected and actual_hash.lower() == expected.lower()), observed_hash=actual_hash,
+                        detail="File hash matches" if actual_hash.lower() == expected.lower() else "File hash mismatch")
+            return base
+
+        if kind in {"control_exists", "control_enabled", "control_checked", "control_value_equals", "control_text_contains"}:
+            control, error = self._find_uia_control(title_re, condition.get("control"))
+            if control is None:
+                base["detail"] = error
+                return base
+            if kind == "control_exists":
+                base.update(passed=True, detail="Control found")
+                return base
+            try:
+                if kind == "control_enabled":
+                    observed = bool(control.is_enabled())
+                    base.update(passed=observed, observed=observed, detail="Control enabled" if observed else "Control disabled")
+                elif kind == "control_checked":
+                    reader = getattr(control, "get_toggle_state", None) or getattr(control, "get_check_state", None)
+                    if reader is None:
+                        raise RuntimeError("control does not expose a checked/toggle state")
+                    observed = bool(reader())
+                    wanted = str(condition.get("expected", "true")).lower() in {"true", "1", "checked"}
+                    base.update(passed=observed == wanted, observed=observed,
+                                detail="Control checked state matches" if observed == wanted else "Control checked state mismatch")
+                else:
+                    observed = str(getattr(control, "get_value", control.window_text)() or control.window_text())
+                    passed = observed == expected if kind == "control_value_equals" else expected in observed
+                    base.update(passed=passed, observed=observed[:1000],
+                                detail="Control value matches" if passed else "Control value mismatch")
+            except Exception as exc:
+                base["detail"] = f"Could not read control state: {exc}"
+            return base
+
+        base["detail"] = f"Unsupported postcondition: {kind!r}"
+        return base
+
+    @staticmethod
+    def _window_exists(title_re: str) -> bool:
+        if not title_re or sys.platform != "win32":
+            return False
+        try:
+            from pywinauto import findwindows
+            return bool(findwindows.find_windows(title_re=title_re, visible_only=True))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _find_uia_control(title_re: str, control_spec: Any) -> tuple[Any | None, str]:
+        if not title_re or not isinstance(control_spec, dict):
+            return None, "Control checks require window_title_re and a control locator"
+        try:
+            from pywinauto import Application
+            app = Application(backend="uia").connect(title_re=title_re, timeout=5)
+            window = app.top_window()
+            locator = {
+                key: control_spec[key]
+                for key in ("auto_id", "title", "title_re", "control_type")
+                if key in control_spec
+            }
+            if "automation_id" in control_spec:
+                locator["auto_id"] = control_spec["automation_id"]
+            if not locator:
+                return None, "Control locator must contain auto_id, title, title_re, or control_type"
+            control = window.child_window(**locator)
+            if not control.exists(timeout=2):
+                return None, "Control not found"
+            return control, ""
+        except Exception as exc:
+            return None, f"UI Automation lookup failed: {exc}"
 
     async def _dispatch_tool(
         self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]
@@ -1077,6 +1284,31 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             pass  # best-effort; don't block the input operation
 
     async def _type_text(self, text: str, interval: float, evidence: dict[str, Any]) -> None:
+        # send_keys interprets parentheses, braces, plus, and percent as key
+        # syntax. Clipboard paste preserves literal user content and is faster
+        # for multi-paragraph reports.
+        try:
+            import subprocess
+            result = subprocess.run(
+                [
+                    "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                    "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+                ],
+                input=text,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or f"Set-Clipboard exited {result.returncode}")
+            from pywinauto.keyboard import send_keys
+            send_keys("^v", pause=interval)
+            evidence["action_log"].append("Typed via clipboard paste")
+            if self._target_window:
+                evidence["visible_text"] = evidence.get("visible_text", "") + text
+            return
+        except Exception as exc:
+            evidence["action_log"].append(f"clipboard paste fallback failed: {exc}")
         try:
             from pywinauto.keyboard import send_keys
             send_keys(text, pause=interval, with_spaces=True, with_tabs=True, with_newlines=True)

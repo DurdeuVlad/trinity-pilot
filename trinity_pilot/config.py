@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -26,6 +27,48 @@ class Settings:
     def validate(self) -> None:
         if not self.gemini_api_key:
             raise ConfigError("GEMINI_API_KEY is required but not set.")
+
+    @staticmethod
+    def playwright_preflight() -> tuple[bool, str]:
+        """Check that this Python environment has the Chromium revision Playwright expects."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return False, "Playwright is not installed in this Python environment."
+
+        try:
+            with sync_playwright() as playwright:
+                executable = Path(playwright.chromium.executable_path)
+        except Exception as exc:
+            return False, f"Playwright driver preflight failed: {exc}"
+
+        if executable.is_file():
+            return True, f"Playwright Chromium ready: {executable}"
+        return False, (
+            f"Playwright Chromium is missing: {executable}. "
+            "Run 'playwright install chromium' using this project's Python environment."
+        )
+
+    @staticmethod
+    async def playwright_preflight_async() -> tuple[bool, str]:
+        """Async equivalent for live workers and async test harnesses."""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return False, "Playwright is not installed in this Python environment."
+
+        try:
+            async with async_playwright() as playwright:
+                executable = Path(playwright.chromium.executable_path)
+        except Exception as exc:
+            return False, f"Playwright driver preflight failed: {exc}"
+
+        if executable.is_file():
+            return True, f"Playwright Chromium ready: {executable}"
+        return False, (
+            f"Playwright Chromium is missing: {executable}. "
+            "Run 'playwright install chromium' using this project's Python environment."
+        )
 
     @classmethod
     def from_env(cls, dotenv_path: str | None = None) -> "Settings":
