@@ -16,4 +16,4 @@ Use the terminal to count how many .txt files are currently on the Desktop. Repo
 
 Open the Wikipedia pages for Cat and Dog. Read the main content of each page and produce one concise factual paragraph summarizing each article in chat.
 
-Open https://en.wikipedia.org/wiki/Dog, read the main article content, and provide one concise factual paragraph in chat.
+Write and run a simple python script that takes user from https://jsonplaceholder.typicode.com/users and prints them stdout

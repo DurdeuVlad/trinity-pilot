@@ -26,7 +26,7 @@ from trinity_pilot.workers.evidence_schema import validate_evidence
 from trinity_pilot.workers.write_verification import verify_and_write_file
 
 _MAX_OUTPUT_CHARS = 10_000
-_CMD_TIMEOUT = 30.0
+_CMD_TIMEOUT = 60.0
 
 
 def _kill_process_tree(pid: int) -> None:
