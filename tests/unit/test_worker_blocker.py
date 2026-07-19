@@ -112,12 +112,14 @@ async def test_engine_catches_blocker_before_worker_error(tmp_path, monkeypatch)
     from trinity_pilot.orchestrator.fsm import ObjectiveState
     from trinity_pilot.memory.store import ObjectiveStateStore
 
-    worker = _BlockerWorker()
     analyser = _make_ask_user_analyser()
 
     monkeypatch.setattr(engine_mod, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine_mod, "ObjectiveReviewer", _Reviewer)
-    monkeypatch.setattr(engine_mod.WorkerRouter, "route", lambda self, spec: worker)
+    async def dispatch(self, domain, spec):
+        return await _BlockerWorker().execute(spec)
+
+    monkeypatch.setattr(engine_mod.MCPClientPool, "dispatch", dispatch)
     monkeypatch.setattr(engine_mod, "OrchestratorAnalyser", lambda llm: analyser)
 
     db_path = tmp_path / "state.db"
@@ -155,7 +157,10 @@ async def test_engine_auto_steers_on_worker_blocker(tmp_path, monkeypatch):
 
     monkeypatch.setattr(engine_mod, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine_mod, "ObjectiveReviewer", _Reviewer)
-    monkeypatch.setattr(engine_mod.WorkerRouter, "route", lambda self, spec: worker)
+    async def dispatch(self, domain, spec):
+        return await worker.execute(spec)
+
+    monkeypatch.setattr(engine_mod.MCPClientPool, "dispatch", dispatch)
     monkeypatch.setattr(engine_mod, "OrchestratorAnalyser", lambda llm: analyser)
 
     db_path = tmp_path / "state.db"

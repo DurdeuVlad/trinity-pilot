@@ -1,4 +1,4 @@
-"""Terminal worker unit tests — uses mock LLM for the agentic loop."""
+"""Terminal worker unit tests â€” uses mock LLM for the agentic loop."""
 from __future__ import annotations
 
 import sys
@@ -95,7 +95,7 @@ class TestTerminalWorker:
     async def test_exit_code_nonzero_run_command_returns_error_observation(self):
         # When a command exits non-zero, _dispatch_tool returns an error string.
         # The LLM then calls finish(failure). run_loop returns WorkerResult(failure).
-        # execute() does NOT raise WorkerError for failure status — it returns evidence.
+        # execute() does NOT raise WorkerError for failure status â€” it returns evidence.
         llm = _MockLLM([
             _run_command("exit 1", allow_failure=True),
             _finish("failure", "command failed with exit code 1"),
@@ -145,17 +145,6 @@ class TestTerminalWorker:
         if captured.get("workspace"):
             assert not os.path.exists(captured["workspace"]), "workspace not cleaned up"
 
-    def test_extract_command_backtick(self):
-        cmd = TerminalWorker._extract_command("run `ls -la` in the workspace")
-        assert cmd == "ls -la"
-
-    def test_extract_command_run_prefix(self):
-        cmd = TerminalWorker._extract_command("execute python script.py")
-        assert cmd == "python script.py"
-
-    def test_extract_command_none_on_no_match(self):
-        cmd = TerminalWorker._extract_command("vague goal with no command")
-        assert cmd is None
 
     async def test_created_files_captured_in_evidence(self):
         import tempfile, os
@@ -208,17 +197,10 @@ class TestTerminalWorker:
         assert run_command_entries, "expected a run_command transcript entry"
         assert "[VERIFY:deterministic]" in run_command_entries[0]["tool_result"]
         assert "exit_code=0" in run_command_entries[0]["tool_result"]
-        # Tiered verify is in-loop only — never written to evidence directly.
+        # Tiered verify is in-loop only â€” never written to evidence directly.
         assert "verify_action" not in evidence
         assert all(not k.startswith("VERIFY") for k in evidence)
 
-    def test_extract_command_backtick_wins_over_run_prefix(self):
-        cmd = TerminalWorker._extract_command("run echo hello and also run `ls -la`")
-        assert cmd == "ls -la"
-
-    def test_extract_command_backtick_only_whitespace_returns_none(self):
-        cmd = TerminalWorker._extract_command("run `   ` in workspace")
-        assert not cmd
 
     async def test_metadata_command_used_when_present(self):
         # The agentic path sees the goal via LLM. We test that when the LLM

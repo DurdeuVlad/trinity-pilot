@@ -33,11 +33,6 @@ def _spec(
     )
 
 
-class _Worker:
-    async def execute(self, spec: ObjectiveSpec) -> dict:
-        return {"stdout": "hello", "exit_code": 0}
-
-
 class _Reviewer:
     def __init__(self, provider: object) -> None:
         pass
@@ -63,7 +58,11 @@ async def test_orchestrator_success_updates_state_and_emits_signals(tmp_path, mo
 
     monkeypatch.setattr(engine, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine, "ObjectiveReviewer", _Reviewer)
-    monkeypatch.setattr(engine.WorkerRouter, "route", lambda self, spec: _Worker())
+    async def dispatch(self, domain, spec):
+        assert domain is DomainType.TERMINAL
+        return {"stdout": "hello", "exit_code": 0}
+
+    monkeypatch.setattr(engine.MCPClientPool, "dispatch", dispatch)
 
     db_path = tmp_path / "state.db"
     orchestrator = AsyncTaskOrchestrator(

@@ -16,7 +16,7 @@ from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 from trinity_pilot.orchestrator.signals import WorkerStepSignal
 from trinity_pilot.workers.action_verification import verify_action
 from trinity_pilot.workers.base import WorkerError, WorkerBlocker
-from trinity_pilot.workers.worker_result import WorkerResult
+from trinity_pilot.workers.worker_result import ToolCallRecord, WorkerResult
 
 # ---------------------------------------------------------------------------
 # Control-flow signals returned by _dispatch_tool
@@ -85,6 +85,28 @@ _report_blocking_decl = genai_types.FunctionDeclaration(
     ),
 )
 
+_todo_write_decl = genai_types.FunctionDeclaration(
+    name="todo_write",
+    description="Replace the objective todo list. Call this first to plan the work.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={"items": genai_types.Schema(type=genai_types.Type.ARRAY, items=genai_types.Schema(type=genai_types.Type.STRING))},
+        required=["items"],
+    ),
+)
+_todo_read_decl = genai_types.FunctionDeclaration(
+    name="todo_read", description="Read the current objective todo list.",
+    parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
+)
+_todo_check_decl = genai_types.FunctionDeclaration(
+    name="todo_check", description="Mark a zero-based todo item complete.",
+    parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={"index": genai_types.Schema(type=genai_types.Type.INTEGER)}, required=["index"]),
+)
+_todo_add_decl = genai_types.FunctionDeclaration(
+    name="todo_add", description="Append one todo item.",
+    parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={"item": genai_types.Schema(type=genai_types.Type.STRING)}, required=["item"]),
+)
+
 
 _take_screenshot_decl = genai_types.FunctionDeclaration(
     name="screenshot",
@@ -146,10 +168,22 @@ class AgenticWorkerMixin:
         self._llm = llm
         self._signals_queue: asyncio.Queue | None = None
         self._task_id: str = ""
+        self._todo_items: list[dict[str, Any]] = []
 
     def _worker_tools(self) -> list[genai_types.Tool]:
         """Return the tool list for this worker. Subclasses override to add domain tools."""
-        return [_make_tool([_finish_decl, _report_blocking_decl, _take_screenshot_decl])]
+        return [_make_tool([
+            _todo_write_decl, _todo_read_decl, _todo_check_decl, _todo_add_decl,
+            _finish_decl, _report_blocking_decl, _take_screenshot_decl,
+        ])]
+
+    def _todo_context(self) -> str:
+        if not self._todo_items:
+            return "[TODO]\n(no plan written yet)"
+        return "[TODO]\n" + "\n".join(
+            f"{'[x]' if item['done'] else '[ ]'} {index}: {item['text']}"
+            for index, item in enumerate(self._todo_items)
+        )
 
     def _worker_system_prompt(self) -> str:
         """Return the system prompt for this worker. Subclasses override."""
@@ -186,6 +220,21 @@ class AgenticWorkerMixin:
             except Exception as exc:
                 evidence.setdefault("action_log", []).append(f"screenshot failed: {exc}")
                 return f"Screenshot failed: {exc}"
+
+        if tool_name == "todo_write":
+            self._todo_items = [{"text": str(item), "done": False} for item in args.get("items", [])]
+            return self._todo_context()
+        if tool_name == "todo_read":
+            return self._todo_context()
+        if tool_name == "todo_check":
+            index = int(args.get("index", -1))
+            if not 0 <= index < len(self._todo_items):
+                return f"Invalid todo index {index}.\n{self._todo_context()}"
+            self._todo_items[index]["done"] = True
+            return self._todo_context()
+        if tool_name == "todo_add":
+            self._todo_items.append({"text": str(args.get("item", "")), "done": False})
+            return self._todo_context()
 
         if tool_name == "finish":
             status = args.get("status", "success")
@@ -277,7 +326,8 @@ class AgenticWorkerMixin:
         parts.append(f"GOAL: {spec.goal}")
         if steering:
             parts.append(f"STEERING CONTEXT: {steering}")
-        parts.append("Begin.")
+        parts.append(self._todo_context())
+        parts.append("Begin by calling todo_write with a concise plan. Call exactly one tool per turn.")
         return "\n\n".join(parts)
 
     async def _mid_episode_reflection(
@@ -355,7 +405,6 @@ class AgenticWorkerMixin:
                         "wall_limit": wall_limit,
                         "elapsed": round(elapsed, 1),
                     },
-                    hypothesis_id="wall-timeout",
                     span="worker",
                 )
                 return WorkerResult(
@@ -526,6 +575,15 @@ class AgenticWorkerMixin:
                 span="worker",
             )
             dispatch_result = await self._dispatch_tool(tool_name, args, evidence)
+            if isinstance(dispatch_result, _FinishSignal):
+                log_result = {"control": tool_name, "status": dispatch_result.status, "summary": dispatch_result.summary}
+            elif isinstance(dispatch_result, _BlockerSignal):
+                log_result = {"control": tool_name, "reason": dispatch_result.reason}
+            else:
+                log_result = {"observation": str(dispatch_result[0] if isinstance(dispatch_result, tuple) else dispatch_result)[:2000]}
+            evidence.setdefault("tool_call_log", []).append(
+                ToolCallRecord(tool=tool_name, args=dict(args), result=log_result).__dict__
+            )
 
             # Control-flow signals
             if isinstance(dispatch_result, _FinishSignal):
@@ -549,6 +607,7 @@ class AgenticWorkerMixin:
                     evidence=evidence,
                     steps_taken=steps_taken + 1,
                     tokens_used=tokens_used,
+                    tool_call_log=[ToolCallRecord(**record) for record in evidence.get("tool_call_log", [])],
                 )
 
             if isinstance(dispatch_result, _BlockerSignal):
@@ -572,6 +631,7 @@ class AgenticWorkerMixin:
                     evidence=evidence,
                     steps_taken=steps_taken + 1,
                     tokens_used=tokens_used,
+                    tool_call_log=[ToolCallRecord(**record) for record in evidence.get("tool_call_log", [])],
                 )
                 raise WorkerBlocker(dispatch_result.reason, wr)
 
@@ -580,7 +640,7 @@ class AgenticWorkerMixin:
             if isinstance(dispatch_result, tuple):
                 observation, img_bytes = dispatch_result
             else:
-                observation = dispatch_result  # type: ignore[assignment]
+                observation = str(dispatch_result)
             _obs_str = observation if isinstance(observation, str) else str(observation)
             trace_emit(
                 "agentic_mixin.py:run_loop",
@@ -609,8 +669,11 @@ class AgenticWorkerMixin:
             if _dedup_prefix:
                 observation = f"{_dedup_prefix}\n\n{observation}"
             snapshot = self._worker_state_snapshot(evidence)
+            todo_context = self._todo_context()
             if snapshot:
-                observation = f"{observation}\n\n[STATE]\n{snapshot}"
+                observation = f"{observation}\n\n{todo_context}\n\n[STATE]\n{snapshot}"
+            else:
+                observation = f"{observation}\n\n{todo_context}"
             _tx_entry["tool_result"] = observation[:2000] if isinstance(observation, str) else str(observation)[:2000]
             evidence.setdefault("llm_transcript", []).append(_tx_entry)
 

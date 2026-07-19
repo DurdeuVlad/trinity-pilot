@@ -32,41 +32,38 @@ class ObjectivePlanner:
     async def plan(self, user_request: str) -> list[ObjectiveSpec]:
         import time as _time
 
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
         t0 = _time.monotonic()
         user_msg = PLANNER_USER_TEMPLATE.format(user_request=user_request)
         messages = [LLMMessage(role="user", content=user_msg)]
 
-        agent_dbg(
+        emit(
             "planner.py:plan",
             "llm_call_start",
             {"request_preview": user_request[:120]},
-            hypothesis_id="H1-planner-hang",
         )
         try:
             response = await self._provider.complete(
                 messages=messages,
                 system=PLANNER_SYSTEM,
             )
-            agent_dbg(
+            emit(
                 "planner.py:plan",
                 "llm_call_done",
                 {
                     "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                     "response_len": len(response.content or ""),
                 },
-                hypothesis_id="H1-planner-hang",
             )
         except Exception as exc:
-            agent_dbg(
+            emit(
                 "planner.py:plan",
                 "llm_call_failed",
                 {
                     "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                     "error": str(exc)[:500],
                 },
-                hypothesis_id="H1-planner-hang",
             )
             raise PlanningError(f"LLM call failed: {exc}") from exc
 

@@ -19,6 +19,7 @@ file_stat        — check file/directory existence, size, and mtime (no content
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import os
 import subprocess
@@ -45,6 +46,11 @@ TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("process_list", SERVER_NAME, "sensor", "Enumerate running processes."),
     ToolMetadata("clipboard_read", SERVER_NAME, "sensor", "Read clipboard text."),
     ToolMetadata("file_stat", SERVER_NAME, "sensor", "Read file metadata without content."),
+    ToolMetadata("active_window", SERVER_NAME, "sensor", "Read the foreground window."),
+    ToolMetadata("screen_info", SERVER_NAME, "sensor", "Read monitor geometry."),
+    ToolMetadata("read_file", SERVER_NAME, "sensor", "Read a text file."),
+    ToolMetadata("file_hash", SERVER_NAME, "sensor", "Hash a file with SHA-256."),
+    ToolMetadata("window_exists", SERVER_NAME, "sensor", "Check whether a window exists."),
 )
 
 
@@ -97,6 +103,53 @@ def screenshot(region: dict | None = None) -> dict:
         "width": img.width,
         "height": img.height,
     }
+
+
+@mcp.tool()
+def active_window() -> dict:
+    try:
+        import win32gui
+        import win32process
+        hwnd = win32gui.GetForegroundWindow()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return {"title": win32gui.GetWindowText(hwnd), "pid": pid}
+    except Exception as exc:
+        return {"title": "", "pid": 0, "error": str(exc)}
+
+
+@mcp.tool()
+def screen_info() -> dict:
+    try:
+        import pyautogui
+        size = pyautogui.size()
+        return {"monitors": [{"x": 0, "y": 0, "width": size.width, "height": size.height}]}
+    except Exception as exc:
+        return {"monitors": [], "error": str(exc)}
+
+
+@mcp.tool()
+def read_file(path: str, encoding: str = "utf-8") -> dict:
+    try:
+        return {"path": path, "content": Path(path).read_text(encoding=encoding)}
+    except Exception as exc:
+        return {"path": path, "error": str(exc)}
+
+
+@mcp.tool()
+def file_hash(path: str) -> dict:
+    try:
+        return {"path": path, "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+    except Exception as exc:
+        return {"path": path, "error": str(exc)}
+
+
+@mcp.tool()
+def window_exists(title_re: str) -> dict:
+    import re
+    try:
+        return {"exists": any(re.search(title_re, item["title"], re.I) for item in window_list().get("windows", []))}
+    except Exception as exc:
+        return {"exists": False, "error": str(exc)}
 
 
 @mcp.tool()

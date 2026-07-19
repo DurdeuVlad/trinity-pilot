@@ -11,10 +11,10 @@ Run: python -m trinity_pilot.mcp.vm_bridge_server
 from __future__ import annotations
 
 import base64
+import asyncio
 import io
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -98,10 +98,7 @@ def vm_info(vm_name: str) -> dict:
     }
 
     # Check VDI last write time
-    try:
-        import glob
-        vdi_files = [v for k, v in props.items() if k.startswith("ImageUUID") or "vdi" in v.lower()]
-        # Find VDI via disk path in props
+    try:        # Find VDI via disk path in props
         for k, v in props.items():
             if v.endswith(".vdi") and Path(v).exists():
                 result["vdi_mtime"] = Path(v).stat().st_mtime
@@ -152,6 +149,44 @@ def vm_snapshot(vm_name: str, snapshot_name: str, description: str = "") -> dict
     return _vbox(*args, timeout=120)
 
 
+@mcp.tool()
+def vm_list() -> dict:
+    """List registered VirtualBox VMs; an empty list is valid."""
+    result = _vbox("list", "vms")
+    if not result["ok"]:
+        return {"ok": False, "vms": [], "error": result["stderr"]}
+    vms = []
+    for line in result["stdout"].splitlines():
+        if '"' in line:
+            name = line.split('"')[1]
+            vms.append({"name": name, "raw": line})
+    return {"ok": True, "vms": vms}
+
+
+@mcp.tool()
+def vm_startvm(vm_name: str, type: str = "headless") -> dict:
+    return _vbox("startvm", vm_name, "--type", type, timeout=120)
+
+
+@mcp.tool()
+def vm_restore_snapshot(vm_name: str, snapshot_name: str) -> dict:
+    return _vbox("snapshot", vm_name, "restore", snapshot_name, timeout=120)
+
+
+@mcp.tool()
+def vm_list_snapshots(vm_name: str) -> dict:
+    result = _vbox("snapshot", vm_name, "list", "--machinereadable")
+    if not result["ok"]:
+        return {"ok": False, "snapshots": [], "error": result["stderr"]}
+    snapshots = [line.split('=', 1)[1].strip('"') for line in result["stdout"].splitlines() if line.startswith("SnapshotName")]
+    return {"ok": True, "snapshots": snapshots}
+
+
+@mcp.tool()
+def vm_delete_snapshot(vm_name: str, snapshot_name: str) -> dict:
+    return _vbox("snapshot", vm_name, "delete", snapshot_name, timeout=120)
+
+
 # ---------------------------------------------------------------------------
 # Keyboard injection tools
 # ---------------------------------------------------------------------------
@@ -199,7 +234,7 @@ def vm_key(vm_name: str, scancodes: list[str]) -> dict:
 
 
 @mcp.tool()
-def vm_unlock(vm_name: str, password: str) -> dict:
+async def vm_unlock(vm_name: str, password: str) -> dict:
     """Attempt to unlock a Windows VM from the lock screen.
 
     Sends: Up arrow (wake lock screen) → waits → types password → Enter.
@@ -217,12 +252,12 @@ def vm_unlock(vm_name: str, password: str) -> dict:
     # Wake lock screen with Up arrow (swipe up gesture equivalent)
     r = _vbox("controlvm", vm_name, "keyboardputscancode", "e0", "48", "e0", "c8")
     steps.append({"action": "up_arrow", "ok": r["ok"]})
-    time.sleep(2)
+    await asyncio.sleep(2)
 
     # Type password
     r = _vbox("controlvm", vm_name, "keyboardputstring", password)
     steps.append({"action": "type_password", "ok": r["ok"]})
-    time.sleep(0.5)
+    await asyncio.sleep(0.5)
 
     # Press Enter
     r = _vbox("controlvm", vm_name, "keyboardputscancode", "1c", "9c")

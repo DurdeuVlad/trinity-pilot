@@ -62,7 +62,7 @@ def _record_created_files_from_command(command: str, evidence: dict[str, Any]) -
     """Detect files created via run_command (e.g. New-Item, Out-File, redirection) and
     append them to evidence["created_files"], which otherwise only gets populated by the
     write_file tool. Planner-authored checklists checking "created_files" false-fail
-    real, successful run_command-based file creation without this — a recurring bug class
+    real, successful run_command-based file creation without this ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a recurring bug class
     (see CHANGELOG "Fixes" entries for T6 and HH04).
 
     Heuristic: any quoted absolute Windows path mentioned in the command that exists as a
@@ -95,17 +95,17 @@ Available tools:
 
 RULES:
 - After each ACTION tool call, read its result before proceeding. If a tool failed or
-  produced unexpected state (wrong exit code, unexpected output), adapt — do not
+  produced unexpected state (wrong exit code, unexpected output), adapt ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â do not
   blindly continue to the next planned step.
 - Always use backslash-escaped paths in run_command: C:\\\\Users\\\\User\\\\Documents\\\\file.txt
 - For write_file paths you may use forward slashes: C:/Users/User/Documents/file.txt
 - If the user asked to save a file to a SPECIFIC path, use EXACTLY that path. Do NOT redirect to Desktop.
 - When listing or counting files in a directory, ALWAYS use -Recurse unless told otherwise.
   Example: Get-ChildItem "C:\\path\\to\\dir" -Filter "*.py" -Recurse
-  Without -Recurse you only see the top-level folder — that is almost always wrong.
+  Without -Recurse you only see the top-level folder ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â that is almost always wrong.
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
-- If write_file returns PERMISSION DENIED, call finish immediately with status=failure — OS permission errors are definitive and cannot be retried.
+- If write_file returns PERMISSION DENIED, call finish immediately with status=failure ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â OS permission errors are definitive and cannot be retried.
 - For file copy or move operations, ALWAYS use absolute paths for BOTH source and destination.
   Example: Copy-Item "C:\\Users\\trinity\\Desktop\\source.txt" "C:\\Users\\trinity\\Desktop\\dest.txt"
   Never use relative paths for Desktop file operations.
@@ -116,18 +116,18 @@ RULES:
   New-Item -ItemType File "C:\\path\\a.txt","C:\\path\\b.txt" -Force
   Then: Get-ChildItem "C:\\path" to confirm all files are present.
 - PREFER PowerShell-native cmdlets/variables over launching a separate .exe when an equivalent
-  exists — launching a standalone executable (git.exe, hostname.exe, etc.) can hang for the full
+  exists ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â launching a standalone executable (git.exe, hostname.exe, etc.) can hang for the full
   command timeout in this environment, while built-in cmdlets (Test-Path, Get-ChildItem,
   Get-Process, Get-Command, Get-Content) never do. Examples: use $env:COMPUTERNAME instead of
   hostname.exe; use $env:USERNAME instead of whoami.exe; use (Get-Command <name>).Version instead
   of invoking the program with --version.
   When no native equivalent exists (e.g. running a .py script requires python.exe), launching the
-  external process is unavoidable — accept that it may be slow.
+  external process is unavoidable ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â accept that it may be slow.
 """
 
 # Patterns for direct command extraction from goal strings
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
-# Match "run/execute/exec <cmd>" — strip trailing " in <phrase>" if present
+# Match "run/execute/exec <cmd>" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â strip trailing " in <phrase>" if present
 _EXEC_PREFIX_RE = re.compile(
     r"(?:run|execute|exec)\s+(?!`)(.+?)(?:\s+in\b.+)?$", re.IGNORECASE
 )
@@ -194,7 +194,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
         return (
             f"WORKSPACE DIRECTORY: {workspace}\n"
             "Use this path for all file operations. "
-            "run_command CWD is already set to this directory — "
+            "run_command CWD is already set to this directory ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â "
             "prefer relative paths (e.g. '.\\\\file.txt') over absolute."
         )
 
@@ -308,7 +308,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
                 "PermissionError" in f.get("error", "") for f in evidence["write_file_failures"]
             ):
                 return (
-                    f"PERMISSION DENIED: Cannot write to {path} — "
+                    f"PERMISSION DENIED: Cannot write to {path} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â "
                     "the file is read-only or the path is OS-protected. "
                     "This is a definitive system restriction. Call finish with status=failure."
                 )
@@ -319,145 +319,28 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             return await super()._dispatch_tool(tool_name, args, evidence)
 
     # ------------------------------------------------------------------
-    # Legacy objective runner (kept for existing tests)
-    # ------------------------------------------------------------------
-
-    async def _run_objective(
-        self,
-        workspace: str,
-        spec: ObjectiveSpec,
-        evidence: dict[str, Any],
-    ) -> None:
-        shell_raw = "shell_raw" in (spec.required_capabilities or [])
-        metadata_cmd = str(spec.metadata.get("command", "")).strip()
-        direct_cmd = metadata_cmd if metadata_cmd else self._extract_command(spec.goal)
-        if direct_cmd is None:
-            raise WorkerError(
-                f"No runnable command found in goal: {spec.goal!r}"
-            )
-
-        evidence["action_log"].append("Generated 1 action steps")
-        stdout, stderr, exit_code = await self._run_command(
-            direct_cmd, cwd=workspace, shell_raw=shell_raw
-        )
-        evidence["stdout"] = stdout[-_MAX_OUTPUT_CHARS:]
-        evidence["stderr"] = stderr[-_MAX_OUTPUT_CHARS:]
-        evidence["exit_code"] = exit_code
-        evidence["action_log"].append(
-            f"run: exit={exit_code} stdout={stdout[:200]}"
-        )
-        if exit_code != 0:
-            raise WorkerError(
-                f"Command failed (exit {exit_code}): {stderr[:500]}"
-            )
-
-        # List files created in workspace
-        created: list[str] = []
-        for root, _, files in os.walk(workspace):
-            for f in files:
-                created.append(
-                    str(Path(root) / f).replace(workspace + os.sep, "", 1)
-                )
-        evidence["created_files"] = created
-
-    # ------------------------------------------------------------------
-    # Backward-compatible helpers (kept for existing tests)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_command(goal: str) -> str | None:
-        """Extract a runnable command from a goal string."""
-        m = _BACKTICK_RE.search(goal)
-        if m:
-            cmd = m.group(1).strip()
-            return cmd if cmd else None
-        m = _EXEC_PREFIX_RE.search(goal)
-        if m:
-            cmd = m.group(1).strip()
-            return cmd if cmd else None
-        return None
 
     @staticmethod
     async def _run_command(
-        command: str,
-        cwd: str,
-        shell_raw: bool = False,
+        command: str, cwd: str, shell_raw: bool = False,
     ) -> tuple[str, str, int]:
-        """Run a shell command."""
+        """Run one command, killing its entire process tree on timeout."""
         if shell_raw:
             proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
+                command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
             )
         else:
-            if sys.platform == "win32":
-                proc = await asyncio.create_subprocess_exec(
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                )
-            else:
-                proc = await asyncio.create_subprocess_exec(
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=_CMD_TIMEOUT
+            proc = await asyncio.create_subprocess_exec(
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
             )
-        except asyncio.TimeoutError:
-            # Killing only `proc` (powershell.exe) does not kill grandchildren it
-            # spawned (e.g. git.exe). If a grandchild is still alive holding a
-            # duplicate handle to the stdout/stderr pipe, the pipe's write end never
-            # closes and proc.communicate() blocks forever even after proc.kill() —
-            # a known Windows ProactorEventLoop subprocess-pipe gotcha. Kill the
-            # whole process tree, not just the immediate child.
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=_CMD_TIMEOUT)
+        except asyncio.TimeoutError as exc:
             _kill_process_tree(proc.pid)
             try:
                 await asyncio.wait_for(proc.communicate(), timeout=5)
-            except asyncio.TimeoutError as exc:
-                raise WorkerError(
-                    f"Command timed out after {_CMD_TIMEOUT}s and did not terminate cleanly: {command}"
-                ) from exc
-            raise WorkerError(f"Command timed out after {_CMD_TIMEOUT}s: {command}")
-        return (
-            stdout_bytes.decode(errors="replace"),
-            stderr_bytes.decode(errors="replace"),
-            proc.returncode or 0,
-        )
-
-    @staticmethod
-    async def _run_powershell(command: str, cwd: str) -> tuple[str, str, int]:
-        """Backward-compat alias for _run_command."""
-        return await TerminalWorker._run_command(command, cwd=cwd, shell_raw=False)
-
-    async def _generate_actions(self, goal: str) -> list[dict[str, Any]]:
-        from trinity_pilot.llm.base import LLMMessage
-        from trinity_pilot.llm.gemini import GeminiProvider
-
-        provider = GeminiProvider(
-            api_key=os.environ["GEMINI_API_KEY"],
-            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-        )
-        response = await provider.complete(
-            [LLMMessage(role="user", content=f"GOAL: {goal}\n\nGenerate the action list now.")],
-            system=_TERMINAL_SYSTEM,
-        )
-        raw = response.content.strip()
-        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*(?:```|$)", raw)
-        if match:
-            raw = match.group(1).strip()
-        return json.loads(raw)
+            except asyncio.TimeoutError as cleanup_exc:
+                raise WorkerError(f"Command timed out after {_CMD_TIMEOUT}s and did not terminate cleanly: {command}") from cleanup_exc
+            raise WorkerError(f"Command timed out after {_CMD_TIMEOUT}s: {command}") from exc
+        return stdout_bytes.decode(errors="replace"), stderr_bytes.decode(errors="replace"), proc.returncode or 0

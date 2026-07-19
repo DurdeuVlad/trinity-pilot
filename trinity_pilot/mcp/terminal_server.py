@@ -35,6 +35,7 @@ from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
+from trinity_pilot.mcp.base_server import ControlState
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.terminal_worker import TerminalWorker, _CMD_TIMEOUT
 
@@ -44,17 +45,23 @@ mcp = FastMCP(
 )
 
 SERVER_NAME = "trinity-pilot-terminal"
+_control = ControlState()
 
 TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("terminal_run", SERVER_NAME, "task", "Run a full terminal objective."),
-    ToolMetadata("read_stdout", SERVER_NAME, "sensor", "Read recent terminal stdout."),
     ToolMetadata("current_directory", SERVER_NAME, "sensor", "Read the terminal working directory."),
     ToolMetadata("env_vars", SERVER_NAME, "sensor", "Read process environment variables."),
-    ToolMetadata("last_exit_code", SERVER_NAME, "sensor", "Read the last command exit code."),
-    ToolMetadata("command_history", SERVER_NAME, "sensor", "Read recent command history."),
     ToolMetadata("list_created_files", SERVER_NAME, "sensor", "Read workspace file listing."),
+    ToolMetadata("list_files", SERVER_NAME, "sensor", "List files in a directory."),
+    ToolMetadata("read_file", SERVER_NAME, "sensor", "Read a text file."),
     ToolMetadata("run_command", SERVER_NAME, "action", "Execute a shell command."),
     ToolMetadata("write_file", SERVER_NAME, "action", "Write text to a file."),
+    ToolMetadata("delete_file", SERVER_NAME, "action", "Delete a file."),
+    ToolMetadata("create_dir", SERVER_NAME, "action", "Create a directory."),
+    ToolMetadata("todo_write", SERVER_NAME, "control", "Replace the current todo list."),
+    ToolMetadata("todo_read", SERVER_NAME, "control", "Read the current todo list."),
+    ToolMetadata("todo_check", SERVER_NAME, "control", "Complete a todo item."),
+    ToolMetadata("todo_add", SERVER_NAME, "control", "Append a todo item."),
     ToolMetadata("finish", SERVER_NAME, "control", "Signal objective completion."),
     ToolMetadata("report_blocking", SERVER_NAME, "control", "Signal an unresolvable blocker."),
 )
@@ -122,24 +129,6 @@ async def terminal_run(spec_dict: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def read_stdout(lines: int = 50, workspace: str = "") -> dict:
-    """Return the last N lines of stdout from the workspace directory.
-
-    Args:
-        lines: Number of lines to return (default 50).
-        workspace: Workspace directory path (defaults to cwd if omitted).
-
-    Note: without an active TerminalWorker session this reads the workspace
-    directory for any stdout log files; use terminal_run for managed sessions.
-    """
-    return {
-        "note": "read_stdout is most useful within an active TerminalWorker session.",
-        "lines_requested": lines,
-        "workspace": workspace,
-    }
-
-
-@mcp.tool()
 async def current_directory(workspace: str = "") -> dict:
     """Return the current working directory of the terminal session.
 
@@ -168,35 +157,6 @@ async def env_vars(keys: list[str] | None = None) -> dict:
 
 
 @mcp.tool()
-async def last_exit_code(workspace: str = "") -> dict:
-    """Return the exit code of the last command run in the workspace.
-
-    Note: accurate only within an active TerminalWorker session context.
-    """
-    return {
-        "note": "last_exit_code is most accurate within an active TerminalWorker session.",
-        "workspace": workspace,
-    }
-
-
-@mcp.tool()
-async def command_history(limit: int = 20, workspace: str = "") -> dict:
-    """Return recent commands run in this terminal session.
-
-    Args:
-        limit: Maximum number of entries to return (default 20).
-        workspace: Known workspace path for the session.
-
-    Note: accurate only within an active TerminalWorker session context.
-    """
-    return {
-        "note": "command_history is most accurate within an active TerminalWorker session.",
-        "limit": limit,
-        "workspace": workspace,
-    }
-
-
-@mcp.tool()
 async def list_created_files(workspace: str) -> dict:
     """List files in the workspace directory (files created during a terminal session).
 
@@ -221,6 +181,24 @@ async def list_created_files(workspace: str) -> dict:
         return {"files": [], "error": str(exc)}
 
 
+@mcp.tool()
+async def list_files(path: str = ".", recursive: bool = False) -> dict:
+    root = Path(path)
+    try:
+        iterator = root.rglob("*") if recursive else root.iterdir()
+        return {"path": str(root), "files": sorted(str(item) for item in iterator)}
+    except Exception as exc:
+        return {"path": str(root), "files": [], "error": str(exc)}
+
+
+@mcp.tool()
+async def read_file(path: str, encoding: str = "utf-8") -> dict:
+    try:
+        return {"path": path, "content": Path(path).read_text(encoding=encoding)}
+    except Exception as exc:
+        return {"path": path, "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Domain action tools (mirror the inner ReAct loop tools)
 # ---------------------------------------------------------------------------
@@ -230,6 +208,7 @@ async def run_command(
     command: str,
     allow_failure: bool = False,
     cwd: str | None = None,
+    shell_raw: bool = False,
 ) -> dict:
     """Execute a PowerShell command and return stdout, stderr, and exit_code.
 
@@ -237,16 +216,16 @@ async def run_command(
     """
     work_dir = cwd or tempfile.mkdtemp(prefix="trinity-mcp-term-")
     stdout, stderr, exit_code = await TerminalWorker._run_command(
-        command, cwd=work_dir, shell_raw=False
+        command, cwd=work_dir, shell_raw=shell_raw
     )
-    result = {
-        "stdout": stdout,
-        "stderr": stderr,
-        "exit_code": exit_code,
+    success = exit_code == 0 or allow_failure
+    return {
+        "success": success,
+        "action": "run_command",
+        "result": f"command exited {exit_code}",
+        "observation": {"stdout": stdout, "stderr": stderr, "exit_code": exit_code, "cwd": work_dir},
+        "error": None if success else f"Command exited {exit_code}",
     }
-    if exit_code != 0 and not allow_failure:
-        result["error"] = f"Command exited {exit_code}"
-    return result
 
 
 @mcp.tool()
@@ -258,12 +237,54 @@ async def write_file(path: str, content: str) -> dict:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
-    return {"path": str(target), "bytes_written": len(content.encode())}
+    return {
+        "success": True,
+        "action": "write_file",
+        "result": f"wrote {len(content.encode())} bytes to {target}",
+        "observation": {"path": str(target), "cwd": str(target.parent)},
+        "error": None,
+    }
+
+
+@mcp.tool()
+async def delete_file(path: str) -> dict:
+    target = Path(path)
+    try:
+        target.unlink()
+        return {"success": True, "action": "delete_file", "result": f"deleted {target}", "observation": {}, "error": None}
+    except Exception as exc:
+        return {"success": False, "action": "delete_file", "result": "delete failed", "observation": {}, "error": str(exc)}
+
+
+@mcp.tool()
+async def create_dir(path: str) -> dict:
+    target = Path(path)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "action": "create_dir", "result": f"created {target}", "observation": {}, "error": None}
+    except Exception as exc:
+        return {"success": False, "action": "create_dir", "result": "create failed", "observation": {}, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
 # Control tools (finish / report_blocking)
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+def todo_write(items: list[str], session_id: str = "default") -> dict:
+    return _control.write(items, session_id)
+
+@mcp.tool()
+def todo_read(session_id: str = "default") -> dict:
+    return _control.read(session_id)
+
+@mcp.tool()
+def todo_check(index: int, session_id: str = "default") -> dict:
+    return _control.check(index, session_id)
+
+@mcp.tool()
+def todo_add(item: str, session_id: str = "default") -> dict:
+    return _control.add(item, session_id)
 
 @mcp.tool()
 def finish(status: str, summary: str) -> dict:

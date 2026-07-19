@@ -15,6 +15,7 @@ from typing import Any
 
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
+from dotenv import load_dotenv
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.workers.base import WorkerError, WorkerBlocker
@@ -36,6 +37,7 @@ _SERVER_SCRIPTS: dict[DomainType, str] = {
     DomainType.TERMINAL: str(_MCP_DIR / "terminal_server.py"),
     DomainType.DESKTOP: str(_MCP_DIR / "desktop_server.py"),
 }
+_SENSOR_SERVER_SCRIPT = str(_MCP_DIR / "sensor_server.py")
 
 _TOOL_NAMES: dict[DomainType, str] = {
     DomainType.BROWSER: "browser_navigate",
@@ -49,7 +51,11 @@ class MCPClientPool:
     every objective dispatched to that domain for the life of this pool."""
 
     def __init__(self) -> None:
+        # Servers are independent subprocesses and do not import Settings, so
+        # explicitly load the project .env before copying the process env.
+        load_dotenv()
         self._clients: dict[DomainType, Client] = {}
+        self._sensor_client: Client | None = None
 
     async def _get_client(self, domain: DomainType) -> Client:
         client = self._clients.get(domain)
@@ -116,6 +122,18 @@ class MCPClientPool:
 
         raise WorkerError(f"Unrecognized mcp_status '{status}' from '{domain.value}' server")
 
+    async def call_sensor(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call a read-only sensor tool for independent review verification."""
+        if self._sensor_client is None:
+            transport = PythonStdioTransport(script_path=_SENSOR_SERVER_SCRIPT, env=dict(os.environ))
+            self._sensor_client = Client(transport)
+            await self._sensor_client.__aenter__()
+        result = await self._sensor_client.call_tool(tool_name, arguments)
+        payload = result.data if hasattr(result, "data") else result
+        if not isinstance(payload, dict):
+            raise WorkerError(f"Sensor '{tool_name}' returned malformed response: {payload!r}")
+        return payload
+
     async def aclose(self) -> None:
         for client in self._clients.values():
             try:
@@ -123,3 +141,9 @@ class MCPClientPool:
             except Exception:
                 pass
         self._clients.clear()
+        if self._sensor_client is not None:
+            try:
+                await self._sensor_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._sensor_client = None

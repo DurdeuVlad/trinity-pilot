@@ -7,6 +7,7 @@ Exposes: submit_task, get_task_status, cancel_task, list_tasks,
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import uuid
 
@@ -17,13 +18,15 @@ from trinity_pilot.core.types import TaskRecord, TaskStatus
 from trinity_pilot.memory.store import AttemptStore, TaskStore
 from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 
+_logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Settings — fail fast if env is misconfigured
 # ---------------------------------------------------------------------------
 try:
     _settings = Settings.from_env()
 except ConfigError as _e:
-    print(f"[orchestrator_server] Configuration error: {_e}", file=sys.stderr)
+    _logger.error("Configuration error: %s", _e)
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
@@ -130,7 +133,7 @@ async def get_task_status(task_id: str) -> dict:
         if attempts:
             last_attempt_status = attempts[-1].status
     except Exception:
-        pass
+        _logger.exception("Unable to load attempts for task %s", task_id)
 
     return {
         "task_id": task_id,

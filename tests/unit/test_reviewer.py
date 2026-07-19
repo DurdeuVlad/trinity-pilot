@@ -45,6 +45,37 @@ class StubProvider(LLMProvider):
 
 
 class TestObjectiveReviewer:
+    async def test_explicit_failure_finish_in_tool_log_bypasses_llm(self):
+        provider = StubProvider(json.dumps({"passed": True, "notes": "should not be used"}))
+        result = await ObjectiveReviewer(provider).review(_make_spec(), {
+            "tool_call_log": [{"tool": "finish", "args": {}, "result": {"status": "failure"}}],
+        })
+        assert result.passed is False
+        assert provider.complete_calls == 0
+
+    async def test_reviewer_independently_checks_written_file_through_sensor(self):
+        payload = json.dumps({"passed": True, "failure_reason": None, "notes": "verified"})
+        calls: list[tuple[str, dict]] = []
+
+        async def sensor_call(tool: str, args: dict) -> dict:
+            calls.append((tool, args))
+            return {"exists": True, "size": 11}
+
+        evidence = {
+            "tool_call_log": [{
+                "tool": "write_file",
+                "args": {"path": "C:/tmp/result.txt"},
+                "result": {"success": True},
+            }],
+        }
+        result = await ObjectiveReviewer(StubProvider(payload), sensor_call=sensor_call).review(
+            _make_spec(), evidence
+        )
+
+        assert result.passed is True
+        assert calls == [("file_stat", {"path": "C:/tmp/result.txt"})]
+        assert evidence["reviewer_sensor_log"][0]["result"]["exists"] is True
+
     async def test_passed_review(self):
         payload = json.dumps({"passed": True, "failure_reason": None, "notes": "all good"})
         reviewer = ObjectiveReviewer(StubProvider(payload))

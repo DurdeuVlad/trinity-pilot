@@ -80,6 +80,11 @@ def _make_mock_context():
     mock_page.content = AsyncMock(return_value="<html/>")
     mock_page.screenshot = AsyncMock(return_value=b"fake-png")
     mock_page.goto = AsyncMock(return_value=MagicMock(status=200))
+    main_locator = MagicMock()
+    main_locator.first.inner_text = AsyncMock(return_value="Example Domain")
+    body_locator = MagicMock()
+    body_locator.first.inner_text = AsyncMock(return_value="Example Domain")
+    mock_page.locator = MagicMock(side_effect=lambda selector: main_locator if selector == "main" else body_locator)
 
     mock_tracing = AsyncMock()
     mock_tracing.start = AsyncMock()
@@ -158,12 +163,6 @@ class TestBrowserWorker:
 
         expected = base64.b64encode(b"raw-bytes").decode()
         assert evidence["screenshot"] == expected
-
-    def test_extract_url_finds_https(self):
-        assert BrowserWorker._extract_url("navigate to https://example.com/path") == "https://example.com/path"
-
-    def test_extract_url_returns_none_if_missing(self):
-        assert BrowserWorker._extract_url("open the browser") is None
 
     async def test_timeout_raises_worker_error(self):
         import asyncio

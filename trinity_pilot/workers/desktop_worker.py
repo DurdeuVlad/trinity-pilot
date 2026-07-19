@@ -15,6 +15,7 @@ from google.genai import types as genai_types
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.llm.base import LLMProvider
+from trinity_pilot.telemetry.trace import emit
 from trinity_pilot.workers.agentic_mixin import (
     AgenticWorkerMixin,
     _finish_decl,
@@ -35,33 +36,6 @@ def _snapshot_pids() -> set[int]:
         return set()
 
 
-_ACTION_SYSTEM = """\
-You are a desktop automation agent on Windows.
-Given a goal, output ONLY a JSON array of action steps to accomplish it.
-Each step is one of:
-  {"action":"launch","app":"<exe-name>","args":[],"wait":1.5}
-  {"action":"focus","title_re":"<window-title-regex>","wait":0.5}
-  {"action":"type","text":"<text>","interval":0.03}
-  {"action":"hotkey","keys":["ctrl","s"]}
-  {"action":"press","key":"<key>"}
-  {"action":"wait","seconds":<float>}
-  {"action":"write_file","path":"<absolute-path>","content":"<text>"}
-
-CRITICAL RULES:
-- ALWAYS use write_file to save content to disk. NEVER use GUI save dialogs (Ctrl+S / File > Save).
-  The write_file action directly writes the file — it is instant, reliable, and uses the exact path you specify.
-- If the goal says to write content to a file at a path like C:/Users/User/Desktop/foo.txt, use write_file with that EXACT path.
-- If the goal is ONLY to open/launch Notepad (no file to display yet), launch WITHOUT file args:
-  {"action":"launch","app":"notepad.exe","args":[],"wait":1.5}
-- Only pass a file path as a Notepad argument AFTER write_file has already written that exact file in the SAME action list.
-- Do NOT include markdown, prose, or code fences. Return the JSON array only.
-- Use forward slashes in all paths. Never abbreviate paths. Copy file paths EXACTLY as given.
-- When writing poem content, include the COMPLETE poem with ALL requested stanzas in the write_file "content" field.
-  If 4 stanzas are requested, write ALL 4 stanzas (each stanza = 4 lines, stanzas separated by a blank line).
-  Count the stanzas before outputting. Do NOT truncate, summarise, or stop early. The JSON "content" field must
-  contain the full text with all stanzas — never a partial poem.
-"""
-
 _DESKTOP_AGENT_SYSTEM = """\
 You are a desktop automation agent on Windows.
 Use the available tools to accomplish the goal step by step.
@@ -75,10 +49,10 @@ Tool categories:
 Available tools:
 
 [SENSOR] screenshot: Capture a window or screen as an image attached to your next turn.
-  Use mode='app' with app_title to capture the target window. READ the image yourself —
+  Use mode='app' with app_title to capture the target window. READ the image yourself â€”
   it is the reliable way to see display values, labels, and UI state that UIA text misses.
 [SENSOR] clipboard_read: Read current clipboard text (after copy via press_hotkey).
-[SENSOR] read_window_text: Read UIA text snippets (often incomplete — prefer screenshot for on-screen values).
+[SENSOR] read_window_text: Read UIA text snippets (often incomplete â€” prefer screenshot for on-screen values).
 
 [ACTION] launch_app: Launch an application by executable name.
 [ACTION] focus_window: Focus a window by title regex.
@@ -105,33 +79,33 @@ CRITICAL RULES:
 - Call report_blocking only if you genuinely cannot proceed without external input.
 - Use forward slashes in all file paths.
 - After each ACTION tool call, read its result before proceeding. If a tool failed or
-  produced unexpected state, adapt — do not blindly continue to the next planned step.
+  produced unexpected state, adapt â€” do not blindly continue to the next planned step.
 - NEVER call finish until every action described in the GOAL is done. Read the GOAL in full
   before your first tool call.
 - After actions that should show a result on screen, verify with screenshot(mode='app',
-  app_title='<window title>'). The image is attached — read the display value directly
+  app_title='<window title>'). The image is attached â€” read the display value directly
   from the pixels. Put the exact value you see into your finish summary.
 - read_window_text is a fallback for labels/menus; it often omits numeric display fields.
   Do NOT call finish based on read_window_text alone when the goal asks you to report
-  a value shown in the app — use screenshot and read the image first.
+  a value shown in the app â€” use screenshot and read the image first.
 - To capture a value shown in an app: screenshot(mode='app') is preferred. Optionally
   try press_hotkey('ctrl','c') then clipboard_read if the app supports copy.
 - NEVER call finish(success) for a task that required writing a file unless write_file
   has returned successfully for that file. Include the written file path in your finish summary.
 - To CLOSE any application window: first use press_hotkey("alt", "F4") after focusing
-  the window. Do NOT use Ctrl+W, Ctrl+F4, or any other shortcut — they trigger
+  the window. Do NOT use Ctrl+W, Ctrl+F4, or any other shortcut â€” they trigger
   application-specific dialogs (e.g., Ctrl+W opens Resize/Skew in Paint, not close).
   If a "Save changes?" dialog appears and click_button("Don't save") fails, use
   kill_process(process_name="<exe>.exe") as a reliable direct termination fallback.
-  kill_process is always available and does not require cmd.exe — prefer it over
+  kill_process is always available and does not require cmd.exe â€” prefer it over
   launching a terminal to type taskkill.
 [ACTION] kill_process: Force-kill a process by .exe name (e.g. 'mspaint.exe'). Use when alt+F4 or click_button fail.
 - Before performing actions in a freshly launched app, dismiss any welcome/popup
-  dialogs. Check the screenshot after launch — if a coaching tooltip or dialog with
+  dialogs. Check the screenshot after launch â€” if a coaching tooltip or dialog with
   a labeled button (e.g. "Got it", "OK", "Close") is visible, call
   click_button(button_text="Got it") (or the appropriate label) to dismiss it.
   Only fall back to press_key("escape") if no button label is visible.
-  Do NOT proceed with the main task until the popup is gone — failing to dismiss
+  Do NOT proceed with the main task until the popup is gone â€” failing to dismiss
   a popup prevents subsequent key presses from reaching the target window.
   For Microsoft Paint: a "Try Image Creator" tooltip with a "Got it" button appears
   on launch. Call click_button(button_text="Got it") immediately after focus_window
@@ -238,7 +212,7 @@ _read_window_text_decl = genai_types.FunctionDeclaration(
     name="read_window_text",
     description=(
         "Read UIA accessibility text snippets from a window. "
-        "Often misses numeric display/result fields — use screenshot(mode='app') "
+        "Often misses numeric display/result fields â€” use screenshot(mode='app') "
         "to read values shown on screen when the goal requires reporting a result."
     ),
     parameters=genai_types.Schema(
@@ -314,12 +288,12 @@ _CALCULATOR_BUTTON_LABELS: dict[str, list[str]] = {
     "9": ["Nine"],
     "add": ["Plus", "+"],
     "plus": ["Plus", "+"],
-    "subtract": ["Minus", "−", "-"],
-    "minus": ["Minus", "−", "-"],
-    "multiply": ["Multiply by", "×", "Multiply"],
-    "times": ["Multiply by", "×", "Multiply"],
-    "x": ["Multiply by", "×", "Multiply"],
-    "divide": ["Divide by", "÷", "Divide"],
+    "subtract": ["Minus", "âˆ’", "-"],
+    "minus": ["Minus", "âˆ’", "-"],
+    "multiply": ["Multiply by", "Ã—", "Multiply"],
+    "times": ["Multiply by", "Ã—", "Multiply"],
+    "x": ["Multiply by", "Ã—", "Multiply"],
+    "divide": ["Divide by", "Ã·", "Divide"],
     "return": ["Equals", "="],
     "enter": ["Equals", "="],
     "equals": ["Equals", "="],
@@ -360,26 +334,6 @@ _PYAUTOGUI_KEY_ALIASES: dict[str, str] = {
 }
 
 
-def _agent_dbg(
-    location: str,
-    message: str,
-    data: dict[str, Any] | None = None,
-    *,
-    hypothesis_id: str = "press-key",
-) -> None:
-    try:
-        from trinity_pilot.telemetry.trace import emit as trace_emit
-
-        trace_emit(
-            location,
-            message,
-            data,
-            hypothesis_id=hypothesis_id,
-            run_id="probe",
-            span="worker",
-        )
-    except Exception:
-        pass
 
 
 class DesktopWorker(AgenticWorkerMixin, DomainWorker):
@@ -762,7 +716,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     ) -> str:
         import subprocess
 
-        _agent_dbg(
+        emit(
             "desktop_worker.py:_dispatch_tool",
             "tool_dispatch",
             {"tool": tool_name, "args_preview": {k: str(v)[:80] for k, v in args.items()}},
@@ -788,7 +742,10 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 "mspaint": "paint",
             }
             title_hint = _EXE_TITLE_MAP.get(app.lower())
-            if title_hint:
+            # Reusing an existing process is only valid for a bare application
+            # launch.  When arguments name a document, Notepad must receive them;
+            # otherwise the unrelated foreground document is incorrectly reused.
+            if title_hint and not app_args:
                 try:
                     from pywinauto import findwindows
                     existing = findwindows.find_windows(title_re=f"(?i){title_hint}")
@@ -823,6 +780,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             if focused:
                 self._target_window = title_re
             await asyncio.sleep(wait)
+            if not focused:
+                return (
+                    f"FOCUS FAILED: no visible window matched {title_re!r}. "
+                    "Inspect the open windows or retry with a broader title pattern; do not continue "
+                    "with keyboard input until focus succeeds."
+                )
             return f"Focused window: {title_re}"
 
         elif tool_name == "type_text":
@@ -833,7 +796,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     f"type_text blocked: {len(text)} chars > {_MAX_TYPE_CHARS} limit"
                 )
                 return (
-                    f"🛑 BLOCKED: type_text called with {len(text)} characters. "
+                    f"ðŸ›‘ BLOCKED: type_text called with {len(text)} characters. "
                     f"Maximum per call is {_MAX_TYPE_CHARS}. "
                     "Typing thousands of characters is not a supported automation pattern. "
                     "Call finish('failure') explaining that the goal requires excessive repetition."
@@ -845,7 +808,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     f"type_text blocked in Calculator: {text!r}"
                 )
                 return (
-                    "🛑 BLOCKED: type_text does not work in Windows Calculator. "
+                    "ðŸ›‘ BLOCKED: type_text does not work in Windows Calculator. "
                     "Use press_key for each digit and operator separately "
                     "(e.g. press_key('1'), press_key('2'), press_key('multiply'), "
                     "press_key('1'), press_key('2'), press_key('equals')). "
@@ -889,7 +852,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     hwnd = win32gui.GetForegroundWindow()
                     app_obj = Application(backend="uia").connect(handle=hwnd)
                     win_obj = app_obj.top_window()
-                # Try multiple strategies: exact → case-insensitive → any control type
+                # Try multiple strategies: exact â†’ case-insensitive â†’ any control type
                 _strategies = [
                     dict(title=button_text, control_type="Button"),
                     dict(title_re=f"(?i){re.escape(button_text)}", control_type="Button"),
@@ -947,7 +910,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             if self._target_window and not args.get("app_title"):
                 args = {**args, "mode": args.get("mode", "app"), "app_title": self._target_window}
             result = await super()._dispatch_tool(tool_name, args, evidence)
-            _agent_dbg(
+            emit(
                 "desktop_worker.py:screenshot",
                 "screenshot_for_vision",
                 {
@@ -955,7 +918,6 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     "app_title": args.get("app_title", ""),
                     "has_image": isinstance(result, tuple),
                 },
-                hypothesis_id="vision-read",
             )
             return result
 
@@ -992,16 +954,15 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             evidence["action_log"].append(
                 f"read_window_text: {len(snippets)} snippet(s) from {title_re!r}"
             )
-            _agent_dbg(
+            emit(
                 "desktop_worker.py:read_window_text",
                 "window_text_read",
                 {"title_re": title_re, "snippets": snippets[:5]},
-                hypothesis_id="general-sensor",
             )
             if not snippets:
                 return (
                     "No readable text found in the target window. "
-                    "Call screenshot(mode='app', app_title=<window>) — the image is attached "
+                    "Call screenshot(mode='app', app_title=<window>) â€” the image is attached "
                     "for you to read the on-screen value directly."
                 )
             body = "\n".join(f"- {s}" for s in snippets)
@@ -1018,198 +979,10 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)
 
-    # ------------------------------------------------------------------
-    # Backward-compatible helpers
-    # ------------------------------------------------------------------
-
-    async def _run_objective(
-        self, spec: ObjectiveSpec, evidence: dict[str, Any]
-    ) -> None:
-        if sys.platform != "win32":
-            evidence["degraded_mode"] = True
-            evidence["action_log"].append("Platform is not win32 — degraded mode")
-            self._capture_screenshot_fallback(evidence)
-            return
-
-        uia_ok = False
-        try:
-            import pywinauto  # noqa: F401
-            uia_ok = True
-        except Exception as exc:
-            evidence["degraded_mode"] = True
-            evidence["action_log"].append(f"UIA failed: {exc}")
-
-        if uia_ok:
-            try:
-                actions = spec.metadata.get("audit_actions") or await self._generate_actions(spec.goal)
-                evidence["action_log"].append(f"Generated {len(actions)} action steps")
-                evidence["selected_actions"] = actions
-                if actions:
-                    evidence["selected_action"] = actions[0].get("action")
-                evidence["action_signature"] = {
-                    "action": actions[0].get("action") if actions else None,
-                    "target": actions[0].get("app") or actions[0].get("title_re") if actions else None,
-                    "args": actions[0].get("args") if actions else None,
-                    "steering_context": spec.metadata.get("steering_context"),
-                }
-                await self._execute_actions(actions, evidence)
-                expected_text = str(spec.metadata.get("expected_text", ""))
-                if expected_text:
-                    from trinity_pilot.audit.desktop_probe import probe_notepad_visible_text
-                    probe = probe_notepad_visible_text(expected_text)
-                    evidence["visible_text_probe"] = probe.to_dict()
-                    if probe.visible_text_match or probe.screenshot_text_match:
-                        evidence["visible_text"] = expected_text
-                written = [
-                    a["path"] for a in actions
-                    if a.get("action") == "write_file"
-                    and isinstance(a.get("path"), str)
-                ]
-                for p in written:
-                    import pathlib
-                    evidence["written_files"].append(p)
-                    evidence["action_log"].append(
-                        f"File exists after execution: {p} = {pathlib.Path(p).exists()}"
-                    )
-            except Exception as exc:
-                evidence["degraded_mode"] = True
-                evidence["action_log"].append(f"Action generation/execution failed: {exc}")
-
-        self._capture_screenshot_fallback(evidence)
-
-    async def _generate_actions(self, goal: str) -> list[dict[str, Any]]:
-        from trinity_pilot.llm.base import LLMMessage
-        from trinity_pilot.llm.gemini import GeminiProvider
-
-        provider = GeminiProvider(
-            api_key=os.environ["GEMINI_API_KEY"],
-            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-        )
-        response = await provider.complete(
-            [LLMMessage(role="user", content=f"GOAL: {goal}\n\nGenerate the action list now.")],
-            system=_ACTION_SYSTEM,
-        )
-        raw = response.content.strip()
-        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*(?:```|$)", raw)
-        if match:
-            raw = match.group(1).strip()
-        return json.loads(raw)
-
-    async def _execute_actions(
-        self, actions: list[dict[str, Any]], evidence: dict[str, Any]
-    ) -> None:
-        import subprocess
-
-        for step in actions:
-            act = step.get("action", "")
-            try:
-                if act == "launch":
-                    app = step["app"]
-                    args = [a.replace("/", "\\") if isinstance(a, str) else a for a in step.get("args", [])]
-                    _EXE_TITLE_MAP = {
-                        "notepad.exe": "notepad", "notepad": "notepad",
-                        "calc.exe": "calculator", "calc": "calculator",
-                        "mspaint.exe": "paint", "mspaint": "paint",
-                    }
-                    title_hint = _EXE_TITLE_MAP.get(app.lower())
-                    if title_hint:
-                        try:
-                            from pywinauto import findwindows
-                            existing = findwindows.find_windows(title_re=f"(?i){title_hint}")
-                            if existing:
-                                import ctypes
-                                hwnd = existing[0]
-                                ctypes.windll.user32.ShowWindow(hwnd, 9)
-                                ctypes.windll.user32.SetForegroundWindow(hwnd)
-                                evidence["action_log"].append(f"Reused existing window: {app}")
-                                continue
-                        except Exception:
-                            pass
-                    pids_before = _snapshot_pids()
-                    proc = subprocess.Popen([app, *args])
-                    wait = float(step.get("wait", 1.5))
-                    await asyncio.sleep(wait)
-                    new_pids = _snapshot_pids() - pids_before
-                    new_pids.add(proc.pid)
-                    evidence.setdefault("launched_pids", []).extend(sorted(new_pids))
-                    evidence["action_log"].append(
-                        f"Launched: {app} (pids={sorted(new_pids)})"
-                    )
-
-                elif act == "focus":
-                    title_re = step["title_re"]
-                    wait = float(step.get("wait", 0.5))
-                    try:
-                        from pywinauto import Application
-                        app = Application(backend="uia").connect(title_re=title_re, timeout=5)
-                        win = app.top_window()
-                        win.set_focus()
-                    except Exception:
-                        pass
-                    await asyncio.sleep(wait)
-                    evidence["action_log"].append(f"Focused: {title_re}")
-
-                elif act == "type":
-                    text = step["text"]
-                    interval = float(step.get("interval", 0.03))
-                    await self._type_text(text, interval, evidence)
-                    await asyncio.sleep(0.1)
-                    evidence["typed_text"] += text
-                    evidence["action_log"].append(f"Typed {len(text)} chars")
-
-                elif act == "hotkey":
-                    keys = step["keys"]
-                    await self._hotkey(keys, evidence)
-                    await asyncio.sleep(0.3)
-                    evidence["action_log"].append(f"Hotkey: {'+'.join(keys)}")
-
-                elif act == "press":
-                    key = step["key"]
-                    await self._press_key(key, evidence)
-                    await asyncio.sleep(0.2)
-                    evidence["action_log"].append(f"Press: {key}")
-
-                elif act == "wait":
-                    secs = float(step.get("seconds", 0.5))
-                    await asyncio.sleep(secs)
-                    evidence["action_log"].append(f"Waited {secs}s")
-
-                elif act == "write_file":
-                    path = step["path"]
-                    content = step["content"]
-                    import pathlib
-                    p = pathlib.Path(path)
-                    try:
-                        p.parent.mkdir(parents=True, exist_ok=True)
-                        p.write_text(content, encoding="utf-8")
-                        exists_after = p.exists()
-                    except Exception as write_exc:
-                        evidence.setdefault("write_file_failures", []).append(
-                            {"path": path, "error": str(write_exc)}
-                        )
-                        evidence["action_log"].append(f"write_file FAILED: {path}: {write_exc}")
-                        raise
-                    evidence.setdefault("written_files_verified", {})[path] = exists_after
-                    if not exists_after:
-                        evidence.setdefault("write_file_failures", []).append(
-                            {"path": path, "error": "file missing immediately after write"}
-                        )
-                    preview = content[:500] + ("..." if len(content) > 500 else "")
-                    evidence["action_log"].append(
-                        f"Wrote file: {path} ({len(content)} chars) verified_exists={exists_after}"
-                    )
-                    evidence[f"file_content_{p.name}"] = preview
-
-                else:
-                    evidence["action_log"].append(f"Unknown action ignored: {act}")
-
-            except Exception as exc:
-                evidence["action_log"].append(f"Action '{act}' failed: {exc}")
-
     async def _focus_window(self, title_re: str, evidence: dict[str, Any]) -> bool:
         """Focus a window by title regex. Returns True on success.
 
-        Uses pure Win32 EnumWindows via ctypes — no UIA queries, no WinUI3 hang.
+        Uses pure Win32 EnumWindows via ctypes â€” no UIA queries, no WinUI3 hang.
         Polls up to 30s for the window to become visible (covers slow app launches).
         """
         import ctypes
@@ -1219,6 +992,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
         pattern = _re.compile(title_re, _re.IGNORECASE)
         user32 = ctypes.windll.user32
+        launched_pids = {int(pid) for pid in evidence.get("launched_pids", [])}
 
         def _find_visible_hwnd() -> int | None:
             found: list[int] = []
@@ -1240,13 +1014,41 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             user32.EnumWindows(_cb, 0)
             return found[0] if found else None
 
+        def _find_launched_window() -> int | None:
+            """Modern Notepad may expose a generic title while loading a document."""
+            if not launched_pids:
+                return None
+            found: list[int] = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+            def _cb(hwnd: int, _: int) -> bool:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                pid = ctypes.wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value in launched_pids:
+                    found.append(hwnd)
+                    return False
+                return True
+
+            user32.EnumWindows(_cb, 0)
+            return found[0] if found else None
+
         try:
             deadline = time.monotonic() + 30
             hwnd: int | None = None
+            launched_fallback_at = time.monotonic() + 3
             while time.monotonic() < deadline:
                 hwnd = _find_visible_hwnd()
                 if hwnd:
                     break
+                if time.monotonic() >= launched_fallback_at:
+                    hwnd = _find_launched_window()
+                    if hwnd:
+                        evidence["action_log"].append(
+                            f"Focused launched process window after title did not materialize: {title_re}"
+                        )
+                        break
                 await asyncio.sleep(0.5)
 
             if not hwnd:
@@ -1272,13 +1074,13 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         else grabbed focus in between steps.
         """
         if not self._target_window:
-            return  # no target declared yet — trust whatever has focus
+            return  # no target declared yet â€” trust whatever has focus
         try:
             active = self._get_active_window_title() or ""
             import re as _re
             if _re.search(self._target_window, active, _re.IGNORECASE):
-                return  # already focused — nothing to do
-            # Focus drifted — re-assert
+                return  # already focused â€” nothing to do
+            # Focus drifted â€” re-assert
             await self._focus_window(self._target_window, evidence)
         except Exception:
             pass  # best-effort; don't block the input operation
@@ -1393,7 +1195,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         s = re.sub(r"\bplus\b", "+", s)
         s = re.sub(r"\bminus\b", "-", s)
         s = re.sub(r"\bdivided\s+by\b", "/", s)
-        s = s.replace("×", "*").replace("÷", "/").replace("x", "*")
+        s = s.replace("Ã—", "*").replace("Ã·", "/").replace("x", "*")
         s = re.sub(r"\s+", "", s).rstrip("=")
 
         m = re.fullmatch(r"(\d+(?:\.\d+)?)([\+\-\*/])(\d+(?:\.\d+)?)", s)
@@ -1410,7 +1212,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         keys.append("equals")
         return keys
 
-    # Generic UIA text reading — works for any application window.
+    # Generic UIA text reading â€” works for any application window.
     _UA_LABEL_SKIP_RE = re.compile(
         r"^(Display is \d+|Line \d+,?\s*Column \d+|System|Pane|TitleBar)$",
         re.IGNORECASE,
@@ -1530,7 +1332,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                         if btn.exists(timeout=0.5):
                             btn.click_input()
                             evidence["action_log"].append(f"Calculator UIA click: {label}")
-                            _agent_dbg(
+                            emit(
                                 "desktop_worker.py:_press_calculator_key_uia",
                                 "uia_click_ok",
                                 {"key": key, "label": label},
@@ -1538,7 +1340,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                             return True
                     except Exception:
                         continue
-            _agent_dbg(
+            emit(
                 "desktop_worker.py:_press_calculator_key_uia",
                 "uia_click_miss",
                 {"key": key, "labels": labels},
@@ -1546,7 +1348,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             return False
         except Exception as exc:
             evidence["action_log"].append(f"Calculator UIA press failed: {exc}")
-            _agent_dbg(
+            emit(
                 "desktop_worker.py:_press_calculator_key_uia",
                 "uia_click_error",
                 {"key": key, "error": str(exc)},
@@ -1554,7 +1356,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             return False
 
     async def _press_key(self, key: str, evidence: dict[str, Any]) -> None:
-        _agent_dbg("desktop_worker.py:_press_key", "press_key_start", {"key": key})
+        emit("desktop_worker.py:_press_key", "press_key_start", {"key": key})
 
         if await self._press_calculator_key_uia(key, evidence):
             return
@@ -1564,7 +1366,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             from pywinauto.keyboard import send_keys
             send_keys(sequence)
             evidence["action_log"].append(f"Key press via pywinauto keyboard: {sequence!r}")
-            _agent_dbg(
+            emit(
                 "desktop_worker.py:_press_key",
                 "pywinauto_ok",
                 {"key": key, "sequence": sequence},
@@ -1578,7 +1380,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         py_name = self._pyautogui_key_name(key)
         pyautogui.press(py_name)
         evidence["action_log"].append(f"Key press via PyAutoGUI fallback: {py_name!r}")
-        _agent_dbg(
+        emit(
             "desktop_worker.py:_press_key",
             "pyautogui_ok",
             {"key": key, "py_name": py_name},

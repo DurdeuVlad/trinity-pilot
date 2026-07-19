@@ -4,8 +4,7 @@ Environment:
   TRINITY_TRACE=1|0     — force enable/disable (default: auto)
   TRINITY_TRACE_DIR     — output directory (default: <repo>/.trace)
 
-Auto-enabled when TRINITY_CONNECT_EXISTING=1 or DB_PATH ends with _trinity_test.db
-(E2E / test-mode launches).
+Auto-enabled for dedicated test databases; production tracing is opt-in.
 """
 from __future__ import annotations
 
@@ -28,8 +27,6 @@ def is_enabled() -> bool:
         return True
     if env in ("0", "false", "no", "off"):
         return False
-    if os.environ.get("TRINITY_CONNECT_EXISTING") == "1":
-        return True
     db_path = os.environ.get("DB_PATH", "")
     if db_path.endswith("_trinity_test.db"):
         return True
@@ -58,8 +55,7 @@ def emit(
     message: str,
     data: dict | None = None,
     *,
-    hypothesis_id: str = "",
-    run_id: str = "probe",
+    run_id: str = "",
     span: str = "",
 ) -> None:
     """Append one NDJSON trace event. No-op when tracing is disabled."""
@@ -73,7 +69,6 @@ def emit(
         "location": location,
         "message": message,
         "data": data or {},
-        "hypothesisId": hypothesis_id,
         "runId": run_id,
     }
     if span:

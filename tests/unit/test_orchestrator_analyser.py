@@ -154,12 +154,16 @@ async def test_engine_emits_stuck_signal_on_ask_user(tmp_path, monkeypatch):
     from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
     from trinity_pilot.orchestrator.signals import StuckSignal
 
-    worker = _BlockerWorker()
     ask_user_analyser_json = '{"action": "ask_user", "guidance": "", "question": "What file?"}'
 
     monkeypatch.setattr(engine_mod, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine_mod, "ObjectiveReviewer", _Reviewer)
-    monkeypatch.setattr(engine_mod.WorkerRouter, "route", lambda self, spec: worker)
+    async def dispatch(self, domain, spec):
+        from trinity_pilot.workers.base import WorkerBlocker
+        from trinity_pilot.workers.worker_result import WorkerResult
+        raise WorkerBlocker("stuck here", WorkerResult(status="partial_blocker"))
+
+    monkeypatch.setattr(engine_mod.MCPClientPool, "dispatch", dispatch)
     monkeypatch.setattr(
         engine_mod, "OrchestratorAnalyser",
         lambda llm: OrchestratorAnalyser(MockAnalyserLLM(ask_user_analyser_json))

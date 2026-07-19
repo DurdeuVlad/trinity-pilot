@@ -13,9 +13,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pyautogui
-
-pyautogui.FAILSAFE = False
+# A direct file marker keeps VM startup diagnosis available even when pytest's
+# output capture has not yet flushed.
+try:
+    _IMPORT_MARKER = Path.home() / ".ai" / "tp_gui_startup.marker"
+    _IMPORT_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    with _IMPORT_MARKER.open("a", encoding="utf-8") as _marker:
+        _marker.write(f"{time.time():.3f} gui-driver-module-imported\n")
+except OSError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -58,6 +64,19 @@ ERROR_WORDS = {
     "error", "fail", "not found", "cannot", "could not",
     "does not exist", "unable", "missing", "invalid", "refused",
 }
+
+
+def _pyautogui() -> Any:
+    """Load pyautogui only after the UIA driver is ready.
+
+    Importing it while pytest imports this module can block in the VM's
+    interactive Scheduled Task session before AppDriver.launch() has a chance
+    to establish the required MTA COM context.
+    """
+    import pyautogui
+
+    pyautogui.FAILSAFE = False
+    return pyautogui
 
 
 class ExistingProcessWrapper:
@@ -201,28 +220,53 @@ class AppDriver:
         return AppDriver._send_emergency_wake(win, remaining, source="recover_to_ready_fallback")
 
     @classmethod
-    def launch(cls, mode: str | None = None, *, _fresh_launch: bool = False) -> "AppDriver":
+    def launch(cls, *, _fresh_launch: bool = False) -> "AppDriver":
         """Start a fresh Trinity Pilot instance and wait for Ready.
 
-        mode: None or "multi" for normal multi-agent mode; "single_agent" for ablation.
+        Uses the application's sole MCP orchestration mode.
         """
+        startup_marker = Path.home() / ".ai" / "tp_gui_startup.marker"
+
+        def mark_startup(stage: str) -> None:
+            try:
+                startup_marker.parent.mkdir(parents=True, exist_ok=True)
+                with startup_marker.open("a", encoding="utf-8") as marker:
+                    marker.write(f"{time.time():.3f} {stage}\n")
+            except OSError:
+                pass
+
+        mark_startup("launch-enter")
         from dotenv import load_dotenv
         load_dotenv(APP_DIR / ".env", override=True)
+        mark_startup("dotenv-loaded")
 
-        # Initialize COM in STA mode before any UIA/pywinauto calls.
-        # Without this, pytest's thread context can cause RPC_E_WRONG_THREAD (0x8001010d).
+        # pywinauto's UIA backend must be imported from an MTA thread here.
+        #
+        # Do not replace this with comtypes.CoInitialize() (STA): a direct VM
+        # probe proved that it hangs indefinitely while importing pywinauto in
+        # the interactive Scheduled Task session.  The same probe reaches UIA
+        # successfully with COINIT_MULTITHREADED.  Set pywinauto's documented
+        # import-time flag as well as initializing this thread explicitly.
         try:
-            import comtypes
-            comtypes.CoInitialize()
+            sys.coinit_flags = 0  # COINIT_MULTITHREADED; read by pywinauto.
+            import pythoncom
+            pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+            mark_startup("com-mta")
         except Exception:
+            mark_startup("com-mta-error")
             pass
 
         # Import pywinauto/UIA before launching Trinity Pilot. In the VM's
         # interactive Session 1, importing pywinauto after the app process is
         # already running can hang indefinitely inside the UIA stack. Importing
         # it first avoids that re-entrant attach path entirely.
-        from pywinauto import Application
+        # Import the concrete module, not pywinauto's package-level re-export.
+        # The latter hangs in this VM's interactive task while this direct path
+        # was verified by the bounded MTA probe.
+        from pywinauto.application import Application
+        mark_startup("pywinauto-imported")
         from pywinauto.findwindows import ElementAmbiguousError, ElementNotFoundError
+        mark_startup("findwindows-imported")
         try:
             from pywinauto.timings import TimeoutError as _PwTimeout
         except ImportError:
@@ -231,11 +275,12 @@ class AppDriver:
         # Warm up the UIAutomation COM server.  On a freshly-restored VM snapshot
         # UIAutomation may not be initialised in Session 1 yet; a failed connect()
         # call is enough to force initialisation so the real launch succeeds.
-        try:
+        # Disabled: this speculative provider call can hang in the VM.
+        if False:
             Application(backend="uia").connect(
                 title_re="__tp_uia_warmup_XXXX__", timeout=1
             )
-        except Exception:
+        if False:
             pass  # always fails — that's fine, COM/UIA is now initialised
 
         connect_existing = False
@@ -366,7 +411,6 @@ class AppDriver:
                 # entrypoint can keep the process alive without ever surfacing a
                 # top-level window. A direct run_app() bootstrap script has proven
                 # reliable in the same environment.
-                _launch_mode = mode or "multi"
                 _launcher_path = Path(_tempfile.mktemp(suffix=f"_trinity_bootstrap_{_attempt}.py"))
                 _launcher_path.write_text(
                     "\n".join([
@@ -401,7 +445,7 @@ class AppDriver:
                         "    _log(f'settings loaded db_path={settings.db_path}')",
                         "    bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)",
                         "    _log('workflow bridge created')",
-                        f"    window = MainWindow(debug_mode=settings.debug_mode, mode={_launch_mode!r})",
+                        "    window = MainWindow(debug_mode=settings.debug_mode)",
                         "    _log('mainwindow created')",
                         "    window.set_bridge(bridge)",
                         "    window.set_settings(settings)",
@@ -660,7 +704,7 @@ class AppDriver:
                     )
                 except Exception:
                     pass
-                return cls.launch(mode=mode, _fresh_launch=True)
+                return cls.launch(_fresh_launch=True)
             if got != STATUS_READY:
                 if proc is not None and not connect_existing:
                     proc.terminate()
@@ -894,7 +938,7 @@ class AppDriver:
                                 rect = btn.rectangle()
                                 x = (rect.left + rect.right) // 2
                                 y = (rect.top + rect.bottom) // 2
-                                pyautogui.click(x, y)
+                                _pyautogui().click(x, y)
                                 approve_clicked = True
                             except Exception:
                                 pass
@@ -923,11 +967,11 @@ class AppDriver:
             pass
         # Fallback: pyautogui (requires window to be foreground).
         time.sleep(0.2)
-        pyautogui.hotkey("ctrl", "a")
+        _pyautogui().hotkey("ctrl", "a")
         time.sleep(0.1)
-        pyautogui.write(text, interval=0.02)
+        _pyautogui().write(text, interval=0.02)
         time.sleep(0.2)
-        pyautogui.press("enter")
+        _pyautogui().press("enter")
         self.infra_checkpoints["prompt_submitted"] = True
 
     # ------------------------------------------------------------------

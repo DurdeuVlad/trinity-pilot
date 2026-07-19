@@ -48,7 +48,10 @@ async def test_active_orchestrator_audit_with_stubs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(engine, "GeminiProvider", lambda **kwargs: object())
     monkeypatch.setattr(engine, "ObjectiveReviewer", _RecoveryReviewer)
-    monkeypatch.setattr(engine.WorkerRouter, "route", lambda self, spec: _ChangingWorker())
+    async def fake_dispatch(self, domain, spec):
+        return await _ChangingWorker().execute(spec)
+
+    monkeypatch.setattr(engine.MCPClientPool, "dispatch", fake_dispatch)
 
     stub_settings = Settings(gemini_api_key="stub-key-for-testing")
 

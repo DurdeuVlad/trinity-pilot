@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from trinity_pilot.mcp import browser_server
-from trinity_pilot.mcp import desktop_automation_server
 from trinity_pilot.mcp import desktop_server
 from trinity_pilot.mcp import sensor_server
 from trinity_pilot.mcp import terminal_server
@@ -12,13 +11,13 @@ MANIFESTS = (
     browser_server.TOOL_MANIFEST,
     desktop_server.TOOL_MANIFEST,
     terminal_server.TOOL_MANIFEST,
-    desktop_automation_server.TOOL_MANIFEST,
     sensor_server.TOOL_MANIFEST,
 )
 
 EXPECTED_TOOL_NAMES = {
     browser_server.SERVER_NAME: {
         "browser_navigate",
+        "browser_open",
         "navigate",
         "click",
         "fill",
@@ -32,6 +31,14 @@ EXPECTED_TOOL_NAMES = {
         "network_log",
         "get_element_text",
         "get_element_attribute",
+        "screenshot",
+        "wait_for_selector",
+        "evaluate_js",
+        "browser_close",
+        "todo_write",
+        "todo_read",
+        "todo_check",
+        "todo_add",
         "finish",
         "report_blocking",
     },
@@ -42,6 +49,8 @@ EXPECTED_TOOL_NAMES = {
         "window_hierarchy",
         "get_element_value",
         "app_state",
+        "read_window_text",
+        "check_control",
         "launch_app",
         "focus_window",
         "type_text",
@@ -49,29 +58,36 @@ EXPECTED_TOOL_NAMES = {
         "press_key",
         "write_file",
         "wait",
+        "click_button",
+        "kill_process",
+        "click",
+        "drag_to",
+        "scroll",
+        "clipboard_write",
+        "todo_write",
+        "todo_read",
+        "todo_check",
+        "todo_add",
         "finish",
         "report_blocking",
     },
     terminal_server.SERVER_NAME: {
         "terminal_run",
-        "read_stdout",
         "current_directory",
         "env_vars",
-        "last_exit_code",
-        "command_history",
         "list_created_files",
+        "list_files",
+        "read_file",
         "run_command",
         "write_file",
+        "delete_file",
+        "create_dir",
+        "todo_write",
+        "todo_read",
+        "todo_check",
+        "todo_add",
         "finish",
         "report_blocking",
-    },
-    desktop_automation_server.SERVER_NAME: {
-        "click",
-        "move_to",
-        "type_text",
-        "press_key",
-        "focus_window",
-        "sleep",
     },
     sensor_server.SERVER_NAME: {
         "screenshot",
@@ -81,6 +97,11 @@ EXPECTED_TOOL_NAMES = {
         "process_list",
         "clipboard_read",
         "file_stat",
+        "active_window",
+        "screen_info",
+        "read_file",
+        "file_hash",
+        "window_exists",
     },
 }
 
@@ -126,10 +147,3 @@ def test_domain_specific_browser_sensor_stays_out_of_central_sensor_server():
 
     assert "dom_snapshot" in browser_sensor_names
     assert "dom_snapshot" not in central_sensor_names
-
-
-def test_desktop_automation_server_exposes_no_sensor_tools():
-    assert desktop_automation_server.TOOL_MANIFEST
-    assert {
-        tool.kind for tool in desktop_automation_server.TOOL_MANIFEST
-    } == {"action"}

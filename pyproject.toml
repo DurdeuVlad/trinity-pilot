@@ -10,17 +10,14 @@ dependencies = [
     "mcp>=1.0.0",
     # Browser domain
     "playwright>=1.50.0",
-    # Desktop-app domain (Windows-first)
-    "pywinauto>=0.6.9",
-    "pywin32>=311",
     "psutil>=7.0.0",
     # Terminal/code domain (PTY-backed ACI)
     "ptyprocess>=0.7.0",
     # Utilities
     "python-dotenv>=1.2.0",
     "pyyaml>=6.0.0",
-    "httpx>=0.28.0",
     "tenacity>=9.0.0",
+    "Pillow>=10.0.0",
     # SQLite is stdlib — no extra dep needed
     "aiosqlite>=0.19",
     # LLM
@@ -32,6 +29,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+windows = [
+    "pywinauto>=0.6.9",
+    "pywin32>=311",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

@@ -114,7 +114,7 @@ def tok(name: str, dark: bool = False) -> str:
 
 def build_app_qss(dark: bool = False, scale: float = 1.0) -> str:
     t = lambda name: tok(name, dark)   # noqa: E731
-    def px(n: int) -> str:             # noqa: E731
+    def px(n: int) -> str:
         return f"{max(8, round(n * scale))}px"
     return f"""
 /* ── Base ─────────────────────────────────────────────── */

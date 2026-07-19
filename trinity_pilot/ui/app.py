@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sys
+import threading
 import time
 from typing import Any
 
@@ -40,10 +42,26 @@ _CONFIRM_YES = {"yes", "y", "да", "yep", "sure", "ok", "okay", "run", "go"}
 _CONFIRM_NO = {"no", "n", "нет", "cancel", "stop", "abort", "nope"}
 
 
+def _startup_trace(marker: str) -> None:
+    """Append opt-in startup evidence without changing normal app behaviour."""
+    path = os.environ.get("TRINITY_STARTUP_TRACE")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as trace:
+            trace.write(f"{time.time():.3f} {marker}\n")
+    except OSError:
+        pass
+
+
 class _PlanningRelay(QObject):
     """Marshals planner callbacks from background thread to Qt main thread."""
     planned = Signal(list)   # list[dict]
     error = Signal(str)
+
+
+class _StartupRelay(QObject):
+    status = Signal(str)
 
 
 class _ClarificationRelay(QObject):
@@ -103,11 +121,10 @@ class _DebugDrawer(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, debug_mode: bool = False, mode: str = "multi") -> None:
+    def __init__(self, debug_mode: bool = False) -> None:
         super().__init__()
         self._bridge: Any = None
         self._debug_mode = debug_mode
-        self._mode = mode  # "multi" or "single_agent"
         self._dark = False
         self._settings: Any = None
         self._stream_worker: StreamWorker | None = None
@@ -238,7 +255,7 @@ class MainWindow(QMainWindow):
         self._apply_input_style(ChatState.IDLE)
         row.addWidget(self._input)
 
-        self._stop_btn = QPushButton("■ Stop")
+        self._stop_btn = QPushButton("Stop")
         self._stop_btn.setEnabled(False)
         self._stop_btn.hide()
         self._stop_btn.clicked.connect(self._handle_stop)
@@ -483,18 +500,13 @@ class MainWindow(QMainWindow):
             self._handle_new_task(text)
 
     def _handle_new_task(self, task: str) -> None:
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
-        agent_dbg(
+        emit(
             "app.py:_handle_new_task",
             "new_task_submitted",
-            {"task_preview": task[:120], "mode": self._mode},
-            hypothesis_id="H2-clarification-hang",
+            {"task_preview": task[:120]},
         )
-        if self._mode == "single_agent":
-            self._handle_new_task_single_agent(task)
-            return
-
         self._pending_request = task
         self._chat.add_user_message(task)
         self._chat.set_state(ChatState.PLANNING)
@@ -523,79 +535,14 @@ class MainWindow(QMainWindow):
         self._chat.thinking.start()
         self._check_clarification_async(task)
 
-    def _handle_new_task_single_agent(self, task: str) -> None:
-        """Single-agent mode: skip clarification and planning, execute immediately."""
-        self._pending_request = task
-        self._pending_specs = []
-        self._chat.add_user_message(task)
-        self._chat.set_state(ChatState.EXECUTING)
-        self._input.setEnabled(False)
-        self._set_input_state(ChatState.EXECUTING)
-        self.set_status("Executing…")
-        self._stop_btn.show()
-        self._stop_btn.setEnabled(True)
-
-        if not self._bridge:
-            self._chat.add_ai_message(
-                "No AI bridge connected. Please check your configuration.",
-                thought_prompt="Bridge unavailable.",
-            )
-            self._chat.set_state(ChatState.ERROR)
-            self._input.setEnabled(True)
-            self._set_input_state(ChatState.ERROR)
-            self._stop_btn.setEnabled(False)
-            self._stop_btn.hide()
-            self.set_status("Error")
-            return
-
-        self._bridge.start_task_single_agent(
-            user_request=task,
-            on_log=self.log,
-            on_status=lambda s: None,
-            on_done=self._on_single_agent_done,
-        )
-
-    def _on_single_agent_done(self, result: dict) -> None:
-        self._chat.thinking.stop()
-        if isinstance(result, dict):
-            final_status = result.get("status", "failed")
-            summary = result.get("single_agent_summary", "")
-            error_msg = result.get("error", "")
-            if error_msg and final_status in ("crashed", "failed"):
-                self._chat.add_ai_message(
-                    f"Task failed: {error_msg}",
-                    thought_prompt=result.get("traceback", error_msg),
-                )
-        else:
-            final_status = "failed"
-            summary = ""
-
-        terminal = ChatState.DONE if final_status == "completed" else ChatState.ERROR
-        self._chat.set_state(terminal)
-        self._input.setEnabled(True)
-        self._set_input_state(terminal)
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.hide()
-        _done_labels = {
-            "completed": "Done",
-            "failed": "Failed",
-            "cancelled": "Cancelled",
-            "crashed": "Crashed",
-        }
-        self.set_status(_done_labels.get(final_status, f"Finished: {final_status}"))
-
-        if summary and final_status == "completed":
-            self._chat.add_ai_message(summary, thought_prompt="Single-agent finish summary.")
-
     def _start_planning_phase(self) -> None:
         """Start thinking stream + plan_only after clarification is resolved."""
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
-        agent_dbg(
+        emit(
             "app.py:_start_planning_phase",
             "planning_phase_start",
             {"request_preview": (self._pending_request or "")[:120]},
-            hypothesis_id="H1-planner-hang",
         )
         self._set_input_state(ChatState.PLANNING)
         self.set_status("Planning…")
@@ -629,13 +576,12 @@ class MainWindow(QMainWindow):
         # a long multi-step task as "chat"/"consult", silently skipping planning.
         _AUTOMATE_SIGNAL_RE = re.compile(r'(\d+[\).]\s|https?://)', re.IGNORECASE)
         if _AUTOMATE_SIGNAL_RE.search(task):
-            from trinity_pilot._agent_debug import agent_dbg
+            from trinity_pilot.telemetry.trace import emit
 
-            agent_dbg(
+            emit(
                 "app.py:_check_clarification_async",
                 "clarification_fast_automate_clear",
                 {"task_preview": task[:80]},
-                hypothesis_id="H2-clarification-hang",
             )
             relay.clear.emit()
             return
@@ -644,14 +590,13 @@ class MainWindow(QMainWindow):
 
         def _run() -> None:
             import time as _time
-            from trinity_pilot._agent_debug import agent_dbg
+            from trinity_pilot.telemetry.trace import emit
 
             t0 = _time.monotonic()
-            agent_dbg(
+            emit(
                 "app.py:_check_clarification_async",
                 "clarification_thread_start",
                 {"task_preview": task[:120]},
-                hypothesis_id="H2-clarification-hang",
             )
             try:
                 import asyncio
@@ -661,11 +606,10 @@ class MainWindow(QMainWindow):
 
                 if not settings:
                     # No config — can't automate; respond as chat.
-                    agent_dbg(
+                    emit(
                         "app.py:_check_clarification_async",
                         "no_settings_direct_chat",
                         {"elapsed_ms": int((_time.monotonic() - t0) * 1000)},
-                        hypothesis_id="H2-clarification-hang",
                     )
                     relay.direct_response.emit("chat", task)
                     return
@@ -717,47 +661,43 @@ class MainWindow(QMainWindow):
                     data = _json.loads(raw)
                     intent = data.get("intent", "automate")
                     if intent in ("chat", "consult"):
-                        agent_dbg(
+                        emit(
                             "app.py:_check_clarification_async",
                             "clarification_direct_response",
                             {
                                 "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                                 "intent": intent,
                             },
-                            hypothesis_id="H2-clarification-hang",
                         )
                         relay.direct_response.emit(intent, task)
                     elif data.get("needs_clarification") and data.get("question"):
-                        agent_dbg(
+                        emit(
                             "app.py:_check_clarification_async",
                             "clarification_question",
                             {
                                 "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                                 "question_preview": str(data.get("question", ""))[:120],
                             },
-                            hypothesis_id="H2-clarification-hang",
                         )
                         relay.question.emit(str(data["question"]))
                     else:
-                        agent_dbg(
+                        emit(
                             "app.py:_check_clarification_async",
                             "clarification_clear",
                             {
                                 "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                                 "intent": intent,
                             },
-                            hypothesis_id="H2-clarification-hang",
                         )
                         relay.clear.emit()
                 except Exception as exc:
-                    agent_dbg(
+                    emit(
                         "app.py:_check_clarification_async",
                         "clarification_llm_error_default_clear",
                         {
                             "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                             "error": str(exc)[:300],
                         },
-                        hypothesis_id="H2-clarification-hang",
                     )
                     # LLM classification failed — default to planning so automation
                     # requests still work; chat messages hit the pre-classifier above.
@@ -765,14 +705,13 @@ class MainWindow(QMainWindow):
                 finally:
                     loop.close()
             except Exception as exc:
-                agent_dbg(
+                emit(
                     "app.py:_check_clarification_async",
                     "clarification_outer_error_default_clear",
                     {
                         "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                         "error": str(exc)[:300],
                     },
-                    hypothesis_id="H2-clarification-hang",
                 )
                 relay.clear.emit()
 
@@ -792,13 +731,12 @@ class MainWindow(QMainWindow):
 
     def _on_clarification_clear(self) -> None:
         """Task is specific enough — proceed to planning."""
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
-        agent_dbg(
+        emit(
             "app.py:_on_clarification_clear",
             "clarification_cleared_on_main_thread",
             {},
-            hypothesis_id="H2-clarification-hang",
         )
         self._start_planning_phase()
 
@@ -932,16 +870,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_planning_done(self, specs: list) -> None:
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
-        agent_dbg(
+        emit(
             "app.py:_on_planning_done",
             "planning_done_on_main_thread",
             {
                 "n_specs": len(specs),
                 "objective_ids": [s.get("objective_id") for s in specs if isinstance(s, dict)],
             },
-            hypothesis_id="H3-qt-relay",
         )
         self._chat.thinking.stop()
         self._pending_specs = list(specs)
@@ -953,13 +890,12 @@ class MainWindow(QMainWindow):
         self.set_status("Awaiting confirmation")
 
     def _on_planning_error(self, error: str) -> None:
-        from trinity_pilot._agent_debug import agent_dbg
+        from trinity_pilot.telemetry.trace import emit
 
-        agent_dbg(
+        emit(
             "app.py:_on_planning_error",
             "planning_error_on_main_thread",
             {"error": error[:500]},
-            hypothesis_id="H3-qt-relay",
         )
         self._chat.thinking.stop()
         self._chat.add_ai_message(
@@ -1149,105 +1085,60 @@ def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
     sys.excepthook = _qt_hook
 
 
-def start_http_bridge(window_ref: list[MainWindow], port: int):
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import socketserver
-    import threading
+def run_app() -> None:
+    trace_path = os.environ.get("TRINITY_STARTUP_TRACE")
+    if trace_path:
+        # A blocked Qt constructor otherwise leaves no Python-level evidence.
+        # This is opt-in and writes beside the requested startup marker file.
+        import faulthandler
 
-    class BridgeHandler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            pass
-
-        def do_GET(self):
-            if self.path == "/status":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                
-                win = window_ref[0] if window_ref else None
-                status = win._status_label.text() if win else "Unknown"
-                last_error = ""
-                active_objective_id = ""
-                
-                if win and win._pending_specs:
-                    active_objective_id = win._pending_specs[0].get("objective_id", "")
-                
-                response = {
-                    "status": status,
-                    "last_error": last_error,
-                    "active_objective_id": active_objective_id,
-                }
-                self.wfile.write(json.dumps(response).encode("utf-8"))
-            elif self.path == "/run_info":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                win = window_ref[0] if window_ref else None
-                response = {
-                    "mode": win._mode if win else "unknown",
-                    "pending_request": win._pending_request if win else "",
-                    "n_pending_specs": len(win._pending_specs) if win else 0,
-                }
-                self.wfile.write(json.dumps(response).encode("utf-8"))
-            else:
-                self.send_response(404)
-                self.end_headers()
-
-    class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
-        allow_reuse_address = True
-
-    server = None
-    for attempt_port in range(port, port + 10):
-        try:
-            server = ThreadedHTTPServer(("localhost", attempt_port), BridgeHandler)
-            print(f"[HTTP Bridge] Listening on http://localhost:{attempt_port}", flush=True)
-            break
-        except OSError as e:
-            print(f"[HTTP Bridge] Port {attempt_port} busy: {e}. Retrying next port...", flush=True)
-
-    if server:
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        return server
-    else:
-        print("[HTTP Bridge] Failed to bind to any port in range.", flush=True)
-        return None
-
-
-def run_app(test_mode: bool = False, mode: str = "multi", test_port: int | None = None) -> None:
-    import os
-
+        stack_trace = open(f"{trace_path}.stacks", "a", encoding="utf-8")
+        faulthandler.dump_traceback_later(15, repeat=True, file=stack_trace)
     from trinity_pilot.config import Settings
-    from trinity_pilot.ui.bridge import WorkflowBridge
-
-    if test_mode:
-        os.environ.setdefault("TRINITY_TRACE", "1")
+    _startup_trace("settings_imported")
 
     app = QApplication(sys.argv)
+    _startup_trace("qapplication_created")
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-
     settings = Settings.from_env()
-    browser_ready, browser_preflight_message = settings.playwright_preflight()
+    _startup_trace("settings_loaded")
 
-    bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)
-
-    window = MainWindow(debug_mode=settings.debug_mode, mode=mode)
-    window.set_bridge(bridge)
+    window = MainWindow(debug_mode=settings.debug_mode)
     window.set_settings(settings)
-    window.log("[SYSTEM] Local orchestrator ready.")
-    if browser_ready:
-        window.log(f"[SYSTEM] {browser_preflight_message}")
-    else:
-        window.log(f"[WARNING] Browser automation unavailable. {browser_preflight_message}")
-
+    _startup_trace("mainwindow_created")
     _window_ref: list[MainWindow] = [window]
     _install_qt_exception_hook(_window_ref)
-
-    if test_port is not None:
-        start_http_bridge(_window_ref, test_port)
-
-    # Apply base QSS (token-based, no qt_material dependency)
     apply_app_qss(app, dark=False)
-
     window.show()
+    app.processEvents()
+    _startup_trace("window_shown")
+    startup_relay = _StartupRelay()
+    startup_relay.status.connect(window.log)
+
+    def start_backend() -> None:
+        """Keep potentially slow backend construction behind first paint."""
+        try:
+            from trinity_pilot.ui.bridge import WorkflowBridge
+            _startup_trace("bridge_imported")
+            bridge = WorkflowBridge(settings=settings, db_path=settings.db_path)
+            _startup_trace("bridge_created")
+            window.set_bridge(bridge)
+            window.log("[SYSTEM] Local orchestrator ready.")
+        except Exception as exc:
+            window.log(f"[ERROR] Local orchestrator startup failed: {exc}")
+
+    def playwright_readiness() -> None:
+        _startup_trace("playwright_preflight_started")
+        try:
+            ready, message = settings.playwright_preflight()
+            prefix = "[SYSTEM]" if ready else "[WARNING]"
+            startup_relay.status.emit(f"{prefix} {message}")
+        except Exception as exc:
+            startup_relay.status.emit(f"[WARNING] Browser readiness failed: {exc}")
+        finally:
+            _startup_trace("playwright_preflight_finished")
+
+    QTimer.singleShot(0, start_backend)
+    threading.Thread(target=playwright_readiness, name="playwright-readiness", daemon=True).start()
+    _startup_trace("event_loop_entered")
     sys.exit(app.exec())

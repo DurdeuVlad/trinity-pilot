@@ -90,6 +90,15 @@ def _drain(q) -> list:
     return out
 
 
+def _mcp_dispatch(worker: TerminalWorker, orch: AsyncTaskOrchestrator):
+    worker._signals_queue = orch.signals
+
+    async def dispatch(domain: DomainType, spec: ObjectiveSpec) -> dict:
+        return await worker.execute(spec)
+
+    return dispatch
+
+
 class TestAgenticHandoff:
 
     @pytest.mark.asyncio
@@ -104,7 +113,7 @@ class TestAgenticHandoff:
         )
 
         orch = AsyncTaskOrchestrator(_SETTINGS, db_path=":memory:")
-        orch._router.route = MagicMock(return_value=worker)
+        orch._mcp_pool.dispatch = _mcp_dispatch(worker, orch)
 
         with patch("trinity_pilot.orchestrator.engine.GeminiProvider"):
             with patch("trinity_pilot.orchestrator.engine.ObjectiveReviewer", return_value=_mock_reviewer()):
@@ -130,7 +139,7 @@ class TestAgenticHandoff:
         )
 
         orch = AsyncTaskOrchestrator(_SETTINGS, db_path=":memory:")
-        orch._router.route = MagicMock(return_value=worker)
+        orch._mcp_pool.dispatch = _mcp_dispatch(worker, orch)
 
         with patch("trinity_pilot.orchestrator.engine.GeminiProvider"):
             with patch("trinity_pilot.orchestrator.engine.ObjectiveReviewer"):
@@ -152,7 +161,7 @@ class TestAgenticHandoff:
         worker = TerminalWorker(llm=llm)
 
         orch = AsyncTaskOrchestrator(_SETTINGS, db_path=":memory:")
-        orch._router.route = MagicMock(return_value=worker)
+        orch._mcp_pool.dispatch = _mcp_dispatch(worker, orch)
 
         with patch("trinity_pilot.orchestrator.engine.GeminiProvider"):
             with patch("trinity_pilot.orchestrator.engine.ObjectiveReviewer", return_value=_mock_reviewer()):
@@ -175,7 +184,7 @@ class TestAgenticHandoff:
         mock_reviewer = _mock_reviewer()
 
         orch = AsyncTaskOrchestrator(_SETTINGS, db_path=":memory:")
-        orch._router.route = MagicMock(return_value=worker)
+        orch._mcp_pool.dispatch = _mcp_dispatch(worker, orch)
 
         with patch("trinity_pilot.orchestrator.engine.GeminiProvider"):
             with patch("trinity_pilot.orchestrator.engine.ObjectiveReviewer", return_value=mock_reviewer):

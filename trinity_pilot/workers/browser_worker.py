@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import re
 import tempfile
@@ -12,7 +11,7 @@ from typing import Any
 from google.genai import types as genai_types
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
-from trinity_pilot.llm.base import LLMMessage, LLMProvider
+from trinity_pilot.llm.base import LLMProvider
 from trinity_pilot.workers.agentic_mixin import (
     AgenticWorkerMixin,
     _finish_decl,
@@ -25,20 +24,6 @@ from trinity_pilot.workers.evidence_schema import validate_evidence
 from trinity_pilot.workers.worker_result import WorkerResult
 from trinity_pilot.workers.write_verification import verify_and_write_file
 
-_BROWSER_SYNTH_SYSTEM = """\
-You are a browser automation agent that has just navigated to a web page.
-Based on the original goal and the captured page data, output ONLY a JSON array
-of write_file actions to save the required information to disk.
-
-Each action: {"action":"write_file","path":"<absolute-path>","content":"<text>"}
-
-RULES:
-- Extract the data the goal asks for from PAGE TITLE and PAGE HTML.
-- Use the exact file path specified in the goal.
-- For JSON pages (like httpbin), parse the visible text to find the requested field.
-- The content should contain exactly what the goal asks to be saved — no extra commentary.
-- Return ONLY the JSON array. No markdown fences, no prose.
-"""
 
 _BROWSER_AGENT_SYSTEM = """\
 You are a browser automation agent using Playwright on a live browser.
@@ -65,7 +50,7 @@ Available tools:
 RULES:
 - Always navigate to a URL first before interacting with elements.
 - After each ACTION tool call, read its result before proceeding. If a tool failed or
-  produced unexpected state, adapt — do not blindly continue to the next planned step.
+  produced unexpected state, adapt â€” do not blindly continue to the next planned step.
 - Call screenshot after key actions to verify the result visually.
 - Call finish when done or if the objective is definitively impossible.
 - Call report_blocking only if you genuinely cannot proceed without external input.
@@ -170,7 +155,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         if page_title:
             lines.append(f"  Page title: {page_title!r}")
         if page_url == "about:blank":
-            lines.append("  (Browser just started — no page loaded yet. Navigate to target URL first.)")
+            lines.append("  (Browser just started â€” no page loaded yet. Navigate to target URL first.)")
         return "\n".join(lines)
 
     def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
@@ -239,18 +224,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
                 page = await context.new_page()
                 self._page = page
 
-                if self._has_planned_actions(spec):
-                    await self._run_objective(page, spec, evidence)
-                    summary = self._read_result_summary(spec, evidence)
-                    result = WorkerResult(
-                        status="success",
-                        summary=str(summary) if summary else (
-                            f"Executed and verified {len(spec.metadata['actions'])} planner actions "
-                            f"for '{spec.objective_id}'."
-                        ),
-                    )
-                else:
-                    result = await self.run_loop(spec, evidence)
+                result = await self.run_loop(spec, evidence)
                 evidence["worker_result_status"] = result.status
                 evidence["worker_result_summary"] = result.summary
 
@@ -340,82 +314,6 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)
 
-    # ------------------------------------------------------------------
-    # Backward-compatible helpers
-    # ------------------------------------------------------------------
-
-    async def _run_objective(
-        self,
-        page: Any,
-        spec: ObjectiveSpec,
-        evidence: dict[str, Any],
-    ) -> None:
-        actions_executed = False
-
-        metadata_actions = spec.metadata.get("actions")
-        if self._has_planned_actions(spec):
-            for action in metadata_actions:
-                await self._dispatch_action(page, action, evidence)
-            actions_executed = True
-            self._record_read_completion(metadata_actions, evidence)
-
-        if not actions_executed:
-            json_match = re.search(r'\{.*"actions"\s*:.*\}', spec.goal, re.DOTALL)
-            if json_match:
-                try:
-                    action_data = json.loads(json_match.group(0))
-                    actions = action_data.get("actions", [])
-                    for action in actions:
-                        await self._dispatch_action(page, action, evidence)
-                    actions_executed = True
-                except Exception:
-                    pass
-
-        if not actions_executed:
-            goal_lower = spec.goal.lower()
-            if "navigate" in goal_lower or "open" in goal_lower or "go to" in goal_lower:
-                url = self._extract_url(spec.goal)
-                if url:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-
-        screenshot_bytes = await page.screenshot()
-        evidence["screenshot"] = base64.b64encode(screenshot_bytes).decode()
-        evidence["dom_snapshot"] = await page.content()
-        evidence["page_title"] = await page.title()
-        evidence["page_url"] = page.url
-
-    @staticmethod
-    def _has_planned_actions(spec: ObjectiveSpec) -> bool:
-        actions = spec.metadata.get("actions")
-        return isinstance(actions, list) and bool(actions)
-
-    @staticmethod
-    def _record_read_completion(actions: list[dict[str, Any]], evidence: dict[str, Any]) -> None:
-        """Declare completion for read-only browser objectives from fresh sensors."""
-        read_only_actions = {"navigate", "wait_for", "read_page", "read_text", "summarize_page"}
-        if any(action.get("type") not in read_only_actions for action in actions):
-            return
-        content = evidence.get("extracted_content")
-        if not isinstance(content, str) or not content.strip():
-            return
-        evidence["completion"] = {
-            "passed": True,
-            "summary": "Browser content was read and verified from the live page.",
-            "page_url": evidence.get("page_url"),
-            "page_title": evidence.get("page_title"),
-            "http_status": evidence.get("page_http_status"),
-            "extracted_content_length": len(content),
-        }
-
-    @staticmethod
-    def _read_result_summary(spec: ObjectiveSpec, evidence: dict[str, Any]) -> Any:
-        """Return the requested browser fact, not a generic action-status line."""
-        if re.search(r"\b(?:exact\s+)?(?:page\s+)?title\b", spec.goal, re.IGNORECASE):
-            title = evidence.get("page_title")
-            if isinstance(title, str) and title.strip():
-                return title
-        return evidence.get("summary") or evidence.get("extracted_content")
-
     @staticmethod
     async def _visible_page_text(page: Any) -> str:
         """Return meaningful visible content rather than regex-stripped document markup."""
@@ -462,119 +360,3 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
         if selector:
             result["selector"] = selector
         evidence.setdefault("action_results", []).append(result)
-
-    async def _dispatch_action(
-        self, page: Any, action: dict[str, Any], evidence: dict[str, Any] | None = None
-    ) -> None:
-        kind = action.get("type", "")
-        if kind == "navigate":
-            response = await page.goto(action["url"], wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_selector("body", state="attached", timeout=10_000)
-            if evidence is not None:
-                evidence["page_url"] = page.url
-                evidence["page_http_status"] = response.status if response is not None else None
-                evidence.setdefault("action_log", []).append(
-                    f"planned navigate: {page.url} (HTTP {evidence['page_http_status']})"
-                )
-        elif kind == "click":
-            await page.click(action["selector"], timeout=10_000)
-        elif kind == "fill":
-            await page.fill(action["selector"], action["value"], timeout=10_000)
-        elif kind == "wait_for":
-            await page.wait_for_selector(action["selector"], timeout=10_000)
-        elif kind == "read_page":
-            text = await self._visible_page_text(page)
-            if evidence is not None:
-                self._record_extracted_content(evidence, text, source="read_page")
-                await self._capture_read_evidence(page, evidence, "read_page", text)
-                evidence.setdefault("action_log", []).append("planned read_page")
-        elif kind == "read_text":
-            selector = action.get("selector")
-            if not selector:
-                text = await BrowserWorker._visible_page_text(page)
-                if evidence is not None:
-                    self._record_extracted_content(evidence, text, source="read_page")
-                    await self._capture_read_evidence(page, evidence, "read_page", text)
-                    evidence.setdefault("action_log", []).append(
-                        "planned read_text without selector normalized to read_page"
-                    )
-                return
-            text = (await page.locator(selector).first.inner_text(timeout=10_000)).strip()
-            if evidence is not None:
-                self._record_extracted_content(evidence, text, source=f"read_text:{selector}")
-                await self._capture_read_evidence(page, evidence, "read_text", text, selector=selector)
-                evidence.setdefault("extracted_text", {})[selector] = text
-                evidence.setdefault("action_log", []).append(f"planned read_text: {selector}")
-        elif kind == "summarize_page":
-            if evidence is None or not evidence.get("extracted_content"):
-                raise WorkerError("summarize_page requires a preceding read_page or read_text action")
-            source_text = str(evidence["extracted_content"])
-            max_chars = int(action.get("max_chars", 700))
-            prompt = (
-                "Summarize the following extracted page content in one concise, factual paragraph. "
-                "Return only the summary, with no preamble or markdown.\n\n"
-                f"PAGE CONTENT:\n{source_text}"
-            )
-            try:
-                response = await asyncio.wait_for(
-                    self._llm.complete([LLMMessage(role="user", content=prompt)]), timeout=30
-                )
-            except asyncio.TimeoutError as exc:
-                raise WorkerError("summarize_page timed out after 30s") from exc
-            summary = (response.content or "").strip()
-            if not summary:
-                raise WorkerError("summarize_page returned empty output")
-            summary = summary[:max_chars]
-            evidence["summary"] = summary
-            evidence.setdefault("action_results", []).append({"type": "summarize_page", "text": summary})
-            evidence.setdefault("action_log", []).append("planned summarize_page")
-        else:
-            raise WorkerError(f"Unsupported planner browser action: {kind!r}")
-
-    @staticmethod
-    def _extract_url(text: str) -> str | None:
-        match = re.search(r"https?://[^\s\"']+", text)
-        return match.group(0) if match else None
-
-    async def _synthesize_file_writes(
-        self, spec: ObjectiveSpec, evidence: dict[str, Any]
-    ) -> None:
-        from trinity_pilot.llm.base import LLMMessage
-        from trinity_pilot.llm.gemini import GeminiProvider
-
-        page_title = evidence.get("page_title") or ""
-        page_url = evidence.get("page_url") or ""
-        dom_raw = evidence.get("dom_snapshot") or ""
-        dom_text = re.sub(r"<[^>]+>", " ", dom_raw)
-        dom_text = re.sub(r"\s+", " ", dom_text).strip()[:4000]
-
-        provider = GeminiProvider(
-            api_key=os.environ["GEMINI_API_KEY"],
-            model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-        )
-        user_msg = (
-            f"GOAL: {spec.goal}\n\n"
-            f"PAGE TITLE: {page_title}\n"
-            f"PAGE URL: {page_url}\n"
-            f"PAGE TEXT (first 4000 chars):\n{dom_text}\n\n"
-            "Generate the write_file JSON array now."
-        )
-        response = await provider.complete(
-            [LLMMessage(role="user", content=user_msg)],
-            system=_BROWSER_SYNTH_SYSTEM,
-        )
-        raw = response.content.strip()
-        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*(?:```|$)", raw)
-        if match:
-            raw = match.group(1).strip()
-        try:
-            actions = json.loads(raw)
-        except Exception as exc:
-            raise WorkerError(f"LLM produced invalid JSON for file writes: {exc}") from exc
-
-        for step in actions:
-            if step.get("action") == "write_file":
-                path = step["path"]
-                content = step["content"]
-                verify_and_write_file(path, content, evidence)
-                evidence.setdefault("created_files", []).append(path)

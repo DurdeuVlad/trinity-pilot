@@ -12,11 +12,30 @@ from typing import Generator
 
 import pytest
 
+try:
+    _STARTUP_MARKER = Path.home() / ".ai" / "tp_gui_startup.marker"
+    _STARTUP_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    with _STARTUP_MARKER.open("a", encoding="utf-8") as _marker:
+        _marker.write("conftest-before-settings\n")
+except OSError:
+    pass
+
 from trinity_pilot.config import Settings
+
+try:
+    with _STARTUP_MARKER.open("a", encoding="utf-8") as _marker:
+        _marker.write("conftest-after-settings\n")
+except OSError:
+    pass
+
+# pywinauto reads this module-level setting on its first import. Keep it ahead
+# of every GUI fixture so the interactive Scheduled Task process uses MTA.
+if sys.platform == "win32":
+    sys.coinit_flags = 0  # COINIT_MULTITHREADED
 
 
 # ---------------------------------------------------------------------------
-# QApplication — session-scoped, guarded against double-init
+# QApplication â€” session-scoped, guarded against double-init
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
@@ -28,11 +47,11 @@ def qapp():
     if app is None:
         app = QApplication(sys.argv)
     yield app
-    # Do NOT call app.exec() or app.quit() here — we just need the instance
+    # Do NOT call app.exec() or app.quit() here â€” we just need the instance
 
 
 # ---------------------------------------------------------------------------
-# Settings — session-scoped; skip whole session if no API key
+# Settings â€” session-scoped; skip whole session if no API key
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
@@ -40,12 +59,12 @@ def e2e_settings() -> Settings:
     """Load Settings from environment. Skip session if GEMINI_API_KEY is absent."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        pytest.skip("GEMINI_API_KEY not set — skipping e2e tests")
+        pytest.skip("GEMINI_API_KEY not set â€” skipping e2e tests")
     return Settings.from_env()
 
 
 # ---------------------------------------------------------------------------
-# tmp_db_path — function-scoped isolated DB path
+# tmp_db_path â€” function-scoped isolated DB path
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -56,7 +75,7 @@ def tmp_db_path(tmp_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# cleanup_registry — function-scoped path accumulator with finalizer
+# cleanup_registry â€” function-scoped path accumulator with finalizer
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -85,7 +104,7 @@ def cleanup_registry(tmp_path: Path) -> Generator[list[Path], None, None]:
 
 
 # ---------------------------------------------------------------------------
-# bridge_harness — function-scoped BridgeTestHarness
+# bridge_harness â€” function-scoped BridgeTestHarness
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -100,7 +119,7 @@ def bridge_harness(qapp, e2e_settings: Settings, tmp_db_path: str):
 
 
 # ---------------------------------------------------------------------------
-# Marker: desktop_available — skip if not on Windows with a visible desktop
+# Marker: desktop_available â€” skip if not on Windows with a visible desktop
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -112,7 +131,7 @@ def desktop_available():
 
 
 # ---------------------------------------------------------------------------
-# app — function-scoped GUI driver (Layer 3: full Qt GUI via pywinauto)
+# app â€” function-scoped GUI driver (Layer 3: full Qt GUI via pywinauto)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -126,7 +145,7 @@ def app(request):
         pytest.skip("GUI tests require Windows")
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        pytest.skip("GEMINI_API_KEY not set — skipping GUI e2e tests")
+        pytest.skip("GEMINI_API_KEY not set â€” skipping GUI e2e tests")
 
     from tests.e2e._gui_driver import AppDriver
 
@@ -146,40 +165,6 @@ def app(request):
 
 
 # ---------------------------------------------------------------------------
-# app_single_agent — function-scoped GUI driver in single-agent (ablation) mode
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def app_single_agent(request):
-    """Fresh Trinity Pilot GUI instance in single-agent mode per test.
-
-    Launches with --mode single_agent so there is no confirm step.
-    Skipped automatically on non-Windows or if GEMINI_API_KEY is absent.
-    """
-    if sys.platform != "win32":
-        pytest.skip("GUI tests require Windows")
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        pytest.skip("GEMINI_API_KEY not set — skipping GUI e2e tests")
-
-    from tests.e2e._gui_driver import AppDriver
-
-    driver = AppDriver.launch(mode="single_agent")
-    yield driver
-
-    safe_name = request.node.name.replace("/", "_").replace("\\", "_")[:60]
-    driver.snap(f"sa_teardown_{safe_name}")
-    checkpoints = getattr(driver, "infra_checkpoints", {})
-    driver.close()
-    try:
-        import json
-        temp_file = Path(__file__).resolve().parent.parent.parent / "temp_infra.json"
-        temp_file.write_text(json.dumps(checkpoints), encoding="utf-8")
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Marker registration (also in pyproject.toml)
 # ---------------------------------------------------------------------------
 
@@ -187,3 +172,4 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "e2e: end-to-end tests requiring live orchestrator")
     config.addinivalue_line("markers", "desktop: requires visible Windows desktop")
     config.addinivalue_line("markers", "slow: long-running scenarios")
+    config.addinivalue_line("markers", "external_network: uses a public website; not part of deterministic acceptance")

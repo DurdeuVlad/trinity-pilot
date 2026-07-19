@@ -9,6 +9,7 @@ def dbg(
     message: str,
     data: dict | None = None,
     hypothesis_id: str = "",
-    run_id: str = "probe",
+    run_id: str = "",
 ) -> None:
-    emit(location, message, data, hypothesis_id=hypothesis_id, run_id=run_id)
+    del hypothesis_id
+    emit(location, message, data, run_id=run_id)

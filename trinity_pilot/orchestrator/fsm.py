@@ -9,15 +9,17 @@ class ObjectiveState(str, Enum):
     STEERED = "steered"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 VALID_TRANSITIONS: dict[ObjectiveState, set[ObjectiveState]] = {
     ObjectiveState.PENDING:  {ObjectiveState.RUNNING},
-    ObjectiveState.RUNNING:  {ObjectiveState.STUCK, ObjectiveState.DONE, ObjectiveState.FAILED},
+    ObjectiveState.RUNNING:  {ObjectiveState.STUCK, ObjectiveState.DONE, ObjectiveState.FAILED, ObjectiveState.CANCELLED},
     ObjectiveState.STUCK:    {ObjectiveState.STEERED, ObjectiveState.FAILED},
     ObjectiveState.STEERED:  {ObjectiveState.RUNNING, ObjectiveState.DONE, ObjectiveState.FAILED},
     ObjectiveState.DONE:     set(),
     ObjectiveState.FAILED:   set(),
+    ObjectiveState.CANCELLED: set(),
 }
 
 

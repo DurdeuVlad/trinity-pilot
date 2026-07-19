@@ -40,6 +40,7 @@ from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
+from trinity_pilot.mcp.base_server import ControlState
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.desktop_worker import DesktopWorker
 
@@ -49,6 +50,7 @@ mcp = FastMCP(
 )
 
 SERVER_NAME = "trinity-pilot-desktop"
+_control = ControlState()
 
 TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("desktop_run", SERVER_NAME, "task", "Run a full desktop objective."),
@@ -57,6 +59,8 @@ TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("window_hierarchy", SERVER_NAME, "sensor", "Read desktop window hierarchy."),
     ToolMetadata("get_element_value", SERVER_NAME, "sensor", "Read a UI element value."),
     ToolMetadata("app_state", SERVER_NAME, "sensor", "Read application running state."),
+    ToolMetadata("read_window_text", SERVER_NAME, "sensor", "Read visible UI text."),
+    ToolMetadata("check_control", SERVER_NAME, "sensor", "Check a UI control state."),
     ToolMetadata("launch_app", SERVER_NAME, "action", "Launch an application."),
     ToolMetadata("focus_window", SERVER_NAME, "action", "Focus a window."),
     ToolMetadata("type_text", SERVER_NAME, "action", "Type text into the focused window."),
@@ -64,6 +68,16 @@ TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("press_key", SERVER_NAME, "action", "Press a key."),
     ToolMetadata("write_file", SERVER_NAME, "action", "Write text to a file."),
     ToolMetadata("wait", SERVER_NAME, "action", "Pause desktop execution."),
+    ToolMetadata("click_button", SERVER_NAME, "action", "Click a labelled UI button."),
+    ToolMetadata("kill_process", SERVER_NAME, "action", "Terminate a process."),
+    ToolMetadata("click", SERVER_NAME, "action", "Click screen coordinates."),
+    ToolMetadata("drag_to", SERVER_NAME, "action", "Drag between screen coordinates."),
+    ToolMetadata("scroll", SERVER_NAME, "action", "Scroll at screen coordinates."),
+    ToolMetadata("clipboard_write", SERVER_NAME, "action", "Write text to the clipboard."),
+    ToolMetadata("todo_write", SERVER_NAME, "control", "Replace the current todo list."),
+    ToolMetadata("todo_read", SERVER_NAME, "control", "Read the current todo list."),
+    ToolMetadata("todo_check", SERVER_NAME, "control", "Complete a todo item."),
+    ToolMetadata("todo_add", SERVER_NAME, "control", "Append a todo item."),
     ToolMetadata("finish", SERVER_NAME, "control", "Signal objective completion."),
     ToolMetadata("report_blocking", SERVER_NAME, "control", "Signal an unresolvable blocker."),
 )
@@ -348,17 +362,63 @@ async def launch_app(app: str, args: str = "", wait: float = 1.5) -> dict:
     """Launch an application by executable name and wait for it to start."""
     import subprocess
     app_args = args.split() if args else []
-    subprocess.Popen([app, *app_args])
+    process = subprocess.Popen([app, *app_args])
     await asyncio.sleep(wait)
-    return {"launched": app, "wait": wait}
+    return {"success": True, "action": "launch_app", "result": f"launched {app}", "observation": {**app_state(app), "pid": process.pid}, "error": None}
+
+
+@mcp.tool()
+async def click_button(button_text: str, window_title_re: str = "") -> dict:
+    """Click a UIA button by accessible label."""
+    try:
+        from pywinauto import Application
+        app = Application(backend="uia").connect(title_re=window_title_re or ".*", timeout=5)
+        button = app.top_window().child_window(title=button_text, control_type="Button")
+        button.click_input()
+        return {"success": True, "action": "click_button", "result": f"clicked button {button_text!r}", "observation": {"window": app.top_window().window_text()}, "error": None}
+    except Exception as exc:
+        return {"success": False, "action": "click_button", "result": "button click failed", "observation": {}, "error": str(exc)}
+
+
+@mcp.tool()
+async def kill_process(process_name: str) -> dict:
+    import subprocess
+    completed = await asyncio.to_thread(subprocess.run, ["taskkill", "/F", "/IM", process_name], capture_output=True, text=True)
+    return {"success": completed.returncode == 0, "action": "kill_process", "result": completed.stdout.strip(), "observation": {}, "error": completed.stderr.strip() or None}
+
+
+@mcp.tool()
+def read_window_text(window_title_re: str = "", max_items: int = 20) -> dict:
+    try:
+        from pywinauto import Application
+        app = Application(backend="uia").connect(title_re=window_title_re or ".*", timeout=5)
+        texts = [item.window_text() for item in app.top_window().descendants() if item.window_text()]
+        return {"window_title": app.top_window().window_text(), "texts": texts[:max_items]}
+    except Exception as exc:
+        return {"texts": [], "error": str(exc)}
+
+
+@mcp.tool()
+def check_control(window_title_re: str, control_name: str, check: str, expected: str = "") -> dict:
+    try:
+        from pywinauto import Application
+        control = Application(backend="uia").connect(title_re=window_title_re, timeout=5).top_window().child_window(title=control_name)
+        text = control.window_text()
+        values = {"exists": True, "enabled": control.is_enabled(), "checked": bool(getattr(control, "get_toggle_state", lambda: 0)()), "value_equals": text == expected, "text_contains": expected in text}
+        return {"passed": bool(values.get(check, False)), "check": check, "text": text}
+    except Exception as exc:
+        return {"passed": False, "check": check, "error": str(exc)}
 
 
 @mcp.tool()
 async def focus_window(title_re: str, wait: float = 0.5) -> dict:
     """Focus a window matching a title regex."""
     try:
-        from pywinauto import Application
-        application = Application(backend="uia").connect(title_re=title_re, timeout=5)
+        from pywinauto import Application, findwindows
+        handles = findwindows.find_windows(title_re=title_re)
+        if not handles:
+            raise RuntimeError(f"No window matching {title_re!r}")
+        application = Application(backend="uia").connect(handle=handles[-1], timeout=5)
         application.top_window().set_focus()
     except Exception as exc:
         return {"focused": False, "title_re": title_re, "error": str(exc)}
@@ -400,11 +460,16 @@ async def press_hotkey(keys: str) -> dict:
 @mcp.tool()
 async def press_key(key: str) -> dict:
     """Press a single key by name e.g. 'enter', 'multiply', '1'."""
-    worker = DesktopWorker.__new__(DesktopWorker)
-    evidence: dict = {"action_log": []}
-    await worker._press_key(key, evidence)
-    await asyncio.sleep(0.2)
-    return {"key": key, "log": evidence["action_log"][-1] if evidence["action_log"] else ""}
+    aliases = {"return": "enter", "equals": "enter", "multiply": "multiply", "add": "add"}
+    key = aliases.get(key.lower(), key)
+    try:
+        import pyautogui
+        pyautogui.FAILSAFE = False
+        pyautogui.press(key)
+        await asyncio.sleep(0.2)
+        return {"success": True, "action": "press_key", "result": f"pressed {key}", "observation": {}, "error": None}
+    except Exception as exc:
+        return {"success": False, "action": "press_key", "result": "key press failed", "observation": {}, "error": str(exc)}
 
 
 @mcp.tool()
@@ -426,9 +491,55 @@ async def wait(seconds: float) -> dict:
     return {"waited": seconds}
 
 
+@mcp.tool()
+async def click(x: int, y: int, button: str = "left", clicks: int = 1) -> dict:
+    import pyautogui
+    pyautogui.click(x=x, y=y, button=button, clicks=clicks)
+    return {"success": True, "action": "click", "result": f"clicked ({x}, {y})", "observation": {}, "error": None}
+
+
+@mcp.tool()
+async def drag_to(x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> dict:
+    import pyautogui
+    pyautogui.moveTo(x1, y1)
+    pyautogui.dragTo(x2, y2, duration=duration)
+    return {"success": True, "action": "drag_to", "result": f"dragged ({x1}, {y1}) to ({x2}, {y2})", "observation": {}, "error": None}
+
+
+@mcp.tool()
+async def scroll(x: int, y: int, clicks: int) -> dict:
+    import pyautogui
+    pyautogui.moveTo(x, y)
+    pyautogui.scroll(clicks)
+    return {"success": True, "action": "scroll", "result": f"scrolled {clicks}", "observation": {}, "error": None}
+
+
+@mcp.tool()
+async def clipboard_write(text: str) -> dict:
+    import subprocess
+    completed = await asyncio.to_thread(subprocess.run, ["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $input"], input=text, text=True, capture_output=True)
+    return {"success": completed.returncode == 0, "action": "clipboard_write", "result": f"copied {len(text)} chars", "observation": {}, "error": completed.stderr.strip() or None}
+
+
 # ---------------------------------------------------------------------------
 # Control tools
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+def todo_write(items: list[str], session_id: str = "default") -> dict:
+    return _control.write(items, session_id)
+
+@mcp.tool()
+def todo_read(session_id: str = "default") -> dict:
+    return _control.read(session_id)
+
+@mcp.tool()
+def todo_check(index: int, session_id: str = "default") -> dict:
+    return _control.check(index, session_id)
+
+@mcp.tool()
+def todo_add(item: str, session_id: str = "default") -> dict:
+    return _control.add(item, session_id)
 
 @mcp.tool()
 def finish(status: str, summary: str) -> dict:

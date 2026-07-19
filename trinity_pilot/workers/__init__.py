@@ -1,14 +1,12 @@
-from trinity_pilot.workers.base import DomainWorker, WorkerError
-from trinity_pilot.workers.browser_worker import BrowserWorker
-from trinity_pilot.workers.desktop_worker import DesktopWorker
-from trinity_pilot.workers.router import WorkerRouter
-from trinity_pilot.workers.terminal_worker import TerminalWorker
+"""Worker dispatch contract types.
+
+Concrete worker implementations are MCP-server internals and must be imported
+from their specific module only by the corresponding server.
+"""
+from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 
 __all__ = [
     "DomainWorker",
     "WorkerError",
-    "BrowserWorker",
-    "TerminalWorker",
-    "DesktopWorker",
-    "WorkerRouter",
+    "WorkerBlocker",
 ]

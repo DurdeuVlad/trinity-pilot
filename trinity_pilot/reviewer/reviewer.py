@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trinity_pilot.core.types import FailureReason, ObjectiveSpec, ReviewResult
@@ -24,8 +25,13 @@ def _extract_json(text: str) -> str:
 
 
 class ObjectiveReviewer:
-    def __init__(self, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        sensor_call: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+    ) -> None:
         self._provider = provider
+        self._sensor_call = sensor_call
         self.shadow_floor_trigger_count = 0
         self.floor_override_count = 0
 
@@ -42,6 +48,17 @@ class ObjectiveReviewer:
         *,
         shadow_llm_on_floor_trigger: bool = False,
     ) -> ReviewResult:
+        tool_log = evidence.get("tool_call_log")
+        if isinstance(tool_log, list) and tool_log:
+            final = tool_log[-1]
+            if isinstance(final, dict) and final.get("tool") == "finish":
+                control = final.get("result", {})
+                if control.get("status") == "failure":
+                    return ReviewResult(
+                        passed=False,
+                        failure_reason=FailureReason.FAILED_ASSERTION,
+                        notes="Worker tool log recorded an explicit failure finish.",
+                    )
         # An exact, sensor-backed completion result is stronger than a model
         # narrative. Workers use it when a final state can be read directly.
         completion = evidence.get("completion")
@@ -96,11 +113,46 @@ class ObjectiveReviewer:
                 shadow_llm_on_floor_trigger=shadow_llm_on_floor_trigger,
             )
 
+        # The executor's claims are not proof. When it wrote an artifact, independently
+        # re-read its metadata through the sensor MCP before asking the reviewer model.
+        # This stays bounded and read-only: at most five sensor calls per review.
+        await self._collect_independent_sensors(evidence)
+
         checklist_result = await evaluate_checklist(spec, evidence, self._provider)
         if checklist_result is not None:
             return checklist_result
 
         return await self._review_with_llm(spec, evidence)
+
+    async def _collect_independent_sensors(self, evidence: dict[str, Any]) -> None:
+        if self._sensor_call is None:
+            return
+        paths: list[str] = []
+        for path in evidence.get("written_files", []):
+            if isinstance(path, str):
+                paths.append(path)
+        for record in evidence.get("tool_call_log", []):
+            if not isinstance(record, dict) or record.get("tool") not in {"write_file", "save_file"}:
+                continue
+            path = record.get("args", {}).get("path")
+            if isinstance(path, str):
+                paths.append(path)
+        seen: set[str] = set()
+        sensor_results: list[dict[str, Any]] = []
+        for path in paths:
+            if path in seen or len(sensor_results) >= 5:
+                continue
+            seen.add(path)
+            try:
+                sensor_results.append({
+                    "tool": "file_stat",
+                    "path": path,
+                    "result": await self._sensor_call("file_stat", {"path": path}),
+                })
+            except Exception as exc:
+                sensor_results.append({"tool": "file_stat", "path": path, "error": str(exc)})
+        if sensor_results:
+            evidence["reviewer_sensor_log"] = sensor_results
 
     async def _maybe_shadow_floor_review(
         self,
@@ -125,7 +177,10 @@ class ObjectiveReviewer:
         import base64
 
         # Strip raw screenshot bytes from evidence JSON — pass as real image instead.
-        evidence_for_json = {k: v for k, v in evidence.items() if k != "screenshot"}
+        # The reviewer must never see executor chain-of-thought or intermediate
+        # model prose; only explicit action records and submitted evidence.
+        hidden_keys = {"screenshot", "llm_transcript", "thinking", "reasoning"}
+        evidence_for_json = {k: v for k, v in evidence.items() if k not in hidden_keys}
         screenshot_b64: str = evidence.get("screenshot", "")
 
         user_msg = REVIEWER_USER_TEMPLATE.format(

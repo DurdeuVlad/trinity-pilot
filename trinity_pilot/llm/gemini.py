@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any, Callable
 
 from google import genai
@@ -15,8 +14,8 @@ _MAX_RETRIES = 2
 _RETRY_BACKOFF_S = 1.5
 
 
-def _generate_with_retry(call: Callable[[], Any]) -> Any:
-    """Retry a blocking generate_content call on transient server overload.
+async def _generate_with_retry(call: Callable[[], Any]) -> Any:
+    """Retry a blocking generate_content call without blocking the event loop.
 
     Gemini returns 503 UNAVAILABLE ("high demand") under sustained load, which
     is common when running large evaluation suites back-to-back. Retrying with
@@ -25,11 +24,12 @@ def _generate_with_retry(call: Callable[[], Any]) -> Any:
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return call()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, call)
         except genai_errors.ServerError as exc:
             last_exc = exc
             if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_BACKOFF_S * (attempt + 1))
+                await asyncio.sleep(_RETRY_BACKOFF_S * (attempt + 1))
                 continue
             raise
     raise last_exc  # pragma: no cover — unreachable, satisfies type checkers
@@ -146,16 +146,12 @@ class GeminiProvider(LLMProvider):
         # Run in thread so asyncio.wait_for can reliably cancel if needed.
         # google-genai's async client holds HTTP connections open (SSE/chunked),
         # which prevents the event loop from processing cancellations.
-        loop = asyncio.get_event_loop()
         response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: _generate_with_retry(lambda: self._get_client().models.generate_content(
+            _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
                 )),
-            ),
             timeout=timeout,
         )
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
@@ -201,16 +197,12 @@ class GeminiProvider(LLMProvider):
             system_instruction=system if system else None,
             tools=tools,
         )
-        loop = asyncio.get_event_loop()
         response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: _generate_with_retry(lambda: self._get_client().models.generate_content(
+            _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
                     contents=contents,
                     config=config,
                 )),
-            ),
             timeout=timeout,
         )
 

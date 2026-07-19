@@ -36,10 +36,9 @@ from trinity_pilot.planner.dag import infer_cross_domain_independence, resolve_e
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
-from trinity_pilot.workers.router import WorkerRouter
 from trinity_pilot.workers.worker_result import WorkerResult
 
-# Evidence keys safe to forward into a dependent objective's prompt context —
+# Evidence keys safe to forward into a dependent objective's prompt context Ã¢â‚¬â€
 # small, text-only facts a downstream worker needs (e.g. a captured page title).
 # Excludes large/binary fields (screenshot, dom_snapshot) that would bloat the
 # next objective's LLM context without adding anything it can act on.
@@ -109,7 +108,6 @@ class AsyncTaskOrchestrator:
         self._attempt_store = AttemptStore(self._db_path)
         self._reflection_store = ReflectionStore(self._db_path)
         self._objective_store = ObjectiveStateStore(self._db_path)
-        self._router = WorkerRouter()
         self._mcp_pool = MCPClientPool()
         self._cancel_requested = asyncio.Event()
         self._snapshot = OrchestratorSnapshot()
@@ -124,6 +122,10 @@ class AsyncTaskOrchestrator:
 
     def cancel(self) -> None:
         self._cancel_requested.set()
+        try:
+            asyncio.get_running_loop().create_task(self._mcp_pool.aclose())
+        except RuntimeError:
+            pass
 
     async def plan(self, user_request: str) -> list[ObjectiveSpec]:
         provider = GeminiProvider(
@@ -221,17 +223,14 @@ class AsyncTaskOrchestrator:
         self._objective_store.upsert(task_id, objective_id, ObjectiveState.RUNNING)
         await self.signals.put(ObjectiveStarted(task_id, objective_id))
 
-        mcp_dispatch = getattr(self._settings, "mcp_dispatch_enabled", False)
-        worker = None
-        if not mcp_dispatch:
-            worker = self._router.route(spec)
-            worker._signals_queue = self.signals
-            worker._task_id = task_id
         reviewer_provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_worker_model,
         )
-        reviewer = ObjectiveReviewer(reviewer_provider)
+        try:
+            reviewer = ObjectiveReviewer(reviewer_provider, sensor_call=self._mcp_pool.call_sensor)
+        except TypeError:  # Compatibility with narrowly mocked reviewers in integrations.
+            reviewer = ObjectiveReviewer(reviewer_provider)
         analyser_provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_worker_model,
@@ -263,10 +262,7 @@ class AsyncTaskOrchestrator:
             )
             try:
                 budget.charge_step()
-                if mcp_dispatch:
-                    evidence = await self._mcp_pool.dispatch(spec.domain, spec)
-                else:
-                    evidence = await worker.execute(spec)
+                evidence = await self._mcp_pool.dispatch(spec.domain, spec)
                 last_evidence = dict(evidence)
                 # If worker definitively failed, skip reviewer -- no need to retry
                 if evidence.get("worker_result_status") == "failure":
@@ -471,7 +467,7 @@ class AsyncTaskOrchestrator:
                 self._objective_store.upsert(
                     task_id,
                     objective_id,
-                    ObjectiveState.FAILED,
+                    ObjectiveState.CANCELLED,
                     step_count=budget.steps_used(),
                     token_count=budget.tokens_used(),
                     failure_reason=reason,
@@ -553,101 +549,8 @@ class AsyncTaskOrchestrator:
             span="orchestrator",
         )
 
-        try:
-            write_run_reports(task_id, status.value, results, _trace_dir())
-        except Exception as e:
-            print(f"[orchestrator] Failed to write reports: {e}", file=sys.stderr)
-
         out: dict[str, Any] = {"task_id": task_id, "status": status.value, "results": results}
         if attempts_path:
             out["attempts_file"] = str(attempts_path)
         return out
-
-
-def write_run_reports(task_id: str, status: str, results: dict[str, Any], trace_dir: Path) -> None:
-    import json
-    from datetime import datetime
-    
-    trace_path = trace_dir / "trinity-trace.jsonl"
-    events = []
-    if trace_path.exists():
-        try:
-            with open(trace_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        data = entry.get("data", {})
-                        matches = False
-                        if isinstance(data, dict):
-                            if data.get("task_id") == task_id or data.get("taskId") == task_id:
-                                matches = True
-                        if matches:
-                            events.append(entry)
-                    except Exception:
-                        continue
-        except Exception as e:
-            import sys
-            print(f"[trace] Error reading trace file: {e}", file=sys.stderr)
-
-    # Build report dict
-    report_json = {
-        "task_id": task_id,
-        "status": status,
-        "timestamp": datetime.now().isoformat(),
-        "results": results,
-        "events": events,
-    }
-    
-    # Write to unique file and also static filename (for easy E2E pull)
-    for name in (f"run_report_{task_id}.json", "run_report.json"):
-        report_json_path = trace_dir / name
-        try:
-            report_json_path.write_text(json.dumps(report_json, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            import sys
-            print(f"[trace] Error writing {name}: {e}", file=sys.stderr)
-
-    # Build run_report.md
-    md = []
-    md.append(f"# Trinity Pilot Task Report — {task_id}")
-    md.append("")
-    md.append(f"- **Status:** {status}")
-    md.append(f"- **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    md.append("")
-    
-    md.append("## Objectives Results")
-    if results:
-        for obj_id, res in results.items():
-            st = res.get("status", "unknown")
-            md.append(f"### Objective: `{obj_id}` — **{st.upper()}**")
-            for k, v in res.items():
-                if k not in ("status", "objective_id"):
-                    md.append(f"- **{k}:** `{v}`")
-            md.append("")
-    else:
-        md.append("No objective results logged.")
-        md.append("")
-
-    md.append("## Execution Timeline")
-    if events:
-        md.append("| Timestamp | Location | Event | Details |")
-        md.append("|---|---|---|---|")
-        for ev in sorted(events, key=lambda x: x.get("ts", 0)):
-            ts_str = datetime.fromtimestamp(ev.get("ts", 0) / 1000.0).strftime('%H:%M:%S.%f')[:-3]
-            loc = ev.get("location", "")
-            msg = ev.get("message", "")
-            data_str = json.dumps(ev.get("data", {}))
-            md.append(f"| {ts_str} | `{loc}` | {msg} | `{data_str}` |")
-    else:
-        md.append("No trace events found for this task.")
-        
-    for name in (f"run_report_{task_id}.md", "run_report.md"):
-        report_md_path = trace_dir / name
-        try:
-            report_md_path.write_text("\n".join(md), encoding="utf-8")
-        except Exception as e:
-            import sys
-            print(f"[trace] Error writing {name}: {e}", file=sys.stderr)
 

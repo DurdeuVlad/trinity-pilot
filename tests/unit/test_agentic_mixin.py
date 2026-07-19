@@ -355,3 +355,18 @@ async def test_third_identical_call_still_hard_blocks_with_reflection_enabled():
     blocked_result = finish_call_messages[-1]
     assert "BLOCKED" in blocked_result.content
     assert "called with identical arguments 3 times" in blocked_result.content
+
+
+@pytest.mark.asyncio
+async def test_worker_result_records_sanitized_tool_log():
+    worker = _ConcreteWorker(MockLLMProvider([
+        _domain_tool_response("run_command", args={"command": "echo hello"}),
+        _finish_response("success", "done"),
+    ]))
+    evidence: dict = {}
+    result = await worker.run_loop(_spec(), evidence, max_steps=3)
+
+    assert [record.tool for record in result.tool_call_log] == ["run_command", "finish"]
+    assert result.tool_call_log[0].args == {"command": "echo hello"}
+    assert "llm_text" not in result.tool_call_log[0].result
+    assert evidence["tool_call_log"][0]["tool"] == "run_command"
