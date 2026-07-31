@@ -18,7 +18,9 @@ from trinity_pilot.llm.base import LLMProvider
 from trinity_pilot.telemetry.trace import emit
 from trinity_pilot.workers.agentic_mixin import (
     AgenticWorkerMixin,
+    _BlockerSignal,
     _finish_decl,
+    _FinishSignal,
     _make_tool,
     _report_blocking_decl,
     _take_screenshot_decl,
@@ -26,6 +28,7 @@ from trinity_pilot.workers.agentic_mixin import (
 from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
 from trinity_pilot.workers.evidence_schema import validate_evidence
 from trinity_pilot.workers.worker_result import WorkerResult
+
 
 def _snapshot_pids() -> set[int]:
     """Return the set of all currently running PIDs (best-effort, never raises)."""
@@ -49,10 +52,12 @@ Tool categories:
 Available tools:
 
 [SENSOR] screenshot: Capture a window or screen as an image attached to your next turn.
-  Use mode='app' with app_title to capture the target window. READ the image yourself â€”
+  Use mode='app' with app_title to capture the target window. READ the image yourself —
   it is the reliable way to see display values, labels, and UI state that UIA text misses.
 [SENSOR] clipboard_read: Read current clipboard text (after copy via press_hotkey).
-[SENSOR] read_window_text: Read UIA text snippets (often incomplete â€” prefer screenshot for on-screen values).
+[SENSOR] read_window_text: Read UIA text snippets (often incomplete — prefer screenshot for on-screen values).
+[SENSOR] list_open_windows: List all visible top-level window titles.
+[SENSOR] get_element_tree: Dump the UIA control tree (control_type/auto_id/title/rectangle/is_enabled) for a window, bounded depth/count.
 
 [ACTION] launch_app: Launch an application by executable name.
 [ACTION] focus_window: Focus a window by title regex.
@@ -60,6 +65,13 @@ Available tools:
 [ACTION] press_hotkey: Press a keyboard hotkey combination.
 [ACTION] press_key: Press a single key.
 [ACTION] click_button: Click a UI button by its visible label text (e.g. 'Got it', 'OK').
+[ACTION] click_coordinate: Click at pixel coordinates. Use only when no button/control locator exists (e.g. custom-drawn controls, canvas UI).
+[ACTION] select_dropdown_option: Select an option in a dropdown/combo box by visible text.
+[ACTION] window_control: Minimize, maximize, restore, move, or resize a window.
+[ACTION] toggle_checkbox: Check, uncheck, or toggle a checkbox/radio/toggle control.
+[ACTION] drag_and_drop: Drag from one point to another, relative to a window or in absolute screen coords.
+[ACTION] scroll: Scroll the mouse wheel up/down/left/right at a location.
+[ACTION] menu_select: Select a menu item by path, e.g. 'File->Save As'.
 [ACTION] write_file: Write text content directly to a file at an absolute path.
 [ACTION] wait: Pause execution for a number of seconds.
 [ACTION] finish: Signal that the objective is complete or definitively failed.
@@ -274,6 +286,143 @@ _kill_process_decl = genai_types.FunctionDeclaration(
     ),
 )
 
+_click_coordinate_decl = genai_types.FunctionDeclaration(
+    name="click_coordinate",
+    description=(
+        "Click at pixel coordinates (x, y). Coordinates are relative to the named "
+        "window's client area if window_title_re is given, otherwise absolute screen "
+        "coordinates. Use only when no UIA control/button label exists for the target "
+        "(e.g. canvas drawing, custom-rendered controls)."
+    ),
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "x": genai_types.Schema(type=genai_types.Type.INTEGER, description="X coordinate."),
+            "y": genai_types.Schema(type=genai_types.Type.INTEGER, description="Y coordinate."),
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex; coordinates are relative to its client area. Omit for absolute screen coords."),
+            "button": genai_types.Schema(type=genai_types.Type.STRING, description="'left', 'right', or 'double'. Default 'left'.", enum=["left", "right", "double"]),
+        },
+        required=["x", "y"],
+    ),
+)
+
+_list_open_windows_decl = genai_types.FunctionDeclaration(
+    name="list_open_windows",
+    description="List visible top-level window titles currently open.",
+    parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
+)
+
+_select_dropdown_option_decl = genai_types.FunctionDeclaration(
+    name="select_dropdown_option",
+    description="Select an option in a combo box / dropdown control by its visible text.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "option_text": genai_types.Schema(type=genai_types.Type.STRING, description="Visible text of the option to select."),
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "auto_id": genai_types.Schema(type=genai_types.Type.STRING, description="Optional automation ID of the combo box."),
+            "control_title": genai_types.Schema(type=genai_types.Type.STRING, description="Optional visible label/title of the combo box."),
+        },
+        required=["option_text"],
+    ),
+)
+
+_window_control_decl = genai_types.FunctionDeclaration(
+    name="window_control",
+    description="Minimize, maximize, restore, move, or resize a window.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "state": genai_types.Schema(type=genai_types.Type.STRING, description="'minimize', 'maximize', or 'restore'.", enum=["minimize", "maximize", "restore"]),
+            "x": genai_types.Schema(type=genai_types.Type.INTEGER, description="New left position (optional, for move/resize)."),
+            "y": genai_types.Schema(type=genai_types.Type.INTEGER, description="New top position (optional)."),
+            "width": genai_types.Schema(type=genai_types.Type.INTEGER, description="New width (optional)."),
+            "height": genai_types.Schema(type=genai_types.Type.INTEGER, description="New height (optional)."),
+        },
+        required=[],
+    ),
+)
+
+_get_element_tree_decl = genai_types.FunctionDeclaration(
+    name="get_element_tree",
+    description=(
+        "Dump the UIA control tree of a window as JSON: control_type, auto_id, title, "
+        "rectangle, is_enabled per descendant. Use to discover exact locators for "
+        "select_dropdown_option, toggle_checkbox, click_button, or postconditions."
+    ),
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "max_depth": genai_types.Schema(type=genai_types.Type.INTEGER, description="Max tree depth (default 3)."),
+            "max_nodes": genai_types.Schema(type=genai_types.Type.INTEGER, description="Max nodes to return (default 200)."),
+        },
+        required=[],
+    ),
+)
+
+_toggle_checkbox_decl = genai_types.FunctionDeclaration(
+    name="toggle_checkbox",
+    description="Check, uncheck, or toggle a checkbox/radio/toggle-button control.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "auto_id": genai_types.Schema(type=genai_types.Type.STRING, description="Automation ID of the control."),
+            "control_title": genai_types.Schema(type=genai_types.Type.STRING, description="Visible label of the control."),
+            "desired_state": genai_types.Schema(type=genai_types.Type.STRING, description="'checked', 'unchecked', or 'toggle'.", enum=["checked", "unchecked", "toggle"]),
+        },
+        required=["desired_state"],
+    ),
+)
+
+_drag_and_drop_decl = genai_types.FunctionDeclaration(
+    name="drag_and_drop",
+    description="Drag from one point to another within a window (or absolute screen coords).",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "from_x": genai_types.Schema(type=genai_types.Type.INTEGER),
+            "from_y": genai_types.Schema(type=genai_types.Type.INTEGER),
+            "to_x": genai_types.Schema(type=genai_types.Type.INTEGER),
+            "to_y": genai_types.Schema(type=genai_types.Type.INTEGER),
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Coordinates relative to this window's client area. Omit for absolute screen coords."),
+            "duration": genai_types.Schema(type=genai_types.Type.NUMBER, description="Drag duration in seconds (default 0.5)."),
+        },
+        required=["from_x", "from_y", "to_x", "to_y"],
+    ),
+)
+
+_desktop_scroll_decl = genai_types.FunctionDeclaration(
+    name="scroll",
+    description="Scroll the mouse wheel up/down/left/right at a location.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "direction": genai_types.Schema(type=genai_types.Type.STRING, enum=["up", "down", "left", "right"]),
+            "amount": genai_types.Schema(type=genai_types.Type.INTEGER, description="Scroll amount/clicks (default 3)."),
+            "x": genai_types.Schema(type=genai_types.Type.INTEGER, description="X coordinate to scroll at (relative to window if given, else absolute). Defaults to window center."),
+            "y": genai_types.Schema(type=genai_types.Type.INTEGER, description="Y coordinate to scroll at."),
+        },
+        required=["direction"],
+    ),
+)
+
+_menu_select_decl = genai_types.FunctionDeclaration(
+    name="menu_select",
+    description="Select a menu item by path in a classic Win32 menu bar, e.g. 'File->Save As'.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "window_title_re": genai_types.Schema(type=genai_types.Type.STRING, description="Window regex. Defaults to the focused target window."),
+            "path": genai_types.Schema(type=genai_types.Type.STRING, description="Menu path, e.g. 'File->Save As'."),
+        },
+        required=["path"],
+    ),
+)
+
 
 _CALCULATOR_BUTTON_LABELS: dict[str, list[str]] = {
     "0": ["Zero"],
@@ -290,10 +439,10 @@ _CALCULATOR_BUTTON_LABELS: dict[str, list[str]] = {
     "plus": ["Plus", "+"],
     "subtract": ["Minus", "âˆ’", "-"],
     "minus": ["Minus", "âˆ’", "-"],
-    "multiply": ["Multiply by", "Ã—", "Multiply"],
-    "times": ["Multiply by", "Ã—", "Multiply"],
-    "x": ["Multiply by", "Ã—", "Multiply"],
-    "divide": ["Divide by", "Ã·", "Divide"],
+    "multiply": ["Multiply by", "×", "Multiply"],
+    "times": ["Multiply by", "×", "Multiply"],
+    "x": ["Multiply by", "×", "Multiply"],
+    "divide": ["Divide by", "÷", "Divide"],
     "return": ["Equals", "="],
     "enter": ["Equals", "="],
     "equals": ["Equals", "="],
@@ -363,6 +512,15 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             _press_hotkey_decl,
             _press_key_decl,
             _click_button_decl,
+            _click_coordinate_decl,
+            _list_open_windows_decl,
+            _select_dropdown_option_decl,
+            _window_control_decl,
+            _get_element_tree_decl,
+            _toggle_checkbox_decl,
+            _drag_and_drop_decl,
+            _desktop_scroll_decl,
+            _menu_select_decl,
             _kill_process_decl,
             _desktop_write_file_decl,
             _wait_decl,
@@ -373,9 +531,9 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             _report_blocking_decl,
         ])]
 
-    def _worker_environment_context(self, spec, evidence) -> str:  # type: ignore[override]
-        import sys as _sys
+    def _worker_environment_context(self, spec, evidence) -> str:
         import pathlib
+        import sys as _sys
         platform_name = "Windows" if _sys.platform == "win32" else _sys.platform
         active_title = self._get_active_window_title()
         desktop = str(pathlib.Path.home() / "Desktop").replace("\\", "/")
@@ -391,7 +549,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             lines.append("  Active window: unknown")
         return "\n".join(lines)
 
-    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:  # type: ignore[override]
+    def _worker_state_snapshot(self, evidence: dict[str, Any]) -> str:
         active = self._get_active_window_title() or "unknown"
         action_log = evidence.get("action_log", [])
         last_action = action_log[-1] if action_log else "none"
@@ -403,7 +561,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             f"last_action={last_action}",
         ])
 
-    def _action_sensor_check(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):  # type: ignore[override]
+    def _action_sensor_check(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):
         if tool_name != "launch_app":
             return None
         launched_pids = list(evidence.get("launched_pids") or [])
@@ -419,7 +577,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
         return _check
 
-    def _action_sensor_read(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):  # type: ignore[override]
+    def _action_sensor_read(self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]):
         if tool_name != "click_button":
             return None
 
@@ -453,6 +611,45 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             return titles[:_WIN_CAP]
         except Exception:
             return []
+
+    @staticmethod
+    def _resolve_hwnd_by_title_search(title_re: str) -> int | None:
+        """Find the first visible window whose title matches title_re anywhere (re.search).
+
+        pywinauto's own title_re= parameter (find_windows/Application.connect) uses
+        re.match — anchored at the start of the title — so a pattern like "notepad"
+        never matches a real window titled "document.txt - Notepad". Every other tool
+        in this file (_focus_window) already treats title_re as search-anywhere; this
+        helper gives UIA-based tools (get_element_tree, window_control, menu_select,
+        _find_uia_control) the same, correct semantics via handle= instead of title_re=.
+        """
+        if not title_re:
+            return None
+        try:
+            import ctypes
+
+            pattern = re.compile(title_re, re.IGNORECASE)
+            user32 = ctypes.windll.user32
+            found: list[int] = []
+
+            def _cb(hwnd: int, _: int) -> bool:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                if pattern.search(buf.value):
+                    found.append(hwnd)
+                    return False
+                return True
+
+            _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+            user32.EnumWindows(_WNDENUMPROC(_cb), 0)
+            return found[0] if found else None
+        except Exception:
+            return None
 
     @staticmethod
     def _get_active_window_title() -> str | None:
@@ -666,9 +863,9 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                     base.update(passed=observed == wanted, observed=observed,
                                 detail="Control checked state matches" if observed == wanted else "Control checked state mismatch")
                 else:
-                    observed = str(getattr(control, "get_value", control.window_text)() or control.window_text())
-                    passed = observed == expected if kind == "control_value_equals" else expected in observed
-                    base.update(passed=passed, observed=observed[:1000],
+                    value = str(getattr(control, "get_value", control.window_text)() or control.window_text())
+                    passed = value == expected if kind == "control_value_equals" else expected in value
+                    base.update(passed=passed, observed=value[:1000],
                                 detail="Control value matches" if passed else "Control value mismatch")
             except Exception as exc:
                 base["detail"] = f"Could not read control state: {exc}"
@@ -681,19 +878,46 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     def _window_exists(title_re: str) -> bool:
         if not title_re or sys.platform != "win32":
             return False
-        try:
-            from pywinauto import findwindows
-            return bool(findwindows.find_windows(title_re=title_re, visible_only=True))
-        except Exception:
-            return False
+        return DesktopWorker._resolve_hwnd_by_title_search(title_re) is not None
+
+    async def _resolve_and_verify_screen_point(
+        self, x: int, y: int, window_title_re: str | None, evidence: dict[str, Any]
+    ) -> tuple[int, int] | None:
+        """Resolve (x, y) to absolute screen coords and re-verify the target is foreground.
+
+        SAFETY: raw SendInput/pyautogui input bypasses UIA's target validation — a click
+        is just "whatever is under this pixel now". If window_title_re is given, this
+        confirms the window is (still) foreground immediately before returning coordinates,
+        closing the race where focus shifts between resolving and dispatching input.
+        Returns None if the window could not be confirmed foreground.
+        """
+        if not window_title_re:
+            return x, y
+        focused_ok = await self._focus_window(window_title_re, evidence)
+        if not focused_ok:
+            return None
+        import ctypes
+        import ctypes.wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        rect = ctypes.wintypes.RECT()
+        user32.GetClientRect(hwnd, ctypes.byref(rect))
+        pt = ctypes.wintypes.POINT(x, y)
+        user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        if user32.GetForegroundWindow() != hwnd:
+            return None
+        return pt.x, pt.y
 
     @staticmethod
     def _find_uia_control(title_re: str, control_spec: Any) -> tuple[Any | None, str]:
         if not title_re or not isinstance(control_spec, dict):
             return None, "Control checks require window_title_re and a control locator"
+        hwnd = DesktopWorker._resolve_hwnd_by_title_search(title_re)
+        if hwnd is None:
+            return None, f"No visible window matched {title_re!r}"
         try:
             from pywinauto import Application
-            app = Application(backend="uia").connect(title_re=title_re, timeout=5)
+            app = Application(backend="uia").connect(handle=hwnd, timeout=5)
             window = app.top_window()
             locator = {
                 key: control_spec[key]
@@ -713,7 +937,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
     async def _dispatch_tool(
         self, tool_name: str, args: dict[str, Any], evidence: dict[str, Any]
-    ) -> str:
+    ) -> str | tuple[str, bytes] | _FinishSignal | _BlockerSignal:
         import subprocess
 
         emit(
@@ -841,8 +1065,8 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             button_text = args["button_text"]
             window_title_re = args.get("window_title_re")
             try:
-                from pywinauto import Application
                 import win32gui
+                from pywinauto import Application
                 if window_title_re:
                     app_obj = Application(backend="uia").connect(
                         title_re=window_title_re, timeout=5
@@ -925,12 +1149,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             import subprocess as _sp
             process_name = args.get("process_name", "")
             try:
-                result = _sp.run(
+                kill_result = _sp.run(
                     ["taskkill", "/F", "/IM", process_name],
                     capture_output=True, text=True, timeout=10,
                 )
                 await asyncio.sleep(0.5)
-                msg = f"kill_process {process_name}: exit={result.returncode} {result.stdout.strip()} {result.stderr.strip()}"
+                msg = f"kill_process {process_name}: exit={kill_result.returncode} {kill_result.stdout.strip()} {kill_result.stderr.strip()}"
                 evidence["action_log"].append(msg)
                 return msg
             except Exception as exc:
@@ -976,6 +1200,209 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 )
             return obs
 
+        elif tool_name == "click_coordinate":
+            x, y = int(args["x"]), int(args["y"])
+            window_title_re = args.get("window_title_re") or self._target_window
+            button = args.get("button", "left")
+            try:
+                point = await self._resolve_and_verify_screen_point(x, y, window_title_re, evidence)
+                if point is None:
+                    return f"click_coordinate ABORTED: could not confirm {window_title_re!r} as foreground before sending input."
+                import pyautogui
+                pyautogui.FAILSAFE = False
+                pyautogui.moveTo(*point)
+                if button == "double":
+                    pyautogui.doubleClick()
+                else:
+                    pyautogui.click(button="left" if button == "left" else "right")
+                await asyncio.sleep(0.2)
+                evidence["action_log"].append(f"click_coordinate: ({x},{y}) rel={window_title_re!r} -> screen={point}")
+                return f"Clicked at ({x},{y}) relative to {window_title_re or 'screen'}"
+            except Exception as exc:
+                evidence["action_log"].append(f"click_coordinate failed: {exc}")
+                return f"click_coordinate failed: {exc}"
+
+        elif tool_name == "list_open_windows":
+            windows = self._get_open_windows()
+            evidence["action_log"].append(f"list_open_windows: {len(windows)} window(s)")
+            return f"Open windows: {windows}" if windows else "No visible windows found."
+
+        elif tool_name == "select_dropdown_option":
+            title_re = args.get("window_title_re") or self._target_window or ""
+            control_spec: dict[str, Any] = {k: args[k] for k in ("auto_id", "control_title") if args.get(k)}
+            if "control_title" in control_spec:
+                control_spec["title"] = control_spec.pop("control_title")
+            control_spec.setdefault("control_type", "ComboBox")
+            control, error = self._find_uia_control(title_re, control_spec)
+            if control is None:
+                evidence["action_log"].append(f"select_dropdown_option failed: {error}")
+                return f"select_dropdown_option failed: {error}"
+            try:
+                control.select(args["option_text"])
+                await asyncio.sleep(0.2)
+                evidence["action_log"].append(f"select_dropdown_option: {args['option_text']!r}")
+                return f"Selected option: {args['option_text']}"
+            except Exception as exc:
+                evidence["action_log"].append(f"select_dropdown_option failed: {exc}")
+                return f"select_dropdown_option failed: {exc}"
+
+        elif tool_name == "window_control":
+            title_re = args.get("window_title_re") or self._target_window or ""
+            if not title_re:
+                return "window_control failed: no window_title_re and no active target window"
+            try:
+                hwnd = self._resolve_hwnd_by_title_search(title_re)
+                if hwnd is None:
+                    return f"window_control failed: no visible window matched {title_re!r}"
+                import ctypes
+                import ctypes.wintypes
+                user32 = ctypes.windll.user32
+                _SW = {"minimize": 6, "maximize": 3, "restore": 9}
+                state = args.get("state")
+                if state:
+                    user32.ShowWindow(hwnd, _SW[state])
+                if any(k in args for k in ("x", "y", "width", "height")):
+                    rect = ctypes.wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    new_x = args.get("x", rect.left)
+                    new_y = args.get("y", rect.top)
+                    new_w = args.get("width", rect.right - rect.left)
+                    new_h = args.get("height", rect.bottom - rect.top)
+                    user32.SetWindowPos(hwnd, 0, new_x, new_y, new_w, new_h, 0x0040)  # SWP_SHOWWINDOW
+                await asyncio.sleep(0.2)
+                evidence["action_log"].append(f"window_control: {title_re!r} state={state} geom={args}")
+                return f"window_control applied to {title_re!r}: state={state}"
+            except Exception as exc:
+                evidence["action_log"].append(f"window_control failed: {exc}")
+                return f"window_control failed: {exc}"
+
+        elif tool_name == "get_element_tree":
+            title_re = args.get("window_title_re") or self._target_window or ""
+            max_depth = int(args.get("max_depth", 3))
+            max_nodes = int(args.get("max_nodes", 200))
+            try:
+                hwnd = self._resolve_hwnd_by_title_search(title_re)
+                if hwnd is None:
+                    return f"get_element_tree failed: no visible window matched {title_re!r}"
+                from pywinauto import Application
+                app_obj = Application(backend="uia").connect(handle=hwnd, timeout=5)
+                win_obj = app_obj.top_window()
+                tree = self._dump_ui_tree(win_obj, max_depth=max_depth, max_nodes=max_nodes)
+                payload = json.dumps(tree, ensure_ascii=False)
+                evidence["element_tree_snapshot"] = payload
+                evidence["action_log"].append(f"get_element_tree: {title_re!r} nodes<={max_nodes}")
+                return f"Element tree ({len(payload)} chars):\n{payload[:4000]}"
+            except Exception as exc:
+                evidence["action_log"].append(f"get_element_tree failed: {exc}")
+                return f"get_element_tree failed: {exc}"
+
+        elif tool_name == "toggle_checkbox":
+            title_re = args.get("window_title_re") or self._target_window or ""
+            control_spec = {k: args[k] for k in ("auto_id", "control_title") if args.get(k)}
+            if "control_title" in control_spec:
+                control_spec["title"] = control_spec.pop("control_title")
+            control, error = self._find_uia_control(title_re, control_spec)
+            if control is None:
+                evidence["action_log"].append(f"toggle_checkbox failed: {error}")
+                return f"toggle_checkbox failed: {error}"
+            try:
+                # pywinauto's UIA backend only reliably implements .toggle() and
+                # .get_toggle_state() for checkboxes — .check()/.uncheck() exist on
+                # some wrapper classes but not UIA's, and WindowSpecification's proxy
+                # __getattr__ makes hasattr() report True even when the call itself
+                # fails deep inside pywinauto (confirmed live: "Neither GUI element
+                # (wrapper) nor wrapper method 'check' were found"). So: read current
+                # state via get_toggle_state() and only toggle() when it disagrees
+                # with the requested absolute state.
+                desired = args["desired_state"]
+                current_state: bool | None = None
+                try:
+                    current_state = bool(control.get_toggle_state())
+                except Exception:
+                    pass
+                if desired == "toggle" or current_state is None:
+                    control.toggle()
+                else:
+                    want_checked = desired == "checked"
+                    if want_checked != current_state:
+                        control.toggle()
+                await asyncio.sleep(0.2)
+                evidence["action_log"].append(f"toggle_checkbox: {desired} (was_checked={current_state})")
+                return f"toggle_checkbox applied: {desired}"
+            except Exception as exc:
+                evidence["action_log"].append(f"toggle_checkbox failed: {exc}")
+                return f"toggle_checkbox failed: {exc}"
+
+        elif tool_name == "drag_and_drop":
+            window_title_re = args.get("window_title_re") or self._target_window
+            try:
+                from_pt = await self._resolve_and_verify_screen_point(
+                    int(args["from_x"]), int(args["from_y"]), window_title_re, evidence
+                )
+                if from_pt is None:
+                    return f"drag_and_drop ABORTED: could not confirm {window_title_re!r} as foreground."
+                to_pt = await self._resolve_and_verify_screen_point(
+                    int(args["to_x"]), int(args["to_y"]), window_title_re, evidence
+                )
+                if to_pt is None:
+                    return "drag_and_drop ABORTED: foreground window changed mid-drag."
+                import pyautogui
+                pyautogui.FAILSAFE = False
+                pyautogui.moveTo(*from_pt)
+                pyautogui.dragTo(*to_pt, duration=float(args.get("duration", 0.5)), button="left")
+                evidence["action_log"].append(f"drag_and_drop: {from_pt} -> {to_pt} rel={window_title_re!r}")
+                return f"Dragged from {from_pt} to {to_pt}"
+            except Exception as exc:
+                evidence["action_log"].append(f"drag_and_drop failed: {exc}")
+                return f"drag_and_drop failed: {exc}"
+
+        elif tool_name == "scroll":
+            window_title_re = args.get("window_title_re") or self._target_window
+            direction = args["direction"]
+            amount = int(args.get("amount", 3))
+            try:
+                point = None
+                if "x" in args and "y" in args:
+                    point = await self._resolve_and_verify_screen_point(
+                        int(args["x"]), int(args["y"]), window_title_re, evidence
+                    )
+                    if point is None:
+                        return f"scroll ABORTED: could not confirm {window_title_re!r} as foreground."
+                import pyautogui
+                pyautogui.FAILSAFE = False
+                if point:
+                    pyautogui.moveTo(*point)
+                clicks = amount if direction == "up" else -amount
+                if direction in ("up", "down"):
+                    pyautogui.scroll(clicks)
+                else:
+                    pyautogui.hscroll(amount if direction == "right" else -amount)
+                evidence["action_log"].append(f"scroll: direction={direction} amount={amount} at={point}")
+                return f"Scrolled {direction} by {amount}"
+            except Exception as exc:
+                evidence["action_log"].append(f"scroll failed: {exc}")
+                return f"scroll failed: {exc}"
+
+        elif tool_name == "menu_select":
+            title_re = args.get("window_title_re") or self._target_window or ""
+            path = args["path"]
+            if not title_re:
+                return "menu_select failed: no window_title_re and no active target window"
+            try:
+                hwnd = self._resolve_hwnd_by_title_search(title_re)
+                if hwnd is None:
+                    return f"menu_select failed: no visible window matched {title_re!r}"
+                from pywinauto import Application
+                app_obj = Application(backend="uia").connect(handle=hwnd, timeout=5)
+                app_obj.top_window().menu_select(path)
+                await asyncio.sleep(0.3)
+                evidence["action_log"].append(f"menu_select: {path!r}")
+                return f"Selected menu item: {path}"
+            except Exception as exc:
+                detail = str(exc) or f"{type(exc).__name__} (no message — the menu path segment likely doesn't exist)"
+                evidence["action_log"].append(f"menu_select failed: {detail}")
+                return f"menu_select failed: {detail}. This app may use a ribbon/custom menu, or this menu path doesn't exist — try get_element_tree to discover controls."
+
         else:
             return await super()._dispatch_tool(tool_name, args, evidence)
 
@@ -988,7 +1415,6 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         import ctypes
         import ctypes.wintypes
         import re as _re
-        import time
 
         pattern = _re.compile(title_re, _re.IGNORECASE)
         user32 = ctypes.windll.user32
@@ -1195,7 +1621,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         s = re.sub(r"\bplus\b", "+", s)
         s = re.sub(r"\bminus\b", "-", s)
         s = re.sub(r"\bdivided\s+by\b", "/", s)
-        s = s.replace("Ã—", "*").replace("Ã·", "/").replace("x", "*")
+        s = s.replace("×", "*").replace("÷", "/").replace("x", "*")
         s = re.sub(r"\s+", "", s).rstrip("=")
 
         m = re.fullmatch(r"(\d+(?:\.\d+)?)([\+\-\*/])(\d+(?:\.\d+)?)", s)
@@ -1263,8 +1689,8 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
         if sys.platform != "win32":
             return []
         try:
-            from pywinauto import Application
             import win32gui
+            from pywinauto import Application
 
             hwnd: int | None = None
             if window_title_re:
@@ -1408,6 +1834,41 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
             evidence["action_log"].append("No target window identified in goal")
 
     @staticmethod
+    def _dump_ui_tree(win: Any, max_depth: int = 3, max_nodes: int = 200) -> dict:
+        """Bounded UIA tree dump: control_type, auto_id, title, rectangle, is_enabled."""
+        count = 0
+
+        def walk(el: Any, depth: int) -> dict | None:
+            nonlocal count
+            if count >= max_nodes:
+                return None
+            count += 1
+            try:
+                rect = el.rectangle()
+                node: dict[str, Any] = {
+                    "control_type": str(el.element_info.control_type),
+                    "auto_id": str(getattr(el.element_info, "automation_id", "") or ""),
+                    "title": str(el.window_text()),
+                    "rectangle": [rect.left, rect.top, rect.right, rect.bottom],
+                    "is_enabled": bool(el.is_enabled()),
+                }
+            except Exception:
+                return None
+            if depth > 0:
+                children = []
+                for c in el.children():
+                    if count >= max_nodes:
+                        break
+                    child = walk(c, depth - 1)
+                    if child:
+                        children.append(child)
+                if children:
+                    node["children"] = children
+            return node
+
+        return walk(win, max_depth) or {}
+
+    @staticmethod
     def _element_tree(win: Any, depth: int = 2) -> dict:
         try:
             return {
@@ -1425,6 +1886,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     def _capture_screenshot_fallback(evidence: dict[str, Any]) -> None:
         try:
             import io
+
             from PIL import ImageGrab
             img = ImageGrab.grab()
             img.thumbnail((1280, 720))
