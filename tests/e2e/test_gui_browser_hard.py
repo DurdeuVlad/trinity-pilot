@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 import pytest
 
-from tests.e2e._gui_driver import AFTER_CONFIRM, AFTER_SUBMIT, DESKTOP, STATUS_CONFIRM
+from tests.e2e._gui_driver import AFTER_CONFIRM, AFTER_SUBMIT, STATUS_CONFIRM
 from tests.helpers.slides_studio import SlidesStudio, start_slides_studio
-
 
 pytestmark = [pytest.mark.e2e, pytest.mark.desktop, pytest.mark.slow]
 ARTIFACT_DIR = Path(os.path.expanduser("~")) / ".ai" / "browser-hard"

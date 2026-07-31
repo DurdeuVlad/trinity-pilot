@@ -34,7 +34,7 @@ class TestSettings:
             s = Settings.from_env()
         assert s.gemini_planner_model == "gemini-2.5-flash"
         assert s.gemini_worker_model == "gemini-2.5-flash"
-        assert s.db_path == "trinity_pilot.db"
+        assert s.db_path == str(Path.home() / ".trinity-pilot" / "trinity_pilot.db")
 
     def test_from_env_respects_overrides(self):
         env = {
@@ -76,17 +76,17 @@ class TestSettings:
             s = Settings.from_env()
         assert s.gemini_api_key == "only-key"
 
-    def test_gemini_timeout_seconds_defaults_to_30(self):
+    def test_gemini_timeout_seconds_defaults_to_120(self):
         env = {"GEMINI_API_KEY": "test-key"}
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
-        assert s.gemini_timeout_seconds == 30.0
+        assert s.gemini_timeout_seconds == 120.0
 
-    def test_stuck_threshold_steps_defaults_to_5(self):
+    def test_stuck_threshold_steps_defaults_to_3(self):
         env = {"GEMINI_API_KEY": "test-key"}
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
-        assert s.stuck_threshold_steps == 5
+        assert s.stuck_threshold_steps == 3
 
     def test_gemini_timeout_seconds_env_override(self):
         env = {"GEMINI_API_KEY": "test-key", "GEMINI_TIMEOUT_SECONDS": "60"}

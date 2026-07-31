@@ -1,6 +1,10 @@
 import pytest
 
-from trinity_pilot.audit.flight_record import FlightRecorder, render_markdown_summary, validate_record
+from trinity_pilot.audit.flight_record import (
+    FlightRecorder,
+    render_markdown_summary,
+    validate_record,
+)
 
 
 def _record(run_id="placeholder"):

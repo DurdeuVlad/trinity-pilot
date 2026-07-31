@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
-from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
+from trinity_pilot.llm.base import LLMProvider, LLMResponse
 from trinity_pilot.workers.base import WorkerError
 from trinity_pilot.workers.browser_worker import BrowserWorker
-
 
 # ---------------------------------------------------------------------------
 # Mock LLM

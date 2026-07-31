@@ -33,6 +33,5 @@ def test_no_temporalio_in_tests():
 
 def test_import_orchestrator_without_temporalio():
     """AC-6.2: import succeeds without temporalio installed"""
-    import importlib
     import trinity_pilot.config  # noqa: F401
     assert "temporalio" not in sys.modules, "temporalio must not be in sys.modules"

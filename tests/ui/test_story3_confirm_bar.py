@@ -14,7 +14,6 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QPushButton
 
-
 # ---------------------------------------------------------------------------
 # _ConfirmBar unit tests
 # ---------------------------------------------------------------------------

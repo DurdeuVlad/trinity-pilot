@@ -1,4 +1,5 @@
 import pytest
+
 from trinity_pilot.memory.db import open_db
 
 

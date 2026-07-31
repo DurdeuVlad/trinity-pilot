@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from _harness import run_smoke, kill_windows_matching
+from _harness import kill_windows_matching, run_smoke
 
 DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
 DELIVERABLE = DESKTOP / "browser_title.txt"

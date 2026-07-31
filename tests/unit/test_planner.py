@@ -31,12 +31,24 @@ def _make_spec_dict(**overrides) -> dict:
 class StubProvider(LLMProvider):
     def __init__(self, reply: str) -> None:
         self._reply = reply
+        self._replies: list[str] | None = None
+        self.calls = 0
+
+    @classmethod
+    def sequence(cls, *replies: str) -> "StubProvider":
+        provider = cls(replies[0])
+        provider._replies = list(replies)
+        return provider
 
     async def complete(self, messages: list[LLMMessage], system: str = "") -> LLMResponse:
+        self.calls += 1
+        if self._replies is not None:
+            idx = min(self.calls - 1, len(self._replies) - 1)
+            return LLMResponse(content=self._replies[idx])
         return LLMResponse(content=self._reply)
 
     async def complete_with_tools(self, messages, tools, system="") -> LLMResponse:
-        return LLMResponse(content=self._reply)
+        return await self.complete(messages, system=system)
 
 
 class TestObjectivePlanner:
@@ -67,6 +79,15 @@ class TestObjectivePlanner:
         planner = ObjectivePlanner(StubProvider("not valid json {{{"))
         with pytest.raises(PlanningError, match="invalid JSON"):
             await planner.plan("anything")
+
+    async def test_json_decode_error_retries_once_then_succeeds(self):
+        """BH-002: one repair retry on truncated/invalid JSON."""
+        good = json.dumps([_make_spec_dict()])
+        provider = StubProvider.sequence("not valid json {{{", good)
+        planner = ObjectivePlanner(provider)
+        specs = await planner.plan("open example.com")
+        assert len(specs) == 1
+        assert provider.calls == 2
 
     async def test_non_array_response_raises_planning_error(self):
         planner = ObjectivePlanner(StubProvider(json.dumps({"key": "value"})))

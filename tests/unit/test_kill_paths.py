@@ -8,6 +8,7 @@ class TestKillPaths:
     def test_pyautogui_failsafe_is_true(self):
         """Kill path 3: PyAutoGUI fail-safe must be True at module import."""
         import pyautogui
+
         import trinity_pilot.ui.app  # noqa: F401 — triggers FAILSAFE=True side effect
         assert pyautogui.FAILSAFE is True
 
@@ -40,6 +41,7 @@ class TestKillPaths:
     def test_ctrl_shift_q_shortcut_registered(self, qtbot):
         """Kill path 2: Ctrl+Shift+Q shortcut must be registered on the window."""
         from PySide6.QtGui import QShortcut
+
         from trinity_pilot.ui.app import MainWindow
         window = MainWindow()
         qtbot.addWidget(window)

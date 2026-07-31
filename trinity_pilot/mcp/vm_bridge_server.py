@@ -10,8 +10,8 @@ Run: python -m trinity_pilot.mcp.vm_bridge_server
 """
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import io
 import os
 import subprocess

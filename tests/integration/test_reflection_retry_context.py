@@ -1,8 +1,6 @@
 """Integration test: ReflectionStore → retry_context round-trip."""
 import json
 
-import pytest
-
 from trinity_pilot.memory.reflection import ReflectionStore
 
 

@@ -7,7 +7,6 @@ import pytest
 
 from trinity_pilot.workers.action_verification import ActionTier, VerifyResult, verify_action
 
-
 # ---------------------------------------------------------------------------
 # Unregistered action — no-op
 # ---------------------------------------------------------------------------

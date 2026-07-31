@@ -25,9 +25,8 @@ from tests.e2e._gui_driver import (
     AFTER_SUBMIT,
     DESKTOP,
     STATUS_CLARIF,
-    STATUS_CONFIRM,
-    STATUS_FAILED,
     STATUS_ERROR,
+    STATUS_FAILED,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.desktop, pytest.mark.slow]
@@ -157,6 +156,8 @@ def test_RS03_open_default_browser(app):
 @pytest.mark.slow
 def test_RS04_count_py_files_and_lines(app):
     """Agent counts .py files and total lines in trinity-pilot dir — two numbers required."""
+    import re
+
     phase, status = _submit_and_run(
         app,
         "Using the terminal, find out: "
@@ -168,6 +169,13 @@ def test_RS04_count_py_files_and_lines(app):
     app.dump_text("RS04_py_count_lines")
     assert _task_completed(phase, status), (
         f"RS-04: Task ended with failure status={status!r}"
+    )
+    # BH-EVAL-RS04: strengthen assert — require two numbers in chat, not just completion.
+    ui = app.ui_text()
+    numbers = re.findall(r"\b\d{2,}\b", ui)  # at least 2-digit counts (file/line totals)
+    assert len(numbers) >= 2, (
+        f"RS-04: expected at least two numbers in chat (file count + line count), "
+        f"got {numbers!r}. Visible text (first 500): {ui[:500]!r}"
     )
 
 

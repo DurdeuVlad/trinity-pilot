@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import io
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL.Image import Image
 
 
 def _get_monitor_bbox(screen_index: int) -> tuple[int, int, int, int] | None:
@@ -74,7 +78,7 @@ def capture_screenshot(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _capture_screen(screen_index: int) -> tuple[object, str]:
+def _capture_screen(screen_index: int) -> tuple[Image | None, str]:
     """Capture a single monitor by index."""
     if screen_index == 0:
         try:
@@ -99,7 +103,7 @@ def _capture_screen(screen_index: int) -> tuple[object, str]:
         return None, ""
 
 
-def _capture_all_screens() -> tuple[object, str]:
+def _capture_all_screens() -> tuple[Image | None, str]:
     """Capture all monitors as one virtual desktop image."""
     try:
         from PIL import ImageGrab
@@ -109,10 +113,11 @@ def _capture_all_screens() -> tuple[object, str]:
         return None, ""
 
 
-def _capture_app_window(app_title: str) -> tuple[object, str]:
+def _capture_app_window(app_title: str) -> tuple[Image | None, str]:
     """Focus and capture a specific window by title regex."""
     try:
         import ctypes
+
         from pywinauto import findwindows
         wins = findwindows.find_windows(title_re=app_title)
         if not wins:

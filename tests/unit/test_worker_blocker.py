@@ -1,13 +1,10 @@
 """Tests for WorkerBlocker and engine integration (Stories 1 and 9)."""
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
+from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.worker_result import WorkerResult
-
 
 # ---------------------------------------------------------------------------
 # Story 1: WorkerBlocker basics
@@ -83,7 +80,7 @@ class _Reviewer:
 
 def _make_ask_user_analyser():
     """Analyser mock that returns ask_user."""
-    from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
+    from trinity_pilot.orchestrator.analyser import SteerDecision
 
     class _MockAnalyser:
         async def analyse(self, spec, retry_context, blocker_reason):
@@ -94,7 +91,7 @@ def _make_ask_user_analyser():
 
 def _make_auto_steer_analyser():
     """Analyser mock that returns auto_steer."""
-    from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
+    from trinity_pilot.orchestrator.analyser import SteerDecision
 
     class _MockAnalyser:
         async def analyse(self, spec, retry_context, blocker_reason):
@@ -107,10 +104,10 @@ def _make_auto_steer_analyser():
 async def test_engine_catches_blocker_before_worker_error(tmp_path, monkeypatch):
     """WorkerBlocker is caught before WorkerError; STUCK state and StuckSignal emitted."""
     import trinity_pilot.orchestrator.engine as engine_mod
-    from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
-    from trinity_pilot.orchestrator.signals import StuckSignal
-    from trinity_pilot.orchestrator.fsm import ObjectiveState
     from trinity_pilot.memory.store import ObjectiveStateStore
+    from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
+    from trinity_pilot.orchestrator.fsm import ObjectiveState
+    from trinity_pilot.orchestrator.signals import StuckSignal
 
     analyser = _make_ask_user_analyser()
 
@@ -150,7 +147,7 @@ async def test_engine_auto_steers_on_worker_blocker(tmp_path, monkeypatch):
     """Worker raises WorkerBlocker on attempt 1, analyser returns auto_steer, attempt 2 succeeds."""
     import trinity_pilot.orchestrator.engine as engine_mod
     from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
-    from trinity_pilot.orchestrator.signals import SteeringMessage, ObjectiveDone
+    from trinity_pilot.orchestrator.signals import ObjectiveDone, SteeringMessage
 
     worker = _SuccessOnSecondWorker()
     analyser = _make_auto_steer_analyser()

@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List
-from tests.e2e._gui_driver import AppDriver, AFTER_CONFIRM, AFTER_SUBMIT
+
+from tests.e2e._gui_driver import AFTER_CONFIRM, AFTER_SUBMIT, AppDriver
 from tests.e2e.checkers import CheckDeliverable, CheckResult
+
 
 class BenchmarkTest(ABC):
     def __init__(self, driver: AppDriver) -> None:
@@ -27,11 +29,11 @@ class BenchmarkTest(ABC):
             return [CheckResult(False, f"Planning failed during E2E flow: {after_submit}")]
             
         self.app.submit("yes")
-        done = self.app.wait_for(AFTER_CONFIRM, timeout=run_timeout)
+        self.app.wait_for(AFTER_CONFIRM, timeout=run_timeout)
         
         # Enforce execution started check (handled by wait_for patch)
         if not getattr(self.app, "infra_checkpoints", {}).get("execution_started", False):
-             return [CheckResult(False, f"Task did not start executing (stuck at Ready)")]
+             return [CheckResult(False, "Task did not start executing (stuck at Ready)")]
 
         results = []
         for checker in self.get_checkers():

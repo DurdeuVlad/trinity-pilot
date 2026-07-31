@@ -6,7 +6,7 @@ from typing import Iterable, Literal
 
 ToolKind = Literal["sensor", "action", "control", "task"]
 
-VALID_TOOL_KINDS: frozenset[str] = frozenset(("sensor", "action", "control", "task"))
+VALID_TOOL_KINDS: frozenset[ToolKind] = frozenset(("sensor", "action", "control", "task"))
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ def filter_tools(
     allowed_kinds: Iterable[ToolKind],
 ) -> list[ToolMetadata]:
     """Return tools whose explicit kind is included in allowed_kinds."""
-    allowed = set(allowed_kinds)
+    allowed: set[ToolKind] = set(allowed_kinds)
     invalid = allowed - VALID_TOOL_KINDS
     if invalid:
         raise ValueError(f"Invalid MCP tool kind filter: {sorted(invalid)!r}")

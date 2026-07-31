@@ -71,13 +71,29 @@ class ObjectivePlanner:
 
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            context = user_request[:100]
-            raise PlanningError(
-                f"Planner returned invalid JSON: {exc}"
-                f"\nRequest context: {context!r}"
-                f"\nRaw response:\n{response.content}"
-            ) from exc
+        except json.JSONDecodeError as first_exc:
+            # BH-002: one repair/continue-JSON retry before hard-failing on truncation.
+            repair_prompt = (
+                "Your previous response was not valid JSON. "
+                "Return ONLY a valid JSON array of objective objects — no markdown, "
+                "no commentary. Fix any truncation or trailing commas.\n"
+                f"Parse error: {first_exc}\n"
+                f"Previous content (may be truncated):\n{response.content[:6000]}"
+            )
+            try:
+                response = await self._provider.complete(
+                    messages=[LLMMessage(role="user", content=repair_prompt)],
+                    system=PLANNER_SYSTEM,
+                )
+                raw = _extract_json(response.content)
+                data = json.loads(raw)
+            except Exception:
+                context = user_request[:100]
+                raise PlanningError(
+                    f"Planner returned invalid JSON: {first_exc}"
+                    f"\nRequest context: {context!r}"
+                    f"\nRaw response:\n{response.content}"
+                ) from first_exc
 
         if not isinstance(data, list):
             raise PlanningError(

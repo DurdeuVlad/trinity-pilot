@@ -1,7 +1,9 @@
 """FastMCP server exposing DesktopWorker capabilities at the product boundary.
 
 Run: python -m trinity_pilot.mcp.desktop_server
-Internal hot-path skips this server and calls DesktopWorker directly.
+
+Product path is MCP-only: the orchestrator always dispatches via MCPClientPool
+(there is no hot-path that skips this server).
 
 MCP tools exposed
 -----------------
@@ -39,8 +41,8 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
-from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.mcp.base_server import ControlState
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.desktop_worker import DesktopWorker
 
@@ -193,6 +195,7 @@ def focused_element() -> dict:
     try:
         import ctypes
         import ctypes.wintypes
+
         from pywinauto import Application
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         app = Application(backend="uia").connect(handle=hwnd, timeout=3)
@@ -432,7 +435,7 @@ async def type_text(text: str, interval: float = 0.03) -> dict:
     try:
         from pywinauto.keyboard import send_keys
         send_keys(text, pause=interval, with_spaces=True, with_tabs=True, with_newlines=True)
-    except Exception as exc:
+    except Exception:
         import pyautogui
         pyautogui.FAILSAFE = False
         pyautogui.write(text, interval=interval)

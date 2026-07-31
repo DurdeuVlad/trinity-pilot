@@ -13,17 +13,17 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
+import psutil
 import pyautogui
+import pyperclip
 import win32con
 import win32gui
 import win32process
-import psutil
-import pyperclip
 
 # ---------------------------------------------------------------------------
 # Constants

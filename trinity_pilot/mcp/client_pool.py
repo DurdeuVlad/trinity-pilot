@@ -13,12 +13,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
-from dotenv import load_dotenv
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
-from trinity_pilot.workers.base import WorkerError, WorkerBlocker
+from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.worker_result import WorkerResult
 
 # Bounds a single dispatch end-to-end. Without this, a stalled MCP server

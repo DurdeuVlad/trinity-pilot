@@ -8,7 +8,6 @@ from typing import Any, Literal
 from trinity_pilot.core.types import ObjectiveSpec, RiskClass
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 
-
 _ANALYSER_SYSTEM = """\
 You are an orchestration analyst for an AI automation system.
 A worker has reported a blocking condition it cannot resolve on its own.

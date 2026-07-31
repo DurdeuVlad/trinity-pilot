@@ -1,14 +1,11 @@
 """Tests for OrchestratorAnalyser (Story 8) and engine integration (Story 9)."""
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
-from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
-from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser, SteerDecision
-
+from trinity_pilot.llm.base import LLMProvider, LLMResponse
+from trinity_pilot.orchestrator.analyser import OrchestratorAnalyser
 
 # ---------------------------------------------------------------------------
 # Mock LLM for analyser tests

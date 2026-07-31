@@ -202,7 +202,7 @@ class ObjectiveChipsWidget(QFrame):
             group.deleteLater()
         chip = self._chips.get(obj_id)
         if chip:
-            chip.setGraphicsEffect(None)
+            chip.setGraphicsEffect(None)  # type: ignore[arg-type]  # PySide6 stub omits the None-clears-effect overload
         timer = self._pulse_timers.pop(obj_id, None)
         if timer:
             timer.stop()

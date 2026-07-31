@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from trinity_pilot.memory.store import TaskStore, ObjectiveStateStore
-from trinity_pilot.orchestrator.signals import ObjectiveDone, StuckSignal
 from trinity_pilot.core.types import TaskStatus
+from trinity_pilot.memory.store import TaskStore
+from trinity_pilot.orchestrator.signals import ObjectiveDone, StuckSignal
 
 
 def skip_if_quota_exhausted(result: dict, obj_id: str) -> None:
@@ -75,7 +75,7 @@ def assert_stuck_signal(signals: list[Any], reason_contains: str = "") -> StuckS
 def assert_objective_done(signals: list[Any], objective_id: str | None = None) -> ObjectiveDone:
     """Assert an ObjectiveDone signal is present; optionally match objective_id."""
     done_list = [s for s in signals if isinstance(s, ObjectiveDone)]
-    assert done_list, f"Expected ObjectiveDone signal but found none"
+    assert done_list, "Expected ObjectiveDone signal but found none"
     if objective_id is not None:
         matching = [s for s in done_list if s.objective_id == objective_id]
         assert matching, f"No ObjectiveDone for objective_id={objective_id}"

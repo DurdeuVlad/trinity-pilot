@@ -38,6 +38,7 @@ class LLMProvider(ABC):
         self,
         messages: list[LLMMessage],
         system: str = "",
+        timeout: float | None = None,
     ) -> LLMResponse: ...
 
     @abstractmethod
@@ -46,4 +47,5 @@ class LLMProvider(ABC):
         messages: list[LLMMessage],
         tools: list[dict[str, Any]],
         system: str = "",
+        timeout: float | None = None,
     ) -> LLMResponse: ...

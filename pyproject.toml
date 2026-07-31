@@ -1,6 +1,21 @@
 [project]
 name = "trinity-pilot"
 version = "0.1.0"
+description = "LLM-orchestrated desktop automation agent for Windows"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Trinity Pilot contributors" }]
+keywords = ["agent", "automation", "desktop", "llm", "windows"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Desktop Environment",
+]
 requires-python = ">=3.11"
 dependencies = [
     # Desktop shell
@@ -24,15 +39,14 @@ dependencies = [
     "google-genai>=2.0.1",
     # Safety
     "pyautogui>=0.9.54",
+    # Desktop automation (installed automatically on Windows)
+    "pywinauto>=0.6.9; sys_platform == 'win32'",
+    "pywin32>=311; sys_platform == 'win32'",
     # UI theming
     "qt-material>=2.17",
 ]
 
 [project.optional-dependencies]
-windows = [
-    "pywinauto>=0.6.9",
-    "pywin32>=311",
-]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -43,6 +57,15 @@ dev = [
     "mypy>=1.10.0",
     "ruff>=0.4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/DurdeuVlad/trinity-pilot"
+Repository = "https://github.com/DurdeuVlad/trinity-pilot"
+Issues = "https://github.com/DurdeuVlad/trinity-pilot/issues"
+Security = "https://github.com/DurdeuVlad/trinity-pilot/security/advisories"
+
+[project.scripts]
+trinity-pilot = "trinity_pilot.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -71,3 +94,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# These test files call pytest.importorskip(...) before importing the
+# module it guards, which ruff's import-order check can't model.
+"tests/e2e/*.py" = ["E402"]
+"tests/smoke/_harness.py" = ["E402"]
+"tests/ui/*.py" = ["E402"]
+"tests/unit/test_workflow_bridge.py" = ["E402"]

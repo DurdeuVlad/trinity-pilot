@@ -45,7 +45,7 @@ def _trace_path() -> Path:
 
 
 def _json_default(obj: Any) -> Any:
-    if is_dataclass(obj):
+    if is_dataclass(obj) and not isinstance(obj, type):
         return asdict(obj)
     return str(obj)
 
@@ -82,7 +82,7 @@ def emit_signal(signal: Any) -> None:
     """Record an orchestrator signal as a trace span."""
     sig_type = type(signal).__name__
     data: dict[str, Any] = {}
-    if is_dataclass(signal):
+    if is_dataclass(signal) and not isinstance(signal, type):
         data = asdict(signal)
     else:
         data = {"repr": repr(signal)}
@@ -105,7 +105,7 @@ def export_attempts_json(task_id: str, attempts: list[Any]) -> Path | None:
 
     payload: list[dict[str, Any]] = []
     for att in attempts:
-        if is_dataclass(att):
+        if is_dataclass(att) and not isinstance(att, type):
             row = asdict(att)
             fr = row.get("failure_reason")
             if fr is not None and not isinstance(fr, str):

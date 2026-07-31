@@ -1,10 +1,18 @@
 """Tests for typed signal dataclasses."""
 import time
-from trinity_pilot.orchestrator.signals import (
-    ObjectiveStarted, StepCompleted, StuckSignal, BudgetWarning,
-    ObjectiveDone, ObjectiveFailed, SteeringMessage, WorkerStepSignal, Signal
-)
 import typing
+
+from trinity_pilot.orchestrator.signals import (
+    BudgetWarning,
+    ObjectiveDone,
+    ObjectiveFailed,
+    ObjectiveStarted,
+    Signal,
+    SteeringMessage,
+    StepCompleted,
+    StuckSignal,
+    WorkerStepSignal,
+)
 
 
 def test_all_signals_frozen():

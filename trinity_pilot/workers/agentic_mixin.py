@@ -6,8 +6,7 @@ import base64
 import json
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from google.genai import types as genai_types
 
@@ -15,7 +14,7 @@ from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
 from trinity_pilot.orchestrator.signals import WorkerStepSignal
 from trinity_pilot.workers.action_verification import verify_action
-from trinity_pilot.workers.base import WorkerError, WorkerBlocker
+from trinity_pilot.workers.base import WorkerBlocker
 from trinity_pilot.workers.worker_result import ToolCallRecord, WorkerResult
 
 # ---------------------------------------------------------------------------
@@ -602,7 +601,7 @@ class AgenticWorkerMixin:
                 _tx_entry["tool_result"] = f"finish(status={dispatch_result.status}): {dispatch_result.summary}"
                 evidence.setdefault("llm_transcript", []).append(_tx_entry)
                 return WorkerResult(
-                    status=dispatch_result.status,
+                    status=cast(Literal["success", "failure"], dispatch_result.status),
                     summary=dispatch_result.summary,
                     evidence=evidence,
                     steps_taken=steps_taken + 1,

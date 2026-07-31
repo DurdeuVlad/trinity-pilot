@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_APP_DATA_DIR = Path.home() / ".trinity-pilot"
+
+
+def _default_db_path() -> str:
+    """Anchor the default DB to a fixed app-data directory, not the launch CWD."""
+    _APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return str(_APP_DATA_DIR / "trinity_pilot.db")
 
 
 class ConfigError(Exception):
@@ -18,9 +26,9 @@ class Settings:
     gemini_api_key: str
     gemini_planner_model: str = "gemini-2.5-flash"
     gemini_worker_model: str = "gemini-2.5-flash"
-    gemini_timeout_seconds: float = 30.0
-    stuck_threshold_steps: int = 5
-    db_path: str = "trinity_pilot.db"
+    gemini_timeout_seconds: float = 120.0
+    stuck_threshold_steps: int = 3
+    db_path: str = field(default_factory=_default_db_path)
     debug_mode: bool = False
 
     def validate(self) -> None:
@@ -77,9 +85,9 @@ class Settings:
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
             gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash"),
             gemini_worker_model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-            gemini_timeout_seconds=float(os.getenv("GEMINI_TIMEOUT_SECONDS", "30.0")),
-            stuck_threshold_steps=int(os.getenv("STUCK_THRESHOLD_STEPS", "5")),
-            db_path=os.getenv("DB_PATH", "trinity_pilot.db"),
+            gemini_timeout_seconds=float(os.getenv("GEMINI_TIMEOUT_SECONDS", "120.0")),
+            stuck_threshold_steps=int(os.getenv("STUCK_THRESHOLD_STEPS", "3")),
+            db_path=os.getenv("DB_PATH", _default_db_path()),
             debug_mode=os.getenv("TRINITY_DEBUG_MODE", "false").strip().lower() in ("true", "1", "yes"),
         )
         settings.validate()

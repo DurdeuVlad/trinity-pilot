@@ -11,12 +11,10 @@ Run:
 """
 from __future__ import annotations
 
-import os
 import stat
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -25,9 +23,8 @@ from tests.e2e._gui_driver import (
     AFTER_SUBMIT,
     DESKTOP,
     STATUS_CLARIF,
-    STATUS_CONFIRM,
-    STATUS_FAILED,
     STATUS_ERROR,
+    STATUS_FAILED,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.desktop, pytest.mark.slow]
@@ -153,7 +150,6 @@ def test_FR03_ambiguous_app_name(app):
 
     # If agent attempted execution: it either opened Calculator (pass) or failed cleanly (pass)
     # Both outcomes demonstrate correct behavior — only an infinite hang fails this test
-    ui = app.ui_text()
     hung_indicators = {"planning", "thinking", "executing"}
     assert not all(w in status.lower() for w in hung_indicators), (
         f"FR-03: Task appears hung, status={status!r}"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QLabel, QWidget, QHBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 _ON  = '<span style="color:#FF6347;font-size:13px;">&#9679;</span>'
 _OFF = '<span style="color:#CCCCCC;font-size:13px;">&#9679;</span>'

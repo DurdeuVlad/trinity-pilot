@@ -14,7 +14,7 @@ import uuid
 from fastmcp import FastMCP
 
 from trinity_pilot.config import ConfigError, Settings
-from trinity_pilot.core.types import TaskRecord, TaskStatus
+from trinity_pilot.core.types import TaskStatus
 from trinity_pilot.memory.store import AttemptStore, TaskStore
 from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 

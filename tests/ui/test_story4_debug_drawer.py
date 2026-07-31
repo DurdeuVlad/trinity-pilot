@@ -18,7 +18,6 @@ pytest.importorskip("PySide6")
 
 def test_debug_drawer_instantiates(qtbot):
     from trinity_pilot.ui.app import _DebugDrawer
-    from trinity_pilot.ui.chat_widget import ChatState
 
     drawer = _DebugDrawer()
     qtbot.addWidget(drawer)
@@ -97,6 +96,7 @@ def test_main_window_no_debug_drawer_when_debug_false(qtbot):
 def test_main_window_no_ctrl_shift_d_when_debug_false(qtbot):
     """Ctrl+Shift+D shortcut should not be registered in non-debug mode."""
     from PySide6.QtGui import QShortcut
+
     from trinity_pilot.ui.app import MainWindow
 
     w = MainWindow(debug_mode=False)
@@ -160,6 +160,7 @@ def test_main_window_drawer_text_contains_chatstate_after_toggle(qtbot):
 
 def test_ctrl_shift_d_registered_when_debug_true(qtbot):
     from PySide6.QtGui import QShortcut
+
     from trinity_pilot.ui.app import MainWindow
 
     w = MainWindow(debug_mode=True)

@@ -10,8 +10,12 @@ from typing import Any
 
 import pyautogui
 from PySide6.QtCore import (
-    QEasingCurve, QObject, QPropertyAnimation,
-    QSequentialAnimationGroup, QTimer, Signal,
+    QEasingCurve,
+    QObject,
+    QPropertyAnimation,
+    QSequentialAnimationGroup,
+    QTimer,
+    Signal,
 )
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -31,8 +35,11 @@ from PySide6.QtWidgets import (
 from trinity_pilot.ui.chat_widget import ChatState, ChatWidget
 from trinity_pilot.ui.stream_worker import StreamWorker
 from trinity_pilot.ui.theme import (
-    STATE_INPUT_BORDER, STATE_PLACEHOLDER, STATE_STRIPE,
-    apply_app_qss, tok,
+    STATE_INPUT_BORDER,
+    STATE_PLACEHOLDER,
+    STATE_STRIPE,
+    apply_app_qss,
+    tok,
 )
 
 # Kill path 3: PyAutoGUI pointer fail-safe — move mouse to any corner to abort
@@ -69,6 +76,7 @@ class _ClarificationRelay(QObject):
     question = Signal(str)        # clarification needed — emit the question
     clear = Signal()              # automate intent, task clear — proceed to planning
     direct_response = Signal(str, str)  # (intent, task) — chat/consult, skip planning
+    fallback = Signal(str)        # classifier failed — explain and continue to planning
 
 
 
@@ -130,6 +138,7 @@ class MainWindow(QMainWindow):
         self._stream_worker: StreamWorker | None = None
         self._pending_specs: list[dict] = []
         self._pending_request: str = ""
+        self._stop_requested = False
         self._status_anim: QSequentialAnimationGroup | None = None
         self._planning_relay = _PlanningRelay(self)
         self._planning_relay.planned.connect(self._on_planning_done)
@@ -139,6 +148,7 @@ class MainWindow(QMainWindow):
         self._clarification_relay.question.connect(self._on_clarification_needed)
         self._clarification_relay.clear.connect(self._on_clarification_clear)
         self._clarification_relay.direct_response.connect(self._on_direct_response)
+        self._clarification_relay.fallback.connect(self._on_clarification_fallback)
 
 
         # Debug drawer — only instantiated when debug_mode=True
@@ -356,7 +366,9 @@ class MainWindow(QMainWindow):
     def _toggle_dark(self, dark: bool) -> None:
         self._dark = dark
         # Rebuild app-level QSS (replaces qt_material entirely)
-        apply_app_qss(QApplication.instance(), dark=dark, scale=self._ui_scale())
+        app_instance = QApplication.instance()
+        assert isinstance(app_instance, QApplication)
+        apply_app_qss(app_instance, dark=dark, scale=self._ui_scale())
         # Refresh all themed components
         self._apply_header_style()
         self._apply_status_style()
@@ -375,11 +387,13 @@ class MainWindow(QMainWindow):
             return 1.0
         return max(0.75, min(1.6, h / 800.0))
 
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         scale = self._ui_scale()
         self._chat.set_scale(scale)
-        apply_app_qss(QApplication.instance(), dark=self._dark, scale=scale)
+        app_instance = QApplication.instance()
+        assert isinstance(app_instance, QApplication)
+        apply_app_qss(app_instance, dark=self._dark, scale=scale)
 
     def _set_input_state(self, state: ChatState) -> None:
         """Update input styling and header stripe for the new state."""
@@ -502,6 +516,7 @@ class MainWindow(QMainWindow):
     def _handle_new_task(self, task: str) -> None:
         from trinity_pilot.telemetry.trace import emit
 
+        self._stop_requested = False
         emit(
             "app.py:_handle_new_task",
             "new_task_submitted",
@@ -537,6 +552,8 @@ class MainWindow(QMainWindow):
 
     def _start_planning_phase(self) -> None:
         """Start thinking stream + plan_only after clarification is resolved."""
+        if self._stop_requested:
+            return
         from trinity_pilot.telemetry.trace import emit
 
         emit(
@@ -586,10 +603,38 @@ class MainWindow(QMainWindow):
             relay.clear.emit()
             return
 
+        # Fast sync pre-check — ultra-vague prompts must ask before planning.
+        # The lite classifier often skips clarification on these (SC-01 / VAG
+        # failures on the official baseline). Match only short, target-less asks.
+        _ULTRA_VAGUE_RE = re.compile(
+            r'^\s*('
+            r'do something( useful)?( on my computer| for me| with my (files|pc|computer))?|'
+            r'help me( with my (files|computer|pc))?|'
+            r'do something with my files|'
+            r'open an app|'
+            r'run a command'
+            r')[\s!?.]*$',
+            re.IGNORECASE,
+        )
+        if _ULTRA_VAGUE_RE.match(task.strip()):
+            from trinity_pilot.telemetry.trace import emit
+
+            emit(
+                "app.py:_check_clarification_async",
+                "clarification_fast_ultra_vague",
+                {"task_preview": task[:80]},
+            )
+            relay.question.emit(
+                "What specifically would you like me to do? "
+                "Please name the action, target (file/app/URL), and expected result."
+            )
+            return
+
         settings = self._settings
 
         def _run() -> None:
             import time as _time
+
             from trinity_pilot.telemetry.trace import emit
 
             t0 = _time.monotonic()
@@ -601,8 +646,9 @@ class MainWindow(QMainWindow):
             try:
                 import asyncio
                 import json as _json
-                from trinity_pilot.llm.gemini import GeminiProvider
+
                 from trinity_pilot.llm.base import LLMMessage
+                from trinity_pilot.llm.gemini import GeminiProvider
 
                 if not settings:
                     # No config — can't automate; respond as chat.
@@ -670,17 +716,21 @@ class MainWindow(QMainWindow):
                             },
                         )
                         relay.direct_response.emit(intent, task)
-                    elif data.get("needs_clarification") and data.get("question"):
+                    elif data.get("needs_clarification"):
+                        # BH-004 fail-closed: missing question → generic clarify prompt
+                        question = data.get("question") or (
+                            "Could you clarify what you'd like me to do on your computer?"
+                        )
                         emit(
                             "app.py:_check_clarification_async",
                             "clarification_question",
                             {
                                 "elapsed_ms": int((_time.monotonic() - t0) * 1000),
-                                "question_preview": str(data.get("question", ""))[:120],
+                                "question_preview": str(question)[:120],
                             },
                         )
-                        relay.question.emit(str(data["question"]))
-                    else:
+                        relay.question.emit(str(question))
+                    elif intent == "automate" and data.get("needs_clarification") is False:
                         emit(
                             "app.py:_check_clarification_async",
                             "clarification_clear",
@@ -690,35 +740,58 @@ class MainWindow(QMainWindow):
                             },
                         )
                         relay.clear.emit()
+                    else:
+                        # Incomplete/ambiguous classifier payload → clarify, never plan.
+                        question = (
+                            "Could you clarify what you'd like me to do on your computer?"
+                        )
+                        emit(
+                            "app.py:_check_clarification_async",
+                            "clarification_incomplete_fail_closed",
+                            {
+                                "elapsed_ms": int((_time.monotonic() - t0) * 1000),
+                                "intent": intent,
+                            },
+                        )
+                        relay.question.emit(question)
                 except Exception as exc:
                     emit(
                         "app.py:_check_clarification_async",
-                        "clarification_llm_error_default_clear",
+                        "clarification_llm_error_fail_closed",
                         {
                             "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                             "error": str(exc)[:300],
                         },
                     )
-                    # LLM classification failed — default to planning so automation
-                    # requests still work; chat messages hit the pre-classifier above.
-                    relay.clear.emit()
+                    # The classifier is only a fast preflight.  If it fails,
+                    # let the real planner inspect the request instead of
+                    # trapping the user in a generic clarification loop.
+                    relay.fallback.emit(
+                        "The quick intent check failed, so I’ll send this request "
+                        "straight to planning."
+                    )
                 finally:
                     loop.close()
             except Exception as exc:
                 emit(
                     "app.py:_check_clarification_async",
-                    "clarification_outer_error_default_clear",
+                    "clarification_outer_error_fail_closed",
                     {
                         "elapsed_ms": int((_time.monotonic() - t0) * 1000),
                         "error": str(exc)[:300],
                     },
                 )
-                relay.clear.emit()
+                relay.fallback.emit(
+                    "The quick intent check failed, so I’ll send this request "
+                    "straight to planning."
+                )
 
         threading.Thread(target=_run, daemon=True, name="trinity-clarification").start()
 
     def _on_clarification_needed(self, question: str) -> None:
         """Task is vague — ask the user a clarifying question."""
+        if self._stop_requested:
+            return
         self._chat.thinking.stop()
         self._chat.add_ai_message(
             question,
@@ -731,6 +804,8 @@ class MainWindow(QMainWindow):
 
     def _on_clarification_clear(self) -> None:
         """Task is specific enough — proceed to planning."""
+        if self._stop_requested:
+            return
         from trinity_pilot.telemetry.trace import emit
 
         emit(
@@ -740,8 +815,24 @@ class MainWindow(QMainWindow):
         )
         self._start_planning_phase()
 
+    def _on_clarification_fallback(self, message: str) -> None:
+        """Classifier failed; surface the reason and let the planner recover."""
+        if self._stop_requested:
+            return
+        from trinity_pilot.telemetry.trace import emit
+
+        emit(
+            "app.py:_on_clarification_fallback",
+            "clarification_fallback_to_planning_on_main_thread",
+            {},
+        )
+        self._chat.add_system_note(message)
+        self._start_planning_phase()
+
     def _on_direct_response(self, intent: str, task: str) -> None:
         """Task is chat or consult — stream a direct answer, skip planning entirely."""
+        if self._stop_requested:
+            return
         self._chat.thinking.stop()
 
         if intent == "consult":
@@ -847,12 +938,10 @@ class MainWindow(QMainWindow):
         task_id = self._bridge.start_task(
             user_request=self._pending_request,
             on_log=self.log,
-            on_status=lambda s: self.set_status(
-                {"running": "Executing…", "completed": "Done",
-                 "failed": "Failed", "cancelled": "Cancelled"}.get(s, s.capitalize())
-            ),
+            on_status=self._on_bridge_status,
             on_done=self._on_task_done,
             objectives=self._pending_specs,
+            main_thread_callbacks=True,
         ) if self._bridge else None
 
         if task_id:
@@ -869,7 +958,22 @@ class MainWindow(QMainWindow):
     # Task lifecycle callbacks
     # ------------------------------------------------------------------
 
+    def _on_bridge_status(self, status: str) -> None:
+        """Render worker status without letting a queued pre-stop update win."""
+        if self._stop_requested and status not in {"completed", "failed", "cancelled", "crashed"}:
+            return
+        labels = {
+            "running": "Executing…",
+            "completed": "Done",
+            "failed": "Failed",
+            "cancelled": "Cancelled",
+            "crashed": "Crashed",
+        }
+        self.set_status(labels.get(status, status.capitalize()))
+
     def _on_planning_done(self, specs: list) -> None:
+        if self._stop_requested:
+            return
         from trinity_pilot.telemetry.trace import emit
 
         emit(
@@ -890,6 +994,8 @@ class MainWindow(QMainWindow):
         self.set_status("Awaiting confirmation")
 
     def _on_planning_error(self, error: str) -> None:
+        if self._stop_requested:
+            return
         from trinity_pilot.telemetry.trace import emit
 
         emit(
@@ -921,7 +1027,7 @@ class MainWindow(QMainWindow):
             # Surface crash/error prominently in chat.
             if final_status in ("crashed", "failed") and error_msg:
                 from trinity_pilot.__main__ import CRASHES_DIR
-                hint = f"\n\nCrash report saved to: `crashes/`" if CRASHES_DIR.exists() else ""
+                hint = "\n\nCrash report saved to: `crashes/`" if CRASHES_DIR.exists() else ""
                 self._chat.add_ai_message(
                     f"❌ Task crashed: **{error_msg}**{hint}",
                     thought_prompt=tb_msg or error_msg,
@@ -1028,10 +1134,20 @@ class MainWindow(QMainWindow):
 
     def _handle_stop(self) -> None:
         self.log("[SYSTEM] Stop requested.")
+        self._stop_requested = True
+        worker_was_running = False
         if self._bridge:
-            self._bridge.stop_task()
+            # Cancellation is delivered to the worker's asyncio loop.  Do not
+            # block the Qt event loop while an MCP call is unwinding.
+            worker_was_running = bool(self._bridge.stop_task(wait_ms=0))
         self._chat.thinking.stop()
-        self.set_running(False)
+        if worker_was_running:
+            self._stop_btn.setEnabled(False)
+            self.set_status("Stopping…")
+        else:
+            # Stop can also be pressed while the fast classifier/planner is
+            # still running and no worker thread exists yet.
+            self.set_running(False)
 
     def _handle_emergency_stop(self) -> None:
         self.log("[SYSTEM] Emergency stop (Ctrl+Shift+Q).")
@@ -1045,7 +1161,8 @@ def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
     error before the process exits, then re-raises so the normal exit path runs.
     """
     import traceback
-    from trinity_pilot.__main__ import _write_crash, _ensure_crashes_dir
+
+    from trinity_pilot.__main__ import _ensure_crashes_dir, _write_crash
 
     _orig_hook = sys.excepthook
 
@@ -1057,14 +1174,15 @@ def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
         try:
             win = window_ref[0] if window_ref else None
             if win and hasattr(win, "_chat"):
-                hint = f"See crashes/ folder for full trace." if crash_path else ""
+                hint = "See crashes/ folder for full trace." if crash_path else ""
                 win._chat.add_ai_message(
                     f"⚠️ Unhandled error: {exc_type.__name__}: {exc_value}\n{hint}",
                     thought_prompt="crash",
                 )
                 win.set_status("Error")
-        except Exception:
-            pass
+        except Exception as chat_exc:
+            # Best-effort: showing the error in-chat must never mask the original crash.
+            print(f"[app] failed to show error in chat widget: {chat_exc}", file=sys.stderr)
 
         # Fallback: Qt message box so user is never left with a silent close.
         try:
@@ -1077,8 +1195,9 @@ def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
             if crash_path:
                 box.setInformativeText(f"Crash report saved to:\n{crash_path}")
             box.exec()
-        except Exception:
-            pass
+        except Exception as box_exc:
+            # Best-effort: the crash is already logged to crashes/; the message box is a courtesy.
+            print(f"[app] failed to show crash message box: {box_exc}", file=sys.stderr)
 
         _orig_hook(exc_type, exc_value, exc_tb)
 

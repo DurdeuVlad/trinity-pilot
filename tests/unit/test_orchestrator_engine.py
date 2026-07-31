@@ -110,6 +110,7 @@ async def test_analyse_and_steer_low_risk_uses_tighter_timeout(tmp_path, monkeyp
 
 async def test_analyse_and_steer_medium_risk_keeps_timeout_and_failure_fallback(tmp_path, monkeypatch):
     import inspect
+
     import trinity_pilot.orchestrator.engine as engine
 
     timeouts: list[float] = []
@@ -252,3 +253,95 @@ async def test_orchestrator_failure_skips_failed_subtree_but_continues_unrelated
     assert result["results"]["blocked-c"]["blocked_by"] == "fail-a"
     assert "blocked-c" not in started
     assert "after-b" in started
+
+
+async def test_portable_evidence_includes_created_files():
+    from trinity_pilot.orchestrator.engine import _portable_evidence
+
+    portable = _portable_evidence({
+        "created_files": ["C:/tmp/a.txt"],
+        "workspace": "C:/tmp/trinity-term-xyz",
+        "screenshot": "huge-binary",
+        "stdout": "ok",
+    })
+    assert portable["created_files"] == ["C:/tmp/a.txt"]
+    assert portable["workspace"] == "C:/tmp/trinity-term-xyz"
+    assert "screenshot" not in portable
+
+
+async def test_worker_error_persists_failed_not_cancelled(tmp_path, monkeypatch):
+    import trinity_pilot.orchestrator.engine as engine
+    from trinity_pilot.orchestrator.fsm import ObjectiveState
+    from trinity_pilot.workers.base import WorkerError
+
+    monkeypatch.setattr(engine, "GeminiProvider", lambda **kwargs: object())
+    monkeypatch.setattr(engine, "ObjectiveReviewer", _Reviewer)
+
+    async def dispatch(self, domain, spec):
+        raise WorkerError("boom from worker")
+
+    monkeypatch.setattr(engine.MCPClientPool, "dispatch", dispatch)
+
+    db_path = tmp_path / "state.db"
+    orchestrator = AsyncTaskOrchestrator(
+        Settings(gemini_api_key="fake-key"),
+        db_path=str(db_path),
+    )
+    result = await orchestrator.run("fail please", task_id="task-we", objectives=[_spec()])
+    assert result["status"] == "failed"
+    row = ObjectiveStateStore(db_path).get("task-we", "obj-1")
+    assert row["state"] == ObjectiveState.FAILED.value
+
+
+async def test_cancel_does_not_aclose_pool_immediately(tmp_path, monkeypatch):
+    import trinity_pilot.orchestrator.engine as engine
+
+    closed = {"n": 0}
+
+    async def fake_aclose(self):
+        closed["n"] += 1
+
+    monkeypatch.setattr(engine.MCPClientPool, "aclose", fake_aclose)
+    orchestrator = AsyncTaskOrchestrator(
+        Settings(gemini_api_key="fake-key"),
+        db_path=str(tmp_path / "state.db"),
+    )
+    # Simulate running loop so cancel's prior create_task path would have fired.
+    orchestrator.cancel()
+    assert closed["n"] == 0
+    assert orchestrator._cancel_requested.is_set()
+
+
+async def test_cancel_interrupts_blocked_mcp_dispatch(tmp_path, monkeypatch):
+    import trinity_pilot.orchestrator.engine as engine
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    monkeypatch.setattr(engine, "GeminiProvider", lambda **kwargs: object())
+    monkeypatch.setattr(engine, "ObjectiveReviewer", _Reviewer)
+
+    async def blocked_dispatch(self, domain, spec):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(engine.MCPClientPool, "dispatch", blocked_dispatch)
+
+    orchestrator = AsyncTaskOrchestrator(
+        Settings(gemini_api_key="fake-key"),
+        db_path=str(tmp_path / "state.db"),
+    )
+    run_task = asyncio.create_task(
+        orchestrator.run("cancel this", task_id="task-cancel", objectives=[_spec()])
+    )
+
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    orchestrator.cancel()
+    result = await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert cancelled.is_set()
+    assert result["status"] == TaskStatus.CANCELLED.value

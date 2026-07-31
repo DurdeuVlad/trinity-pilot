@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e._assertions import assert_db_completed, assert_db_not_completed, skip_if_quota_exhausted
+from tests.e2e._assertions import (
+    skip_if_quota_exhausted,
+)
 from tests.e2e._scenario import BridgeTestHarness
-
 
 # ---------------------------------------------------------------------------
 # Browser availability guard

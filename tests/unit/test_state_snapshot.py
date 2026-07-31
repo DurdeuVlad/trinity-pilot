@@ -1,8 +1,6 @@
 """Unit tests for _worker_state_snapshot continuous state injection (AC-01 to AC-07)."""
 from __future__ import annotations
 
-import sys
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -146,7 +144,8 @@ def test_terminal_snapshot_omits_empty_stdout():
 
 # AC-10: Terminal snapshot caps file list at 20 with overflow indicator
 def test_terminal_snapshot_file_cap():
-    import tempfile, os
+    import os
+    import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         for i in range(25):
             open(os.path.join(tmp, f"file{i:02d}.txt"), "w").close()

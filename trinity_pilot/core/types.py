@@ -182,4 +182,4 @@ class ReviewResult:
     recovery_hint: str = ""
 
 
-from trinity_pilot.orchestrator.budget import BudgetExceeded, ObjectiveBudget  # noqa: F401
+from trinity_pilot.orchestrator.budget import BudgetExceeded, ObjectiveBudget  # noqa: E402,F401

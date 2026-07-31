@@ -1,6 +1,7 @@
 """Terminal worker security tests — verifies shlex is used by default."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,7 +9,6 @@ import pytest
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
 from trinity_pilot.llm.base import LLMProvider, LLMResponse
 from trinity_pilot.workers.terminal_worker import TerminalWorker
-
 
 # ---------------------------------------------------------------------------
 # Mock LLM
@@ -60,6 +60,71 @@ def _spec(goal: str, capabilities: list[str] | None = None) -> ObjectiveSpec:
 
 
 class TestTerminalSecurity:
+    async def test_run_command_closes_job_handle_after_success(self):
+        job = MagicMock()
+
+        async def fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.pid = 123
+            mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with patch("trinity_pilot.workers.terminal_worker._WinJobObject", return_value=job), \
+             patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await TerminalWorker._run_command("echo ok", cwd=".")
+
+        assert result == ("ok", "", 0)
+        job.assign.assert_called_once_with(123)
+        job.terminate.assert_not_called()
+        job.close.assert_called_once_with()
+
+    async def test_run_command_kills_and_closes_job_on_cancellation(self):
+        job = MagicMock()
+        started = asyncio.Event()
+
+        async def fake_exec(*args, **kwargs):
+            mock_proc = AsyncMock()
+            mock_proc.pid = 456
+            communicate_calls = 0
+
+            async def communicate():
+                nonlocal communicate_calls
+                communicate_calls += 1
+                started.set()
+                if communicate_calls == 1:
+                    await asyncio.sleep(999)
+                return b"", b""
+
+            mock_proc.communicate = communicate
+            mock_proc.returncode = -1
+            return mock_proc
+
+        with patch("trinity_pilot.workers.terminal_worker._WinJobObject", return_value=job), \
+             patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            task = asyncio.create_task(TerminalWorker._run_command("hang", cwd="."))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        job.terminate.assert_called_once_with()
+        job.close.assert_called_once_with()
+
+    async def test_child_process_environment_excludes_secrets_and_keeps_safe_values(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "terminal-secret-sentinel")
+        monkeypatch.setenv("SERVICE_TOKEN", "token-sentinel")
+        monkeypatch.setenv("SAFE_RUNTIME_MARKER", "safe-sentinel")
+
+        stdout, stderr, exit_code = await TerminalWorker._run_command(
+            'Write-Output "gemini=$env:GEMINI_API_KEY token=$env:SERVICE_TOKEN safe=$env:SAFE_RUNTIME_MARKER"',
+            cwd=".",
+        )
+
+        assert exit_code == 0
+        assert stderr == ""
+        assert "gemini= token= safe=safe-sentinel" in stdout
+
     async def test_default_uses_subprocess_exec_not_shell(self):
         """Without shell_raw: create_subprocess_exec called, not create_subprocess_shell."""
         exec_calls = []

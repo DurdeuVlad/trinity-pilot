@@ -1,8 +1,13 @@
-import pytest
 import json
-from pathlib import Path
-from tests.e2e.checkers import FileExistsCheck, FileContentContainsCheck, JsonFormatCheck, CheckResult
+
 from tests.e2e.benchmark import BenchmarkTest
+from tests.e2e.checkers import (
+    CheckResult,
+    FileContentContainsCheck,
+    FileExistsCheck,
+    JsonFormatCheck,
+)
+
 
 class MockAppDriver:
     def __init__(self):

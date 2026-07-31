@@ -23,8 +23,8 @@ from tests.e2e._gui_driver import (
     DESKTOP,
     STATUS_CLARIF,
     STATUS_CONFIRM,
-    STATUS_FAILED,
     STATUS_ERROR,
+    STATUS_FAILED,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.desktop, pytest.mark.slow]
@@ -87,14 +87,12 @@ def test_SC01_vague_clarify_complete(app):
     s2 = app.wait_for(AFTER_SUBMIT, timeout=60)
     app.snap("SC01_after_clarification")
 
-    # The lite intent-classifier model occasionally re-asks for clarification
-    # even on an unambiguous concrete task (observed: asks a 2nd time after
-    # the task already names file, location, and exact content). Absorb up
-    # to 2 extra rounds of model flakiness before treating it as a real failure.
-    for _ in range(2):
+    # BH-EVAL-002: after fail-closed clarify (BH-004), absorb more re-clarify
+    # rounds from the lite classifier before treating as real failure.
+    for _ in range(4):
         if s2 != STATUS_CLARIF:
             break
-        app.submit("yes, proceed with creating sc01_result.txt")
+        app.submit("yes, proceed with creating sc01_result.txt on the Desktop with text sc01-done")
         s2 = app.wait_for(AFTER_SUBMIT, timeout=60)
 
     if s2 in (STATUS_FAILED, STATUS_ERROR):

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec
 from trinity_pilot.planner.dag import build_graph
 
-ObjectiveRunner = Callable[[ObjectiveSpec], Awaitable[dict[str, Any]]]
+ObjectiveRunner = Callable[[ObjectiveSpec], Coroutine[Any, Any, dict[str, Any]]]
 
 
 class DAGScheduler:
@@ -47,7 +47,7 @@ class DAGScheduler:
         while self._ready or self._pending:
             ready_specs = await self._pop_ready()
             for spec in ready_specs:
-                task = asyncio.create_task(self._runner(spec))
+                task: asyncio.Task[dict[str, Any]] = asyncio.create_task(self._runner(spec))
                 self._pending[task] = spec.objective_id
 
             if not self._pending:

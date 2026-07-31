@@ -8,7 +8,6 @@ Tests three levels:
 from __future__ import annotations
 
 import base64
-import os
 import sys
 from pathlib import Path
 

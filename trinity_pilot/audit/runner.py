@@ -28,7 +28,11 @@ def _json_safe(value: Any) -> Any:
 
 
 def normalize_signal(signal: Any, order: int = 0) -> dict[str, Any]:
-    payload = asdict(signal) if is_dataclass(signal) else dict(getattr(signal, "__dict__", {}))
+    payload = (
+        asdict(signal)
+        if is_dataclass(signal) and not isinstance(signal, type)
+        else dict(getattr(signal, "__dict__", {}))
+    )
     ts = payload.pop("ts", None)
     return {
         "order": order,

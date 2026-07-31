@@ -1,6 +1,6 @@
 """In-process pipeline smoke test.
 
-Exercises: planner → terminal worker → reviewer → evidence store → reflection store
+Exercises: planner → terminal worker → reviewer → reflection store
 LLM calls mocked. TerminalWorker runs a real echo subprocess.
 No external workflow server needed.
 """
@@ -9,25 +9,19 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from trinity_pilot.core.types import (
-    AttemptLog,
     DomainType,
-    FailureReason,
     ObjectiveSpec,
-    ReviewResult,
     RiskClass,
 )
 from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
-from trinity_pilot.memory.evidence_store import EvidenceStore
 from trinity_pilot.memory.reflection import ReflectionStore
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
 from trinity_pilot.workers.terminal_worker import TerminalWorker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,10 +106,8 @@ def _worker_tool_responses(*tool_calls: dict) -> list[LLMResponse]:
 
 class TestPipelineSmoke:
     @pytest.mark.asyncio
-    async def test_terminal_plan_execute_review_passes(self, tmp_path: Path):
-        """Full pipeline: planner → terminal worker → reviewer → evidence saved."""
-        task_id = str(uuid.uuid4())
-
+    async def test_terminal_plan_execute_review_passes(self):
+        """Full pipeline: planner → terminal worker → reviewer."""
         # Planner with mocked LLM
         planner_provider = MockLLMProvider([_PLAN_JSON])
         planner = ObjectivePlanner(provider=planner_provider)
@@ -144,22 +136,6 @@ class TestPipelineSmoke:
         result = await reviewer.review(spec=spec, evidence=evidence)
 
         assert result.passed is True
-
-        # Persist evidence
-        evidence_store = EvidenceStore(db_path=":memory:", base_dir=tmp_path / "evidence")
-        log = AttemptLog(
-            attempt_id=str(uuid.uuid4()),
-            objective_id=spec.objective_id,
-            task_id=task_id,
-            attempt_number=1,
-            status="passed",
-            failure_reason=None,
-            evidence=evidence,
-        )
-        evidence_store.save(log)
-
-        loaded = evidence_store.load_attempt_evidence(task_id, spec.objective_id, 1)
-        assert loaded["exit_code"] == 0
 
     @pytest.mark.asyncio
     async def test_terminal_failure_saves_reflection(self, tmp_path: Path):

@@ -14,9 +14,7 @@ from trinity_pilot.workers.agentic_mixin import (
     _make_tool,
     _report_blocking_decl,
 )
-from trinity_pilot.workers.base import DomainWorker, WorkerBlocker, WorkerError
-from trinity_pilot.workers.worker_result import WorkerResult
-
+from trinity_pilot.workers.base import DomainWorker, WorkerBlocker
 
 # ---------------------------------------------------------------------------
 # Mock LLM

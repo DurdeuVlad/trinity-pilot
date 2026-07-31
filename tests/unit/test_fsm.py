@@ -1,7 +1,9 @@
 """Tests for ObjectiveState FSM (AC-6.1)."""
 from pathlib import Path
+
 import pytest
-from trinity_pilot.orchestrator.fsm import ObjectiveState, transition, VALID_TRANSITIONS
+
+from trinity_pilot.orchestrator.fsm import ObjectiveState, transition
 
 
 def test_valid_transitions_pending_to_running():

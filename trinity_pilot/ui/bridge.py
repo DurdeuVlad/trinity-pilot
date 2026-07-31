@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
 from trinity_pilot.config import Settings
 from trinity_pilot.core.types import ObjectiveSpec, TaskRecord, TaskStatus
@@ -45,8 +46,11 @@ class _WorkerThread(QThread):
         try:
             import comtypes
             comtypes.CoInitialize()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Best-effort: comtypes raises if COM is already initialized on this
+            # thread (harmless) or is unavailable (non-Windows). Not fatal either way.
+            from trinity_pilot.telemetry.trace import emit as _trace_emit
+            _trace_emit("bridge.py:_WorkerThread.run", "com_initialize_failed", {"error": str(exc)})
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -58,10 +62,12 @@ class _WorkerThread(QThread):
             self.log_message.emit(f"[CRASH] {exc}\n{full_trace}")
             # Save crash bundle to disk.
             try:
-                from trinity_pilot.__main__ import _write_crash, _ensure_crashes_dir
+                from trinity_pilot.__main__ import _ensure_crashes_dir, _write_crash
                 _write_crash(f"worker-{self._task_id}", full_trace, _ensure_crashes_dir())
-            except Exception:
-                pass
+            except Exception as write_exc:
+                # Best-effort: crash bundle write must never mask the original crash.
+                print(f"[bridge] failed to write crash bundle: {write_exc}", file=sys.stderr)
+            self.status_changed.emit("crashed")
             self.task_finished.emit(self._task_id, {
                 "task_id": self._task_id,
                 "status": "crashed",
@@ -73,8 +79,9 @@ class _WorkerThread(QThread):
             try:
                 import comtypes
                 comtypes.CoUninitialize()
-            except Exception:
-                pass
+            except Exception as uninit_exc:
+                # Best-effort: teardown failure here doesn't affect the result already emitted.
+                print(f"[bridge] CoUninitialize failed: {uninit_exc}", file=sys.stderr)
 
     async def _drain_signals(self, queue: asyncio.Queue) -> None:
         """Drain orchestrator signals into the trace log until cancelled."""
@@ -107,6 +114,7 @@ class _WorkerThread(QThread):
             span="bridge",
         )
         self.log_message.emit(f"[ORCHESTRATOR] Task started: {self._task_id}")
+        self.status_changed.emit("running")
         drain_task = asyncio.create_task(self._drain_signals(signals_queue))
         run_task = asyncio.create_task(
             self._orchestrator.run(
@@ -117,10 +125,12 @@ class _WorkerThread(QThread):
         )
         try:
             result = await run_task
+            status = str(result.get("status") or "unknown")
+            self.status_changed.emit(status)
             emit(
                 "bridge.py:_run_orchestrator",
                 "task_finished",
-                {"task_id": self._task_id, "status": result.get("status")},
+                {"task_id": self._task_id, "status": status},
                 span="bridge",
             )
             return result
@@ -134,7 +144,56 @@ class _WorkerThread(QThread):
     def request_cancel(self) -> None:
         self._cancel_requested = True
         if self._loop and self._orchestrator:
-            self._loop.call_soon_threadsafe(self._orchestrator.cancel)
+            try:
+                if not self._loop.is_closed():
+                    self._loop.call_soon_threadsafe(self._orchestrator.cancel)
+            except RuntimeError:
+                # The worker can finish between the is_closed check and the
+                # thread-safe callback.  Cancellation is still represented by
+                # _cancel_requested and will be applied if a new run starts.
+                pass
+
+
+class _GuiCallbackRelay(QObject):
+    """Deliver worker results to callbacks on the Qt object's owning thread.
+
+    The worker signal is connected to these slots with QueuedConnection.  The
+    slots therefore run in the main Qt thread, and only then invoke the UI
+    callback.  Headless callers do not use this relay; their callback wiring
+    remains synchronous for the existing test harness contract.
+    """
+
+    log = Signal(str)
+    status = Signal(str)
+    done = Signal(object)
+
+    def __init__(
+        self,
+        parent: QObject,
+        *,
+        on_log: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
+        on_done: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        if on_log:
+            self.log.connect(on_log, Qt.ConnectionType.DirectConnection)
+        if on_status:
+            self.status.connect(on_status, Qt.ConnectionType.DirectConnection)
+        if on_done:
+            self.done.connect(on_done, Qt.ConnectionType.DirectConnection)
+
+    @Slot(str)
+    def forward_log(self, message: str) -> None:
+        self.log.emit(message)
+
+    @Slot(str)
+    def forward_status(self, status: str) -> None:
+        self.status.emit(status)
+
+    @Slot(str, object)
+    def forward_done(self, _task_id: str, result: object) -> None:
+        self.done.emit(result)
 
 
 
@@ -148,6 +207,7 @@ class WorkflowBridge(QObject):
         self._store_path = db_path
         self._store = TaskStore(db_path)
         self._worker: _WorkerThread | None = None
+        self._gui_relay: _GuiCallbackRelay | None = None
 
     def start_task(
         self,
@@ -157,6 +217,7 @@ class WorkflowBridge(QObject):
         on_done: Callable[[dict[str, Any]], None] | None = None,
         objectives: list[dict] | None = None,
         signals_queue: asyncio.Queue | None = None,
+        main_thread_callbacks: bool = False,
     ) -> str:
         task_id = str(uuid.uuid4())
         objective_specs = [ObjectiveSpec.from_dict(o) for o in objectives] if objectives else []
@@ -176,18 +237,54 @@ class WorkflowBridge(QObject):
             objective_specs or None,
             signals_queue,
         )
-        if on_log:
-            self._worker.log_message.connect(on_log)
-        if on_status:
-            self._worker.status_changed.connect(on_status)
-        if on_done:
-            self._worker.task_finished.connect(
-                lambda tid, result: on_done(result),
-                Qt.ConnectionType.QueuedConnection,
+        if main_thread_callbacks:
+            # Keep the relay owned by WorkflowBridge (the Qt main thread).  A
+            # queued connection to a main-thread QObject cannot execute UI
+            # code on the worker, even when the worker exits immediately.
+            if self._gui_relay is not None:
+                self._gui_relay.deleteLater()
+            self._gui_relay = _GuiCallbackRelay(
+                self,
+                on_log=on_log,
+                on_status=on_status,
+                on_done=on_done,
             )
+            if on_log:
+                self._worker.log_message.connect(
+                    self._gui_relay.forward_log,
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            if on_status:
+                self._worker.status_changed.connect(
+                    self._gui_relay.forward_status,
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            if on_done:
+                self._worker.task_finished.connect(
+                    self._gui_relay.forward_done,
+                    Qt.ConnectionType.QueuedConnection,
+                )
+        else:
+            # BridgeTestHarness and other headless callers rely on callback
+            # delivery being synchronous when no Qt event loop is running.
+            if on_log:
+                self._worker.log_message.connect(
+                    on_log,
+                    Qt.ConnectionType.DirectConnection,
+                )
+            if on_status:
+                self._worker.status_changed.connect(
+                    on_status,
+                    Qt.ConnectionType.DirectConnection,
+                )
+            if on_done:
+                self._worker.task_finished.connect(
+                    lambda tid, result: on_done(result),
+                    Qt.ConnectionType.DirectConnection,
+                )
         self._worker.task_finished.connect(
             self._on_worker_finished,
-            Qt.ConnectionType.QueuedConnection,
+            Qt.ConnectionType.DirectConnection,
         )
         self._worker.start()
         return task_id
@@ -200,7 +297,6 @@ class WorkflowBridge(QObject):
     ) -> None:
         """Run the planner in a background thread and return specs via callback."""
         import threading
-        import os
         import time as _time
 
         from trinity_pilot.telemetry.trace import emit
@@ -215,17 +311,18 @@ class WorkflowBridge(QObject):
             t0 = _time.monotonic()
             try:
                 import asyncio
+
                 from trinity_pilot.llm.gemini import GeminiProvider
                 from trinity_pilot.planner.planner import ObjectivePlanner
 
                 emit(
                     "bridge.py:plan_only",
                     "planner_thread_started",
-                    {"model": os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash")},
+                    {"model": self._settings.gemini_planner_model},
                 )
                 provider = GeminiProvider(
-                    api_key=os.environ["GEMINI_API_KEY"],
-                    model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash"),
+                    api_key=self._settings.gemini_api_key,
+                    model=self._settings.gemini_planner_model,
                 )
                 planner = ObjectivePlanner(provider=provider)
                 loop = asyncio.new_event_loop()
@@ -272,16 +369,19 @@ class WorkflowBridge(QObject):
         t.start()
 
 
-    def stop_task(self, wait_ms: int = 5000) -> None:
-        """Request cancellation and wait for the worker thread to finish.
+    def stop_task(self, wait_ms: int = 0) -> bool:
+        """Request cancellation without blocking the Qt event loop.
 
-        wait_ms: max milliseconds to wait for the thread to exit (default 5 s).
-        Waiting is essential in tests so the COM apartment from the previous
-        worker is fully torn down before the next test creates a new one.
+        ``wait_ms`` is an opt-in teardown wait for headless tests.  The UI uses
+        the default so the worker can unwind its asyncio/MCP cancellation while
+        Qt continues processing queued completion signals.
         """
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
-            self._worker.wait(wait_ms)  # blocks until thread exits or timeout
+            if wait_ms > 0:
+                self._worker.wait(wait_ms)  # optional; never required by the UI
+            return True
+        return False
 
     def query_progress(self) -> dict:
         """Return {current_objective, completed_objectives} from the active orchestrator.

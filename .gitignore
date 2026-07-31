@@ -114,9 +114,4 @@ report.txt
 # Runtime trace data
 .trace/
 
-# Internal planning docs (AI sprint notes, probe logs)
-docs/codex-tasks/
-docs/ch6-probe-run-log.md
-docs/ch6-probe-and-fullrun-plan.md
-docs/ch6-per-model-probe-results.md
 *.db

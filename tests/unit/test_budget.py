@@ -1,5 +1,6 @@
 """Tests for ObjectiveBudget primitive (AC-4.1, AC-4.2, AC-4.3)."""
 import pytest
+
 from trinity_pilot.orchestrator.budget import BudgetExceeded, ObjectiveBudget
 
 
@@ -78,6 +79,6 @@ def test_default_returns_sensible_values():
 
 
 def test_re_export_from_types():
-    from trinity_pilot.core.types import ObjectiveBudget, BudgetExceeded  # noqa: F401
+    from trinity_pilot.core.types import BudgetExceeded, ObjectiveBudget  # noqa: F401
     assert ObjectiveBudget is not None
     assert BudgetExceeded is not None

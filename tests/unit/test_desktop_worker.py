@@ -1,17 +1,12 @@
 """DesktopWorker unit tests."""
 from __future__ import annotations
 
-import builtins
-import tempfile
 import os
-
-import pytest
-from PIL import Image, ImageGrab
+import tempfile
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
-from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
+from trinity_pilot.llm.base import LLMProvider, LLMResponse
 from trinity_pilot.workers.desktop_worker import DesktopWorker
-
 
 # ---------------------------------------------------------------------------
 # Mock LLM

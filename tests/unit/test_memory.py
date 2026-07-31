@@ -1,8 +1,6 @@
 """Unit tests for SQLite memory layer. All in-memory — no filesystem."""
 from __future__ import annotations
 
-import pytest
-
 from trinity_pilot.core.types import (
     AttemptLog,
     DomainType,

@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from trinity_pilot.core.types import DomainType, FailureReason, ObjectiveSpec, RiskClass
-from trinity_pilot.llm.base import LLMMessage, LLMProvider, LLMResponse
+from trinity_pilot.llm.base import LLMProvider, LLMResponse
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
 
 

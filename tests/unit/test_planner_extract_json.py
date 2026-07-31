@@ -1,8 +1,6 @@
 """Tests for _extract_json — covers common LLM output formats."""
 import json
 
-import pytest
-
 from trinity_pilot.planner.planner import _extract_json
 
 

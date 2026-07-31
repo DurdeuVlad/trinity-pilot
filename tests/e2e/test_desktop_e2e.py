@@ -96,7 +96,7 @@ def test_desktop_write_file(
         )
     ]
 
-    task_id = bridge_harness.submit(task, objectives=objectives)
+    bridge_harness.submit(task, objectives=objectives)
     done = bridge_harness.wait_for_completion(timeout=120)
 
     if not done:
@@ -212,7 +212,7 @@ def test_desktop_calculator(
         )
     ]
 
-    task_id = bridge_harness.submit(task, objectives=objectives)
+    bridge_harness.submit(task, objectives=objectives)
     done = bridge_harness.wait_for_completion(timeout=120)
 
     if not done:

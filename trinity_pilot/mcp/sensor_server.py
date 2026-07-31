@@ -23,7 +23,6 @@ import hashlib
 import io
 import os
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -215,6 +214,7 @@ def locate_on_screen(image_b64: str, confidence: float = 0.8) -> dict:
         dict with found, x, y (center coords) or error.
     """
     import tempfile
+
     import pyautogui as pg
 
     data = base64.b64decode(image_b64)

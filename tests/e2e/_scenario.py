@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import threading
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -127,7 +125,10 @@ class BridgeTestHarness:
     def dispose(self) -> None:
         """Stop any running worker and kill apps the desktop worker launched."""
         try:
-            self._bridge.stop_task()
+            # Headless teardown can wait for COM/child-process cleanup; the
+            # interactive UI deliberately uses WorkflowBridge's non-blocking
+            # default so Stop never freezes Qt.
+            self._bridge.stop_task(wait_ms=5000)
         except Exception:
             pass
         self._kill_launched_apps()

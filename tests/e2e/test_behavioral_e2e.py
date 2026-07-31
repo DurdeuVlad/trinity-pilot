@@ -21,10 +21,7 @@ from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 from trinity_pilot.orchestrator.signals import (
     ObjectiveFailed,
     StuckSignal,
-    SteeringMessage,
 )
-from trinity_pilot.workers.base import WorkerBlocker
-
 
 # ---------------------------------------------------------------------------
 # Helper: drain all items from an asyncio.Queue into a list
@@ -205,7 +202,7 @@ async def test_mid_run_recovery(e2e_settings: Settings, tmp_db_path: str):
     except asyncio.TimeoutError:
         pytest.fail("test_mid_run_recovery: task hung and did not terminate within 60s")
 
-    signals = _drain_queue(queue)
+    _drain_queue(queue)
 
     store = TaskStore(tmp_db_path)
     record = store.get_task(task_id)

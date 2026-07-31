@@ -25,7 +25,6 @@ from trinity_pilot.orchestrator.engine import AsyncTaskOrchestrator
 from trinity_pilot.orchestrator.signals import StuckSignal, WorkerStepSignal
 from trinity_pilot.workers.terminal_worker import TerminalWorker
 
-
 _SETTINGS = Settings(gemini_api_key="fake-key-for-tests", db_path=":memory:")
 
 

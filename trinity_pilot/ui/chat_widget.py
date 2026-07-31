@@ -4,7 +4,7 @@ import time
 from enum import Enum, auto
 from typing import Any
 
-from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Signal
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
 
 from trinity_pilot.ui import bubble_renderer as br
 from trinity_pilot.ui.objective_chips import ObjectiveChipsWidget
-from trinity_pilot.ui.thinking_indicator import ThinkingIndicator
 from trinity_pilot.ui.theme import tok
+from trinity_pilot.ui.thinking_indicator import ThinkingIndicator
 
 
 def _fade_in(widget: QWidget, duration_ms: int = 200) -> None:

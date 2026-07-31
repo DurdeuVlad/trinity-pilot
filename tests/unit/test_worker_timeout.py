@@ -76,6 +76,7 @@ class TestDesktopWorkerTimeout:
 class TestDesktopWorkerTypeTextCap:
     def _make_worker(self):
         from unittest.mock import MagicMock
+
         from trinity_pilot.workers.desktop_worker import DesktopWorker
         mock_llm = MagicMock()
         return DesktopWorker(llm=mock_llm)

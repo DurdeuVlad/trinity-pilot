@@ -13,7 +13,6 @@ import pytest
 # ---------------------------------------------------------------------------
 # Group 1: bubble_renderer — pure HTML, no Qt
 # ---------------------------------------------------------------------------
-
 from trinity_pilot.ui.bubble_renderer import (
     ai_bubble,
     confirmation_prompt,
@@ -148,7 +147,7 @@ def test_thinking_indicator_hides_on_stop(qtbot):
 
 
 def test_thinking_indicator_label_cycles(qtbot):
-    from trinity_pilot.ui.thinking_indicator import ThinkingIndicator, _FRAMES_PLANNING
+    from trinity_pilot.ui.thinking_indicator import _FRAMES_PLANNING, ThinkingIndicator
     widget = ThinkingIndicator()
     qtbot.addWidget(widget)
     widget.start()

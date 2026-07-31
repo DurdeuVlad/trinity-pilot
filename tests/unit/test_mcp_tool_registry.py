@@ -1,10 +1,7 @@
 """Unit tests for MCP tool metadata manifests and filtering."""
 from __future__ import annotations
 
-from trinity_pilot.mcp import browser_server
-from trinity_pilot.mcp import desktop_server
-from trinity_pilot.mcp import sensor_server
-from trinity_pilot.mcp import terminal_server
+from trinity_pilot.mcp import browser_server, desktop_server, sensor_server, terminal_server
 from trinity_pilot.mcp.tool_registry import VALID_TOOL_KINDS, sensor_only_tools, validate_manifest
 
 MANIFESTS = (

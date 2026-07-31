@@ -1,7 +1,9 @@
 """FastMCP server exposing TerminalWorker capabilities at the product boundary.
 
 Run: python -m trinity_pilot.mcp.terminal_server
-Internal hot-path skips this server and calls TerminalWorker directly.
+
+Product path is MCP-only: the orchestrator always dispatches via MCPClientPool
+(there is no hot-path that skips this server).
 
 MCP tools exposed
 -----------------
@@ -11,7 +13,7 @@ High-level task tools:
 Domain sensor tools (read-only, terminal-specific — require active session):
   read_stdout        — last N lines of PTY stdout buffer
   current_directory  — cwd of the active terminal session
-  env_vars           — environment variables (all or specific keys)
+  env_vars           — environment variables (keys required / allowlisted; secrets redacted)
   last_exit_code     — exit code of the last completed command
   command_history    — recent commands run in this session
   list_created_files — files created/modified in workspace during session
@@ -26,18 +28,19 @@ Control tools (same interface as inner loop):
 """
 from __future__ import annotations
 
-import asyncio
-import sys
+import os
+import re
+import shutil
 import tempfile
 from pathlib import Path
 
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
-from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.mcp.base_server import ControlState
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
-from trinity_pilot.workers.terminal_worker import TerminalWorker, _CMD_TIMEOUT
+from trinity_pilot.workers.terminal_worker import TerminalWorker
 
 mcp = FastMCP(
     name="trinity-pilot-terminal",
@@ -46,6 +49,14 @@ mcp = FastMCP(
 
 SERVER_NAME = "trinity-pilot-terminal"
 _control = ControlState()
+
+# Safe non-secret env keys callers may request without an explicit list.
+_ENV_ALLOWLIST = frozenset({
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+    "USERNAME", "USERPROFILE", "HOME", "COMPUTERNAME", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE", "OS", "COMSPEC", "PUBLIC", "LOCALAPPDATA", "APPDATA",
+})
+_SECRET_KEY_RE = re.compile(r"(KEY|TOKEN|PASSWORD|SECRET|CREDENTIAL|API_KEY)", re.IGNORECASE)
 
 TOOL_MANIFEST: ToolManifest = (
     ToolMetadata("terminal_run", SERVER_NAME, "task", "Run a full terminal objective."),
@@ -142,18 +153,28 @@ async def current_directory(workspace: str = "") -> dict:
 
 @mcp.tool()
 async def env_vars(keys: list[str] | None = None) -> dict:
-    """Return environment variables.
+    """Return environment variables (never dumps the full secret-bearing environ).
 
     Args:
-        keys: Optional list of specific variable names to return. Returns all if omitted.
+        keys: Specific variable names to return. If omitted, returns only a
+              small allowlist of non-secret system vars. Keys matching
+              *_KEY / *_TOKEN / PASSWORD / SECRET are redacted.
 
     Returns:
-        dict mapping variable names to values.
+        dict mapping variable names to values (or \"<redacted>\").
     """
-    import os
     if keys:
-        return {"vars": {k: os.environ.get(k) for k in keys}}
-    return {"vars": dict(os.environ)}
+        selected = list(keys)
+    else:
+        selected = sorted(k for k in _ENV_ALLOWLIST if k in os.environ)
+
+    vars_out: dict[str, str | None] = {}
+    for k in selected:
+        if _SECRET_KEY_RE.search(k):
+            vars_out[k] = "<redacted>" if k in os.environ else None
+        else:
+            vars_out[k] = os.environ.get(k)
+    return {"vars": vars_out}
 
 
 @mcp.tool()
@@ -166,7 +187,6 @@ async def list_created_files(workspace: str) -> dict:
     Returns:
         dict with files: list of relative file paths.
     """
-    import os
     from pathlib import Path
     if not workspace:
         return {"files": [], "error": "workspace path required"}
@@ -209,23 +229,49 @@ async def run_command(
     allow_failure: bool = False,
     cwd: str | None = None,
     shell_raw: bool = False,
+    required_capabilities: list[str] | None = None,
 ) -> dict:
     """Execute a PowerShell command and return stdout, stderr, and exit_code.
 
-    If cwd is omitted a temporary directory is used as the working directory.
+    If cwd is omitted a temporary directory is used as the working directory
+    and cleaned up afterwards. shell_raw requires \"shell_raw\" in
+    required_capabilities (same gate as TerminalWorker).
     """
+    caps = required_capabilities or []
+    if shell_raw and "shell_raw" not in caps:
+        return {
+            "success": False,
+            "action": "run_command",
+            "result": "shell_raw denied",
+            "observation": {},
+            "error": (
+                "shell_raw=True requires 'shell_raw' in required_capabilities "
+                "(same gate as TerminalWorker)."
+            ),
+        }
+
+    created_temp = cwd is None
     work_dir = cwd or tempfile.mkdtemp(prefix="trinity-mcp-term-")
-    stdout, stderr, exit_code = await TerminalWorker._run_command(
-        command, cwd=work_dir, shell_raw=shell_raw
-    )
-    success = exit_code == 0 or allow_failure
-    return {
-        "success": success,
-        "action": "run_command",
-        "result": f"command exited {exit_code}",
-        "observation": {"stdout": stdout, "stderr": stderr, "exit_code": exit_code, "cwd": work_dir},
-        "error": None if success else f"Command exited {exit_code}",
-    }
+    try:
+        stdout, stderr, exit_code = await TerminalWorker._run_command(
+            command, cwd=work_dir, shell_raw=shell_raw
+        )
+        success = exit_code == 0 or allow_failure
+        return {
+            "success": success,
+            "action": "run_command",
+            "result": f"command exited {exit_code}",
+            "observation": {
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "cwd": work_dir if not created_temp else None,
+            },
+            "error": None if success else f"Command exited {exit_code}",
+        }
+    finally:
+        if created_temp:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 @mcp.tool()

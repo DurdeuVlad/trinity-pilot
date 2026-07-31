@@ -1,12 +1,13 @@
 """Tests for GeminiProvider using google.genai sync client via run_in_executor."""
 from __future__ import annotations
+
 import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trinity_pilot.llm.gemini import GeminiProvider
 from trinity_pilot.llm.base import LLMMessage, LLMResponse
+from trinity_pilot.llm.gemini import GeminiProvider
 
 
 def make_mock_response(text: str = "result", total_tokens: int = 42) -> MagicMock:
@@ -36,6 +37,13 @@ def test_complete_returns_token_count(provider):
     assert result.content == "result"
 
 
+def test_default_timeout_allows_long_orchestration_calls(provider):
+    gemini, _ = provider
+
+    # Planner/reviewer/analyser calls must not inherit the old 30-second cap.
+    assert gemini._default_timeout == 120.0
+
+
 def test_complete_uses_wait_for_timeout(provider):
     """asyncio.wait_for timeout propagates as TimeoutError."""
     gemini, mock_client = provider
@@ -63,7 +71,8 @@ def test_complete_token_count_zero_when_usage_metadata_missing(provider):
 
 def test_complete_does_not_use_to_thread(provider):
     """Ensure no asyncio.to_thread usage -- executor pattern only."""
-    import trinity_pilot.llm.gemini as gemini_module
     import inspect
+
+    import trinity_pilot.llm.gemini as gemini_module
     source = inspect.getsource(gemini_module)
     assert "to_thread" not in source, "gemini.py must not use asyncio.to_thread"

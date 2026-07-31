@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,9 +37,8 @@ from trinity_pilot.planner.dag import infer_cross_domain_independence, resolve_e
 from trinity_pilot.planner.planner import ObjectivePlanner
 from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
-from trinity_pilot.workers.worker_result import WorkerResult
 
-# Evidence keys safe to forward into a dependent objective's prompt context Ã¢â‚¬â€
+# Evidence keys safe to forward into a dependent objective's prompt context —
 # small, text-only facts a downstream worker needs (e.g. a captured page title).
 # Excludes large/binary fields (screenshot, dom_snapshot) that would bloat the
 # next objective's LLM context without adding anything it can act on.
@@ -47,6 +47,7 @@ _PORTABLE_EVIDENCE_KEYS = (
     "page_url",
     "written_files",
     "written_files_verified",
+    "created_files",
     "worker_result_summary",
     "visible_text",
     "stdout",
@@ -84,6 +85,21 @@ def _portable_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     return portable
 
 
+def _cleanup_terminal_workspaces(results: dict[str, Any]) -> None:
+    """Remove terminal worker temp workspaces after the DAG (and dependents) finish.
+
+    BH-001: workers no longer rmtree in their own finally; the orchestrator owns
+    lifecycle so portable evidence stays readable until task end.
+    """
+    for result in results.values():
+        if not isinstance(result, dict):
+            continue
+        evidence = result.get("evidence") or {}
+        workspace = evidence.get("workspace")
+        if isinstance(workspace, str) and workspace and "trinity-term-" in workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 @dataclass
 class OrchestratorSnapshot:
     current_objective: str | None = None
@@ -110,6 +126,7 @@ class AsyncTaskOrchestrator:
         self._objective_store = ObjectiveStateStore(self._db_path)
         self._mcp_pool = MCPClientPool()
         self._cancel_requested = asyncio.Event()
+        self._active_dispatch_tasks: set[asyncio.Task[Any]] = set()
         self._snapshot = OrchestratorSnapshot()
 
     @property
@@ -122,15 +139,18 @@ class AsyncTaskOrchestrator:
 
     def cancel(self) -> None:
         self._cancel_requested.set()
-        try:
-            asyncio.get_running_loop().create_task(self._mcp_pool.aclose())
-        except RuntimeError:
-            pass
+        # Cancel the task wrapping each active MCP call.  This makes Stop
+        # interrupt a blocked browser/desktop/terminal dispatch immediately;
+        # the run() finally block still owns orderly MCP pool shutdown.
+        for dispatch_task in tuple(self._active_dispatch_tasks):
+            if not dispatch_task.done():
+                dispatch_task.cancel()
 
     async def plan(self, user_request: str) -> list[ObjectiveSpec]:
         provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_planner_model,
+            default_timeout=self._settings.gemini_timeout_seconds,
         )
         return await ObjectivePlanner(provider).plan(user_request)
 
@@ -206,6 +226,12 @@ class AsyncTaskOrchestrator:
             self._snapshot.status = TaskStatus.FAILED
             return {"task_id": task_id, "status": "failed", "error": str(exc)}
         finally:
+            # Prefer cleaning workspaces collected on results if available.
+            try:
+                if "results" in locals() and isinstance(results, dict):
+                    _cleanup_terminal_workspaces(results)
+            except Exception:
+                pass
             await self._mcp_pool.aclose()
 
     async def _run_objective(self, task_id: str, spec: ObjectiveSpec) -> dict[str, Any]:
@@ -226,6 +252,7 @@ class AsyncTaskOrchestrator:
         reviewer_provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_worker_model,
+            default_timeout=self._settings.gemini_timeout_seconds,
         )
         try:
             reviewer = ObjectiveReviewer(reviewer_provider, sensor_call=self._mcp_pool.call_sensor)
@@ -234,6 +261,7 @@ class AsyncTaskOrchestrator:
         analyser_provider = GeminiProvider(
             api_key=self._settings.gemini_api_key,
             model=self._settings.gemini_worker_model,
+            default_timeout=self._settings.gemini_timeout_seconds,
         )
         analyser = OrchestratorAnalyser(analyser_provider)
         last_evidence: dict[str, Any] = {}
@@ -262,11 +290,18 @@ class AsyncTaskOrchestrator:
             )
             try:
                 budget.charge_step()
-                evidence = await self._mcp_pool.dispatch(spec.domain, spec)
+                dispatch_task = asyncio.create_task(
+                    self._mcp_pool.dispatch(spec.domain, spec),
+                    name=f"mcp-dispatch:{task_id}:{objective_id}:{attempt_number}",
+                )
+                self._active_dispatch_tasks.add(dispatch_task)
+                try:
+                    evidence = await dispatch_task
+                finally:
+                    self._active_dispatch_tasks.discard(dispatch_task)
                 last_evidence = dict(evidence)
                 # If worker definitively failed, skip reviewer -- no need to retry
                 if evidence.get("worker_result_status") == "failure":
-                    failure_summary = evidence.get("worker_result_summary", "Worker declared definitive failure")
                     self._attempt_store.log_attempt(
                         AttemptLog(
                             attempt_id, objective_id, task_id, attempt_number, "failed",
@@ -463,23 +498,31 @@ class AsyncTaskOrchestrator:
                     )
                 )
                 err_lower = str(exc).lower()
-                reason = "worker_timeout" if "timeout" in err_lower or "timed out" in err_lower else "worker_error"
+                worker_error_reason = (
+                    "worker_timeout" if "timeout" in err_lower or "timed out" in err_lower else "worker_error"
+                )
+                # BH-009: persist FAILED (not CANCELLED) — WorkerError is a real failure.
                 self._objective_store.upsert(
                     task_id,
                     objective_id,
-                    ObjectiveState.CANCELLED,
+                    ObjectiveState.FAILED,
                     step_count=budget.steps_used(),
                     token_count=budget.tokens_used(),
-                    failure_reason=reason,
+                    failure_reason=worker_error_reason,
                 )
-                await self.signals.put(ObjectiveFailed(task_id, objective_id, reason))
+                await self.signals.put(ObjectiveFailed(task_id, objective_id, worker_error_reason))
                 return {
                     "status": "failed",
-                    "failure_reason": reason,
+                    "failure_reason": worker_error_reason,
                     "evidence": last_evidence,
                 }
 
-            stuck = attempt_number >= getattr(self._settings, "stuck_threshold_steps", 5)
+            # BH-008: stuck threshold must be reachable under default max_attempts (3).
+            stuck_threshold = min(
+                int(getattr(self._settings, "stuck_threshold_steps", 3) or 3),
+                spec.max_attempts,
+            )
+            stuck = attempt_number >= stuck_threshold
             if stuck:
                 question = "The objective is not making progress. Adjust the objective or stop?"
                 self._objective_store.upsert(
@@ -528,9 +571,8 @@ class AsyncTaskOrchestrator:
         status: TaskStatus,
         results: dict[str, Any],
     ) -> dict[str, Any]:
-        from trinity_pilot.telemetry.trace import emit, export_attempts_json, _trace_dir
-        import sys
-        from pathlib import Path
+
+        from trinity_pilot.telemetry.trace import emit, export_attempts_json
 
         self._task_store.update_status(task_id, status)
         self._snapshot.current_objective = None

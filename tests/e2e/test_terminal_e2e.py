@@ -18,10 +18,6 @@ from pathlib import Path
 import pytest
 
 from tests.e2e._assertions import (
-    assert_db_completed,
-    assert_db_not_completed,
-    assert_file_exists,
-    assert_signal_in_queue,
     skip_if_quota_exhausted,
 )
 from tests.e2e._scenario import BridgeTestHarness
@@ -59,7 +55,6 @@ def _terminal_objective(objective_id: str, goal: str, max_attempts: int = 2) -> 
 @pytest.mark.e2e
 def test_terminal_create_venv_and_install_flask(bridge_harness: BridgeTestHarness, tmp_db_path: str, tmp_path: Path):
     """Create a Python virtual environment and install flask into it."""
-    venv_dir = _E2E_TMP / "myapp" / "venv"
     task = f"Create a Python virtual environment in {_E2E_TMP / 'myapp'} and install flask"
     objectives = [
         _terminal_objective(
@@ -127,7 +122,7 @@ def test_terminal_compress_folder(bridge_harness: BridgeTestHarness, tmp_db_path
         # Cleanup before failing
         shutil.rmtree(reports_dir, ignore_errors=True)
         zip_path.unlink(missing_ok=True)
-        pytest.fail(f"Task stalled after 120s")
+        pytest.fail("Task stalled after 120s")
 
     result = bridge_harness.last_result
     skip_if_quota_exhausted(result, "obj-compress")
@@ -180,7 +175,7 @@ def test_terminal_find_large_files(bridge_harness: BridgeTestHarness, tmp_db_pat
     shutil.rmtree(search_dir, ignore_errors=True)
 
     if not done:
-        pytest.fail(f"Task stalled after 120s")
+        pytest.fail("Task stalled after 120s")
 
     result = bridge_harness.last_result
     skip_if_quota_exhausted(result, "obj-find-large")
@@ -201,7 +196,7 @@ def test_terminal_clarification_vague(bridge_harness: BridgeTestHarness, tmp_db_
     # No objectives — let the planner run (or detect vagueness)
 
     log_path = tmp_path / "run.log"
-    task_id = bridge_harness.submit(task, objectives=None)
+    bridge_harness.submit(task, objectives=None)
     done = bridge_harness.wait_for_completion(timeout=60)
     bridge_harness.write_log(log_path)
 
@@ -217,15 +212,6 @@ def test_terminal_clarification_vague(bridge_harness: BridgeTestHarness, tmp_db_
         assert status in ("failed", "completed", "cancelled", "partial_blocker") or True, (
             f"Got status: {status}"
         )
-        # Check for question-like content in signals or result
-        signals = bridge_harness.drain_signals()
-        from trinity_pilot.orchestrator.signals import StuckSignal
-        stuck_signals = [s for s in signals if isinstance(s, StuckSignal)]
-        # If we have stuck signals with user_question, that's the clarification
-        if stuck_signals:
-            questions = [s for s in stuck_signals if s.user_question]
-            # At least one question-bearing StuckSignal is the desired outcome for vague tasks
-            # But we don't fail if absent — the LLM may just attempt to run something
     else:
         # Timeout on vague task is also acceptable — confirms the harness detects stalls
         pytest.skip("Vague task timed out (acceptable — stall detection confirmed)")
@@ -288,7 +274,7 @@ def test_signals_forwarded(qapp, e2e_settings, tmp_db_path: str, tmp_path: Path)
         ]
 
         log_path = tmp_path / "run.log"
-        task_id = harness.submit(task, objectives=objectives)
+        harness.submit(task, objectives=objectives)
         done = harness.wait_for_completion(timeout=120)
         harness.write_log(log_path)
 
@@ -299,8 +285,8 @@ def test_signals_forwarded(qapp, e2e_settings, tmp_db_path: str, tmp_path: Path)
 
         drained = harness.drain_signals()
         assert len(drained) > 0, (
-            f"Expected at least one signal in the harness-owned queue after start_task(), "
-            f"but got 0. AC-14 production fix may not be forwarding signals correctly."
+            "Expected at least one signal in the harness-owned queue after start_task(), "
+            "but got 0. AC-14 production fix may not be forwarding signals correctly."
         )
     finally:
         harness.dispose()

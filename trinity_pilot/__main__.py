@@ -27,8 +27,8 @@ def _install_crash_hooks() -> None:
     """
     import datetime
     import faulthandler
-    import traceback
     import threading
+    import traceback
 
     crashes = _ensure_crashes_dir()
 
@@ -62,7 +62,8 @@ def _install_crash_hooks() -> None:
 
 def _write_crash(source: str, traceback_str: str, crashes_dir: Path) -> Path | None:
     """Write a crash report JSON and return its path."""
-    import datetime, json
+    import datetime
+    import json
     ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S%f")
     path = crashes_dir / f"crash-{ts}-{source[:40]}.json"
     try:
@@ -92,7 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = _build_parser()
-    args = parser.parse_args()
+    parser.parse_args()
 
     _install_crash_hooks()
 

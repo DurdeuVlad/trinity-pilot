@@ -144,7 +144,7 @@ class AppDriver:
             "window_connected": False,
             "prompt_submitted": False,
             "execution_started": False,
-            "app_crashed": True,
+            "no_app_crash": True,
             "graceful_close": False
         }
 
@@ -727,8 +727,8 @@ class AppDriver:
         # Try graceful close first: send WM_CLOSE so Qt can clean up.
         if self._hwnd:
             try:
-                import win32gui
                 import win32con
+                import win32gui
                 win32gui.PostMessage(self._hwnd, win32con.WM_CLOSE, 0, 0)
             except Exception:
                 pass
@@ -825,7 +825,7 @@ class AppDriver:
             rc = self._proc.poll()
             if rc is not None:
                 # True = no crash observed; False = process exited during execution.
-                self.infra_checkpoints["app_crashed"] = False
+                self.infra_checkpoints["no_app_crash"] = False
                 raise TrinityPilotCrashedError(
                     f"Trinity Pilot exited (code={rc}) "
                     f"while waiting for {targets!r}"

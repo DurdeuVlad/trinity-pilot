@@ -1,5 +1,4 @@
 """Tests for objective_states table and db.py updates (AC-2.2)."""
-import sqlite3
 from trinity_pilot.memory.db import open_db
 
 

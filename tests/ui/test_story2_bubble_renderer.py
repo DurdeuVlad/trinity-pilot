@@ -7,8 +7,8 @@ AC-13: execution_row returns valid HTML for all four status values.
 """
 from __future__ import annotations
 
-import re
 import pathlib
+import re
 
 from trinity_pilot.ui.bubble_renderer import (
     _DARK,
@@ -20,7 +20,6 @@ from trinity_pilot.ui.bubble_renderer import (
     system_note,
     user_bubble,
 )
-
 
 # ---------------------------------------------------------------------------
 # Color dict presence
@@ -75,7 +74,7 @@ def test_no_inline_hex_in_function_bodies():
             continue
         if hex_pattern.search(line):
             inline_hits.append(line)
-    assert inline_hits == [], f"Inline hex found in function bodies:\n" + "\n".join(inline_hits)
+    assert inline_hits == [], "Inline hex found in function bodies:\n" + "\n".join(inline_hits)
 
 
 # ---------------------------------------------------------------------------

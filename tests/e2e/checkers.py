@@ -1,7 +1,8 @@
+import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-import json
 from typing import Any
+
 
 class CheckResult:
     def __init__(self, success: bool, message: str, details: dict[str, Any] | None = None) -> None:

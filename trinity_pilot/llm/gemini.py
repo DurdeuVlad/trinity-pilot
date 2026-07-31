@@ -32,7 +32,8 @@ async def _generate_with_retry(call: Callable[[], Any]) -> Any:
                 await asyncio.sleep(_RETRY_BACKOFF_S * (attempt + 1))
                 continue
             raise
-    raise last_exc  # pragma: no cover — unreachable, satisfies type checkers
+    assert last_exc is not None  # pragma: no cover — loop always sets or raises
+    raise last_exc
 
 
 def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
@@ -93,23 +94,30 @@ def _build_contents(messages: list[LLMMessage]) -> list[genai_types.Content]:
             contents.append(genai_types.Content(role="user", parts=tool_parts))
         else:
             role = "model" if msg.role == "model" else "user"
-            parts: list[genai_types.Part] = [genai_types.Part(text=msg.content)]
+            text_parts: list[genai_types.Part] = [genai_types.Part(text=msg.content)]
             if msg.image_data:
-                parts.append(genai_types.Part(
+                text_parts.append(genai_types.Part(
                     inline_data=genai_types.Blob(
                         mime_type=msg.image_mime,
                         data=msg.image_data,
                     )
                 ))
-            contents.append(genai_types.Content(role=role, parts=parts))
+            contents.append(genai_types.Content(role=role, parts=text_parts))
     return contents
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-2.5-flash",
+        default_timeout: float | None = None,
+    ) -> None:
         self._api_key = api_key
         self._model_name = model
         self._client: genai.Client | None = None
+        # BH-011: honour settings.gemini_timeout_seconds when provided.
+        self._default_timeout = float(default_timeout) if default_timeout is not None else 120.0
 
     def _get_client(self) -> genai.Client:
         # Lazy init: defer genai.Client() until first use so that constructing
@@ -130,11 +138,12 @@ class GeminiProvider(LLMProvider):
         self,
         messages: list[LLMMessage],
         system: str = "",
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> LLMResponse:
         if not messages:
             raise ValueError("messages must not be empty")
 
+        effective_timeout = self._default_timeout if timeout is None else timeout
         contents = _build_contents(messages)
         config = genai_types.GenerateContentConfig(
             system_instruction=system if system else None,
@@ -152,7 +161,7 @@ class GeminiProvider(LLMProvider):
                     contents=contents,
                     config=config,
                 )),
-            timeout=timeout,
+            timeout=effective_timeout,
         )
         token_count = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
         # For thinking models (gemini-2.5-pro etc.) response.text may raise ValueError
@@ -187,11 +196,12 @@ class GeminiProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[dict[str, Any]],
         system: str = "",
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> LLMResponse:
         if not messages:
             raise ValueError("messages must not be empty")
 
+        effective_timeout = self._default_timeout if timeout is None else timeout
         contents = _build_contents(messages)
         config = genai_types.GenerateContentConfig(
             system_instruction=system if system else None,
@@ -203,7 +213,7 @@ class GeminiProvider(LLMProvider):
                     contents=contents,
                     config=config,
                 )),
-            timeout=timeout,
+            timeout=effective_timeout,
         )
 
         tool_calls: list[dict[str, Any]] = []

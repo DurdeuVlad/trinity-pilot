@@ -1,7 +1,9 @@
 """FastMCP server exposing BrowserWorker capabilities at the product boundary.
 
 Run: python -m trinity_pilot.mcp.browser_server
-Internal hot-path skips this server and calls BrowserWorker directly.
+
+Product path is MCP-only: the orchestrator always dispatches via MCPClientPool
+(there is no hot-path that skips this server).
 
 MCP tools exposed
 -----------------
@@ -38,8 +40,8 @@ from typing import Any
 from fastmcp import FastMCP
 
 from trinity_pilot.core.types import ObjectiveSpec
-from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.mcp.base_server import ControlState
+from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 from trinity_pilot.workers.browser_worker import BrowserWorker
 

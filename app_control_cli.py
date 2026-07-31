@@ -211,7 +211,6 @@ def cmd_start_ui(args: argparse.Namespace) -> None:
         try:
             existing_pid = int(pid_file.read_text().strip())
             # Check if process is alive
-            import signal as _signal
 
             try:
                 if sys.platform == "win32":

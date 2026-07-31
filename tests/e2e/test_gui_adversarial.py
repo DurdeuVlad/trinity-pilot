@@ -24,8 +24,8 @@ from tests.e2e._gui_driver import (
     DESKTOP,
     STATUS_CLARIF,
     STATUS_CONFIRM,
-    STATUS_FAILED,
     STATUS_ERROR,
+    STATUS_FAILED,
 )
 
 pytestmark = pytest.mark.e2e
