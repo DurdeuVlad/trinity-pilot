@@ -1,15 +1,15 @@
 # Changelog
 
-## 2026-08-09 — Open-source publish readiness
+## 2026-08-09: Open-source publish readiness
 
-- **feat: production hardening** — orphan objective recovery (mark stale objectives failed on next run), per-objective token budget tracking with charge-on-completion, ReviewError propagation, MCP client pool lifecycle hardening, worker close guards, structured error telemetry (emit_error), Gemini SDK type fixes, config validation + preflight checks.
-- **feat: PyInstaller packaging** — `pyinstaller.spec` and `scripts/build_exe.py` for standalone Windows `.exe` distribution with hidden imports for pywinauto, Playwright, and PySide6.
-- **feat: API key dialog** — first-run Qt GUI modal (`ApiKeyDialog`) prompts user for `GEMINI_API_KEY` when missing, persists to `.env`. Wired into `__main__.py` startup.
-- **feat: UI components** — `action_overlay.py` (in-flight action visualization) and `activity_panel.py` (live orchestrator event feed).
-- **docs: README rewrite** — architecture diagrams (FSM, layer stack, worker routing, LLM provider, objective sequence), 11 screenshot gallery, quick start for pip and standalone .exe, developer guide, evaluation methodology.
-- **fix: CI/release workflows** — restored `tests/ui` to pytest command and `--locked` flag to `uv sync` in both `ci.yml` and `release.yml`.
-- **fix: smoke harness** — UTF-8 encoding for subprocess stdout, proper file-wait return value.
-- **test: new coverage** — `test_api_key_dialog.py` (14 assertions), `test_db_objective_states.py` and `test_memory.py` regression tests for orphan state marking.
+- **Production hardening.** Orphan objective recovery (mark stale objectives failed on next run), per-objective token budget tracking with charge-on-completion, ReviewError propagation, MCP client pool lifecycle hardening, worker close guards, structured error telemetry (emit_error), Gemini SDK type fixes, config validation + preflight checks.
+- **PyInstaller packaging.** `pyinstaller.spec` and `scripts/build_exe.py` for standalone Windows `.exe` distribution with hidden imports for pywinauto, Playwright, and PySide6.
+- **API key dialog.** First-run Qt GUI modal (`ApiKeyDialog`) prompts user for `GEMINI_API_KEY` when missing, persists to `.env`. Wired into `__main__.py` startup.
+- **UI components.** `action_overlay.py` (in-flight action visualization) and `activity_panel.py` (live orchestrator event feed).
+- **README rewrite.** Architecture diagrams (FSM, layer stack, worker routing, LLM provider, objective sequence), 11 screenshot gallery, quick start for pip and standalone .exe, developer guide, evaluation methodology.
+- **CI/release workflow fixes.** Restored `tests/ui` to pytest command and `--locked` flag to `uv sync` in both `ci.yml` and `release.yml`.
+- **Smoke harness fix.** UTF-8 encoding for subprocess stdout, proper file-wait return value.
+- **New test coverage.** `test_api_key_dialog.py` (14 assertions), `test_db_objective_states.py` and `test_memory.py` regression tests for orphan state marking.
 
 ## Fixes — 2026-06-29
 

@@ -2,28 +2,26 @@
 
 # Trinity Pilot
 
-### The open-source desktop agent that actually finishes the job.
+### The open-source desktop agent that finishes the job.
 
-Type a task in plain English. Trinity Pilot decomposes it into typed objectives, drives your browser, terminal, and desktop apps to execute them, reviews each result with a separate AI pass, and retries on failure — all locally, all async, all on your machine.
+Type a task in plain English. Trinity Pilot decomposes it into typed objectives, drives your browser, terminal, and desktop apps to execute them, reviews each result with a separate AI pass, and retries on failure. Everything runs locally on your machine.
 
 [![CI](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://www.python.org/downloads/)
-[![Tests: 475](https://img.shields.io/badge/Tests-475%20passing-brightgreen.svg)](#-running-tests)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](#-safety-and-data-handling)
+[![Tests: 475](https://img.shields.io/badge/Tests-475%20passing-brightgreen.svg)](#running-tests)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](#safety-and-data-handling)
 
 </div>
-
----
 
 ## Why this exists
 
 Every "AI desktop agent" demo you've seen either:
-- **Records a macro** and replays it — breaks the moment a window moves.
-- **Calls a single LLM loop** with a screenshot — hallucinates clicks, invents file paths, declares success on failure.
-- **Wraps a cloud service** — your screen, files, and terminal output leave your machine.
+- Records a macro and replays it. Breaks the moment a window moves.
+- Calls a single LLM loop with a screenshot. Hallucinates clicks, invents file paths, declares success on failure.
+- Wraps a cloud service. Your screen, files, and terminal output leave your machine.
 
-Trinity Pilot is different. It's a **real orchestration engine** that treats desktop automation as a typed, reviewable, retryable workflow — not a vibe-coding loop. It was built as a bachelor's thesis project and validated against 46 evaluation scenarios across four suites.
+Trinity Pilot takes a different approach: a real orchestration engine that treats desktop automation as a typed, reviewable, retryable workflow. It was built as a bachelor's thesis project and validated against 46 evaluation scenarios across four suites.
 
 <div align="center">
 
@@ -33,8 +31,6 @@ Trinity Pilot is different. It's a **real orchestration engine** that treats des
 
 </div>
 
----
-
 ## What it does
 
 You type something like:
@@ -43,12 +39,12 @@ You type something like:
 
 Trinity Pilot:
 
-1. **Plans** — An `ObjectivePlanner` (Gemini) decomposes the request into a typed `ObjectiveSpec` DAG with dependencies, domains, risk classes, and success checklists.
-2. **Dispatches** — An async orchestrator routes each objective to the right worker: `BrowserWorker` (Playwright), `TerminalWorker` (asyncio subprocess), or `DesktopWorker` (pywinauto UIA).
-3. **Executes** — Each worker runs a ReAct loop with real tools: navigate, click, type, read DOM, run commands, drive UI elements. No screenshot-guessing.
-4. **Reviews** — A separate `ObjectiveReviewer` (Gemini) examines the evidence (screenshots, stdout, DOM snapshots, file existence) and returns a typed `ReviewResult`: pass, or fail with a specific `FailureReason`.
-5. **Retries** — Failed objectives get a recovery hint and retry with the failure context injected into the next attempt. Up to 3 attempts per objective.
-6. **Persists** — Every task, attempt, evidence bundle, and reflection is stored in SQLite (WAL mode) for post-hoc analysis.
+1. **Plans.** An `ObjectivePlanner` (Gemini) decomposes the request into a typed `ObjectiveSpec` DAG with dependencies, domains, risk classes, and success checklists.
+2. **Dispatches.** An async orchestrator routes each objective to the right worker: `BrowserWorker` (Playwright), `TerminalWorker` (asyncio subprocess), or `DesktopWorker` (pywinauto UIA).
+3. **Executes.** Each worker runs a ReAct loop with real tools: navigate, click, type, read DOM, run commands, drive UI elements. No screenshot-guessing.
+4. **Reviews.** A separate `ObjectiveReviewer` (Gemini) examines the evidence (screenshots, stdout, DOM snapshots, file existence) and returns a typed `ReviewResult`: pass, or fail with a specific `FailureReason`.
+5. **Retries.** Failed objectives get a recovery hint and retry with the failure context injected into the next attempt. Up to 3 attempts per objective.
+6. **Persists.** Every task, attempt, evidence bundle, and reflection is stored in SQLite (WAL mode) for post-hoc analysis.
 
 <div align="center">
 
@@ -59,8 +55,6 @@ Trinity Pilot:
 *Each objective moves through a typed state machine. Reviews gate transitions. Budgets bound execution.*
 
 </div>
-
----
 
 ## Architecture
 
@@ -89,13 +83,13 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 |-------|-----------|
 | Desktop shell | PySide6 (Qt for Python) |
 | Control plane | Local asyncio orchestrator + typed FSM |
-| Inner planner | ObjectiveSpec DAG — typed, not prose |
+| Inner planner | ObjectiveSpec DAG (typed, not prose) |
 | Capability boundary | FastMCP servers (MCP at boundary, direct calls in hot path) |
-| Browser domain | Playwright Python — headful Chromium, dedicated profile |
-| Terminal domain | asyncio subprocess — structured commands, not raw shell |
+| Browser domain | Playwright Python: headful Chromium, dedicated profile |
+| Terminal domain | asyncio subprocess: structured commands, not raw shell |
 | Desktop-app domain | pywinauto UIA backend → PyAutoGUI fallback |
-| Memory/evidence | SQLite — WAL mode, JSON columns, FTS5 |
-| LLM provider | Gemini 2.5 Flash (free tier) — swappable via `LLMProvider` ABC |
+| Memory/evidence | SQLite: WAL mode, JSON columns, FTS5 |
+| LLM provider | Gemini 2.5 Flash (free tier), swappable via `LLMProvider` ABC |
 
 </div>
 
@@ -112,13 +106,11 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 
 </div>
 
----
-
 ## What's inside
 
 ### Typed objectives, not prose
 
-Every objective is a frozen dataclass with 11 required fields — `objective_id`, `goal`, `dependencies`, `domain`, `risk_class`, `preconditions`, `success_tests`, `evidence_bundle`, `max_attempts`, and more. The planner **must** produce all of them or execution is refused.
+Every objective is a frozen dataclass with 11 required fields: `objective_id`, `goal`, `dependencies`, `domain`, `risk_class`, `preconditions`, `success_tests`, `evidence_bundle`, `max_attempts`, and more. The planner must produce all of them or execution is refused.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -140,55 +132,53 @@ class ObjectiveSpec:
 | Worker | Backend | What it does |
 |--------|---------|-------------|
 | `BrowserWorker` | Playwright | Navigate, click, fill, read DOM, read text, screenshot, inspect network |
-| `TerminalWorker` | asyncio subprocess | Run commands, write files, read files — with created-file verification |
+| `TerminalWorker` | asyncio subprocess | Run commands, write files, read files, with created-file verification |
 | `DesktopWorker` | pywinauto UIA | Launch apps, find windows, click elements, type text, read controls |
 
-Each worker runs a **ReAct loop** — the LLM proposes a tool call, the worker executes it, the result feeds back. No guessing from pixels.
+Each worker runs a ReAct loop: the LLM proposes a tool call, the worker executes it, the result feeds back. No guessing from pixels.
 
 ### Separate reviewer with typed failure reasons
 
-The reviewer is a **different agent** with read-only tools. It doesn't trust the worker's self-report — it checks the evidence independently and returns one of:
+The reviewer is a different agent with read-only tools. It doesn't trust the worker's self-report. It checks the evidence independently and returns one of:
 
-- `missing_artifact` — expected file/output doesn't exist
-- `failed_assertion` — checklist item didn't pass
-- `ui_state_mismatch` — UI isn't in the expected state
-- `wrong_output` — output exists but content is wrong
-- `environment_divergence` — environment changed unexpectedly
+- `missing_artifact`: expected file/output doesn't exist
+- `failed_assertion`: checklist item didn't pass
+- `ui_state_mismatch`: UI isn't in the expected state
+- `wrong_output`: output exists but content is wrong
+- `environment_divergence`: environment changed unexpectedly
 
 ### DAG with cross-domain parallelism
 
-Objectives are sorted via Kahn's algorithm. Independent objectives in different domains run **in parallel**. Dependent objectives wait and receive forwarded evidence from their upstream nodes.
+Objectives are sorted via Kahn's algorithm. Independent objectives in different domains run in parallel. Dependent objectives wait and receive forwarded evidence from their upstream nodes.
 
 ### MCP at the boundary
 
-Domain capabilities are exposed as FastMCP servers (browser, terminal, sensor). The orchestrator dispatches through MCP for isolation — but workers call tools directly in the hot path for speed. Sensors (screenshot, OCR, window-list, process-list) are read-only and shared across all agents.
+Domain capabilities are exposed as FastMCP servers (browser, terminal, sensor). The orchestrator dispatches through MCP for isolation, but workers call tools directly in the hot path for speed. Sensors (screenshot, OCR, window-list, process-list) are read-only and shared across all agents.
 
 ### Three kill paths
 
-1. **In-app stop button** — clean cancellation through the signal bus
-2. **Global hotkey** (Ctrl+Shift+Q) — works even if the UI is frozen
-3. **PyAutoGUI fail-safe** — slam mouse to screen corner to abort all automation
-
----
+1. **In-app stop button**: clean cancellation through the signal bus
+2. **Global hotkey** (Ctrl+Shift+Q): works even if the UI is frozen
+3. **PyAutoGUI fail-safe**: slam mouse to screen corner to abort all automation
 
 ## Evaluation results
 
-Validated against **46 scenarios** across four test suites on a Windows 11 VM:
+Validated against 46 scenarios across four test suites on a Windows 11 VM:
 
 | Suite | Scenarios | Pass Rate | What it tests |
 |-------|-----------|-----------|--------------|
-| **Happy Path** | 20 | **95%** | Normal task completion across all three domains |
-| **Fail Recovery** | 10 | **67%** | Agent handles missing files, bad URLs, app crashes, focus loss |
-| **Resourcefulness** | 10 | **80%** | Agent discovers environment info (disk usage, PIDs, install paths) |
-| **Session Continuity** | 6 | **83%** | Agent maintains context across multi-round conversations |
+| Happy Path | 20 | 95% | Normal task completion across all three domains |
+| Fail Recovery | 10 | 67% | Agent handles missing files, bad URLs, app crashes, focus loss |
+| Resourcefulness | 10 | 80% | Agent discovers environment info (disk usage, PIDs, install paths) |
+| Session Continuity | 6 | 83% | Agent maintains context across multi-round conversations |
 
-**Highlights:**
-- **App crash mid-task: 100%** — agent detects the app is gone and doesn't hang
-- **Network unreachable: 100%** — graceful failure, no infinite retry
-- **Primary path blocked: 100%** — agent falls back to alternate paths
-- **Reference prior result: 100%** — agent correctly uses earlier output in follow-ups
+Notable results:
+- App crash mid-task: 100% pass. Agent detects the app is gone and doesn't hang.
+- Network unreachable: 100% pass. Graceful failure, no infinite retry.
+- Primary path blocked: 100% pass. Agent falls back to alternate paths.
+- Reference prior result: 100% pass. Agent correctly uses earlier output in follow-ups.
 
-**Test suite:** 475 automated tests (unit + integration + UI), all passing. Ruff clean. Mypy clean across 72 source files.
+Test suite: 475 automated tests (unit + integration + UI), all passing. Ruff clean. Mypy clean across 72 source files.
 
 <div align="center">
 
@@ -200,17 +190,15 @@ Validated against **46 scenarios** across four test suites on a Windows 11 VM:
 
 </div>
 
----
+## Quick start
 
-## Quick Start
-
-### Option A: Download Standalone Executable (No Python Setup Required)
+### Option A: Download standalone executable (no Python setup required)
 
 1. Download the latest `trinity-pilot-win64.zip` from [Releases](https://github.com/DurdeuVlad/trinity-pilot/releases).
 2. Extract the archive and launch `trinity-pilot.exe`.
 3. Enter your free Gemini API key in the startup configuration dialog (or set `GEMINI_API_KEY` in environment).
 
-### Option B: Developer Setup with `uv`
+### Option B: Developer setup with `uv`
 
 ```bash
 # 1. Clone repository
@@ -233,9 +221,7 @@ If `GEMINI_API_KEY` is not present, Trinity Pilot will open a native setup wizar
 2. Create a free API key
 3. Paste it into the startup dialog or set `GEMINI_API_KEY` in your environment
 
-The free tier is sufficient for personal use — no billing required.
-
----
+The free tier is sufficient for personal use. No billing required.
 
 ## Example tasks
 
@@ -266,9 +252,7 @@ Trinity Pilot handles cross-domain tasks that span browser, terminal, and deskto
 
 </div>
 
----
-
-## Project Layout
+## Project layout
 
 ```text
 trinity_pilot/
@@ -296,9 +280,7 @@ trinity_pilot/
   __main__.py            CLI entry with crash hooks (faulthandler + excepthook)
 ```
 
----
-
-## Building Standalone Executable
+## Building standalone executable
 
 To build a standalone Windows `.exe` release manually:
 
@@ -308,9 +290,7 @@ uv run python scripts/build_exe.py
 
 The resulting standalone executable package is built under `dist/trinity-pilot/`.
 
----
-
-## Running Tests
+## Running tests
 
 ```bash
 # Run unit, integration, and UI tests (475 tests, ~20s)
@@ -326,32 +306,26 @@ uv run mypy trinity_pilot
 
 GUI, desktop, and real-model suites require a controlled Windows environment with `GEMINI_API_KEY`. They open real applications and drive the live desktop.
 
----
+## Safety and data handling
 
-## Safety and Data Handling
+Trinity Pilot is not sandboxed. Terminal workers execute local PowerShell commands with user permissions; browser and desktop workers act directly on the desktop. Review tasks before execution and use a VM or low-privilege account for untrusted work.
 
-**Trinity Pilot is not sandboxed.** Terminal workers execute local PowerShell commands with user permissions; browser and desktop workers act directly on the desktop. Review tasks before execution and use a VM or low-privilege account for untrusted work.
-
-When Gemini is configured, task prompts and execution evidence (screenshots, terminal output, UI element text) are sent to Google's Gemini API. No data is stored remotely — all state is local SQLite.
+When Gemini is configured, task prompts and execution evidence (screenshots, terminal output, UI element text) are sent to Google's Gemini API. No data is stored remotely. All state is local SQLite.
 
 See [SECURITY.md](SECURITY.md) and [docs/PRIVACY_AND_SAFETY.md](docs/PRIVACY_AND_SAFETY.md) for the full safety policy.
 
----
-
 ## Acknowledgements
 
-Trinity Pilot was built as a bachelor's thesis project at [University Politehnica of Bucharest](https://upb.ro/), informed by research on prior desktop automation agents including:
+Trinity Pilot was built as a bachelor's thesis project at [University Politehnica of Bucharest](https://upb.ro/), informed by research on prior desktop automation agents:
 
-- **UFO/UFO2/UFO3** (Microsoft) — UI automation via UIA tree
-- **PC Agent** — desktop task decomposition
-- **MobileAgent-v2** — multi-agent mobile automation
-- **Agent-S** — self-contained computer use
-- **Magentic-UI** — multi-agent browser/desktop orchestration
+- **UFO/UFO2/UFO3** (Microsoft): UI automation via UIA tree
+- **PC Agent**: desktop task decomposition
+- **MobileAgent-v2**: multi-agent mobile automation
+- **Agent-S**: self-contained computer use
+- **Magentic-UI**: multi-agent browser/desktop orchestration
 
 Full research notes and thesis chapters: [DesktopAI_Research](https://github.com/DurdeuVlad/DesktopAI_Research).
 
----
-
 ## License
 
-[MIT](LICENSE) — do whatever you want, just don't blame me if your desktop agent deletes your files.
+[MIT](LICENSE). Do whatever you want, just don't blame me if your desktop agent deletes your files.
