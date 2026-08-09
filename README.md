@@ -9,7 +9,7 @@ Type a task in plain English. Trinity Pilot decomposes it into typed objectives,
 [![CI](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://www.python.org/downloads/)
-[![Tests: 475](https://img.shields.io/badge/Tests-475%20passing-brightgreen.svg)](#running-tests)
+[![Tests: 475](https://img.shields.io/badge/Tests-381U%209I%2085UI-brightgreen.svg)](#running-tests)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](#safety-and-data-handling)
 
 </div>
@@ -21,7 +21,7 @@ Every "AI desktop agent" demo you've seen either:
 - Calls a single LLM loop with a screenshot. Hallucinates clicks, invents file paths, declares success on failure.
 - Wraps a cloud service. Your screen, files, and terminal output leave your machine.
 
-Trinity Pilot takes a different approach: a real orchestration engine that treats desktop automation as a typed, reviewable, retryable workflow. It was built as a bachelor's thesis project and validated against 46 evaluation scenarios across four suites.
+Trinity Pilot takes a different approach: a real orchestration engine that treats desktop automation as a typed, reviewable, retryable workflow. It was built as a bachelor's thesis project and validated against 56 evaluation scenarios across five suites (168 runs, 83% global pass rate).
 
 <div align="center">
 
@@ -87,7 +87,7 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 | Control plane | Local asyncio orchestrator + typed FSM |
 | Inner planner | ObjectiveSpec DAG (typed, not prose) |
 | Capability boundary | FastMCP servers (MCP at boundary, direct calls in hot path) |
-| Browser domain | Playwright Python: headful Chromium, dedicated profile |
+| Browser domain | Playwright Python: headful Chromium, fresh context per objective |
 | Terminal domain | asyncio subprocess: structured commands, not raw shell |
 | Desktop-app domain | pywinauto UIA backend → PyAutoGUI fallback |
 | Memory/evidence | SQLite: WAL mode, JSON columns, FTS5 |
@@ -99,7 +99,7 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 
 ### Typed objectives, not prose
 
-Every objective is a frozen dataclass with 11 required fields: `objective_id`, `goal`, `dependencies`, `domain`, `risk_class`, `preconditions`, `success_tests`, `evidence_bundle`, `max_attempts`, and more. The planner must produce all of them or execution is refused.
+Every objective is a frozen dataclass with 13 required fields. The planner must produce all of them or execution is refused.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -107,13 +107,16 @@ class ObjectiveSpec:
     objective_id: str
     goal: str
     dependencies: list[str]
-    domain: DomainType          # BROWSER | TERMINAL | DESKTOP | MIXED
-    risk_class: RiskClass       # LOW | MEDIUM | HIGH
+    domain: DomainType              # BROWSER | TERMINAL | DESKTOP | MIXED
+    required_capabilities: list[str]
+    risk_class: RiskClass           # LOW | MEDIUM | HIGH
     preconditions: list[str]
-    success_tests: list[ChecklistItem]
-    evidence_bundle: dict[str, Any]
+    success_tests: list[str]
+    evidence_bundle: list[str]
     max_attempts: int
-    # ...
+    rollback_or_abort_rule: str
+    metadata: dict[str, Any]
+    verification_checklist: tuple[ChecklistItem, ...]
 ```
 
 ### Three real workers, not a screenshot loop
@@ -148,26 +151,31 @@ Domain capabilities are exposed as FastMCP servers (browser, terminal, sensor). 
 
 1. **In-app stop button**: clean cancellation through the signal bus
 2. **Global hotkey** (Ctrl+Shift+Q): works even if the UI is frozen
-3. **PyAutoGUI fail-safe**: slam mouse to screen corner to abort all automation
+3. **PyAutoGUI fail-safe**: enabled at app startup; slam mouse to screen corner to abort. Note: the desktop worker temporarily disables fail-safe during coordinate-based actions to prevent false triggers, then re-enables it.
 
 ## Evaluation results
 
-Validated against 46 scenarios across four test suites on a Windows 11 VM:
+Validated against 56 scenarios across five test suites on a Windows 11 VM. Each scenario was run 3 times (N=3) to separate systematic failures from LLM non-determinism. 168 total runs, 139 passed (83% global success rate).
 
-| Suite | Scenarios | Pass Rate | What it tests |
-|-------|-----------|-----------|--------------|
-| Happy Path | 20 | 95% | Normal task completion across all three domains |
-| Fail Recovery | 10 | 67% | Agent handles missing files, bad URLs, app crashes, focus loss |
-| Resourcefulness | 10 | 80% | Agent discovers environment info (disk usage, PIDs, install paths) |
-| Session Continuity | 6 | 83% | Agent maintains context across multi-round conversations |
+| Suite | Scenarios | Runs | Passed | Pass Rate | What it tests |
+|-------|-----------|------|--------|-----------|--------------|
+| Happy Path | 20 | 60 | 51 | 85% | Normal task completion across all three domains |
+| Fail Recovery | 10 | 30 | 30 | 100% | Agent handles missing files, bad URLs, app crashes, focus loss |
+| Resourcefulness | 10 | 30 | 20 | 67% | Agent discovers environment info (disk usage, PIDs, install paths) |
+| Session Continuity | 6 | 18 | 15 | 83% | Agent maintains context across multi-round conversations |
+| Happy Hard | 10 | 30 | 23 | 77% | 5-10 objective chains with artifact verification at each step |
 
-Notable results:
-- App crash mid-task: 100% pass. Agent detects the app is gone and doesn't hang.
-- Network unreachable: 100% pass. Graceful failure, no infinite retry.
-- Primary path blocked: 100% pass. Agent falls back to alternate paths.
-- Reference prior result: 100% pass. Agent correctly uses earlier output in follow-ups.
+Notable results from Fail Recovery (100% pass):
+- App crash mid-task (FR-05): 3/3. Agent detects the app is gone and doesn't hang.
+- Network unreachable (FR-08): 3/3. Graceful failure, no infinite retry.
+- Primary path blocked (FR-06): 3/3. Agent falls back to alternate paths.
 
-Test suite: 475 automated tests (unit + integration + UI), all passing. Ruff clean. Mypy clean across 72 source files.
+Known systematic failures:
+- T13 (write and run a Python script): 0/3. Agent writes the script but doesn't complete execution reporting.
+- RS-04 (count .py files and total lines): 0/3. Agent produces the first value but fails before extracting the second (multi-command composition limit).
+- SC-01 (vague prompt clarification): 0/3. Agent proceeds to planning instead of asking for clarification on maximally vague input.
+
+Test suite: 381 unit tests, 9 integration tests, 85 UI tests (475 total), all passing. Ruff clean. Mypy clean across 72 source files.
 
 <div align="center">
 
