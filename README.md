@@ -23,14 +23,6 @@ Every "AI desktop agent" demo you've seen either:
 
 Trinity Pilot takes a different approach: a real orchestration engine that treats desktop automation as a typed, reviewable, retryable workflow. It was built as a bachelor's thesis project and validated against 46 evaluation scenarios across four suites.
 
-<div align="center">
-
-*Trinity Pilot planning and executing a cross-domain task: open a browser, read a page, write the result to a file.*
-
-![Task Planning](docs/screenshots/task-planning.png)
-
-</div>
-
 ## What it does
 
 You type something like:
@@ -46,15 +38,9 @@ Trinity Pilot:
 5. **Retries.** Failed objectives get a recovery hint and retry with the failure context injected into the next attempt. Up to 3 attempts per objective.
 6. **Persists.** Every task, attempt, evidence bundle, and reflection is stored in SQLite (WAL mode) for post-hoc analysis.
 
-<div align="center">
-
 ### The objective lifecycle
 
-![Objective State Machine](docs/screenshots/arch-fsm.png)
-
-*Each objective moves through a typed state machine. Reviews gate transitions. Budgets bound execution.*
-
-</div>
+Each objective moves through a typed state machine. Reviews gate transitions. Budgets bound execution.
 
 ## Architecture
 
@@ -90,19 +76,6 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 | Desktop-app domain | pywinauto UIA backend → PyAutoGUI fallback |
 | Memory/evidence | SQLite: WAL mode, JSON columns, FTS5 |
 | LLM provider | Gemini 2.5 Flash (free tier), swappable via `LLMProvider` ABC |
-
-</div>
-
-### Key architecture diagrams
-
-<div align="center">
-
-| | |
-|---|---|
-| **Layer architecture** | **Objective sequence** |
-| ![Layers](docs/screenshots/arch-layers.png) | ![Objective Sequence](docs/screenshots/arch-objective-sequence.png) |
-| **Worker routing** | **LLM provider abstraction** |
-| ![Worker Routing](docs/screenshots/arch-worker-routing.png) | ![LLM Provider](docs/screenshots/arch-llm-provider.png) |
 
 </div>
 
@@ -180,16 +153,6 @@ Notable results:
 
 Test suite: 475 automated tests (unit + integration + UI), all passing. Ruff clean. Mypy clean across 72 source files.
 
-<div align="center">
-
-### The UI in action
-
-![UI Overview](docs/screenshots/ui-overview.png)
-
-*Trinity Pilot's PySide6 interface: chat input, objective chips, live activity panel, and debug drawer.*
-
-</div>
-
 ## Quick start
 
 ### Option A: Download standalone executable (no Python setup required)
@@ -240,17 +203,6 @@ Trinity Pilot handles cross-domain tasks that span browser, terminal, and deskto
 # Cross-domain
 "Open Notepad, type today's date, then read it back with a terminal command to verify it saved."
 ```
-
-<div align="center">
-
-| | |
-|---|---|
-| **Task input** | **Task executing** |
-| ![Task Input](docs/screenshots/task-input.png) | ![Task Executing](docs/screenshots/task-executing.png) |
-| **Task complete** | **App startup** |
-| ![Task Complete](docs/screenshots/task-complete.png) | ![App Startup](docs/screenshots/app-startup.png) |
-
-</div>
 
 ## Project layout
 
