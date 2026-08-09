@@ -23,6 +23,14 @@ Every "AI desktop agent" demo you've seen either:
 
 Trinity Pilot takes a different approach: a real orchestration engine that treats desktop automation as a typed, reviewable, retryable workflow. It was built as a bachelor's thesis project and validated against 46 evaluation scenarios across four suites.
 
+<div align="center">
+
+![Main window](docs/screenshots/app-startup.png)
+
+*Main window at startup. Chat input at the bottom, status indicator top right.*
+
+</div>
+
 ## What it does
 
 You type something like:
@@ -41,6 +49,14 @@ Trinity Pilot:
 ### The objective lifecycle
 
 Each objective moves through a typed state machine. Reviews gate transitions. Budgets bound execution.
+
+<div align="center">
+
+![Task planning](docs/screenshots/task-planning.png)
+
+*Generated plan with objective, domain label, and Approve/Reject/Edit buttons.*
+
+</div>
 
 ## Architecture
 
@@ -152,6 +168,15 @@ Notable results:
 - Reference prior result: 100% pass. Agent correctly uses earlier output in follow-ups.
 
 Test suite: 475 automated tests (unit + integration + UI), all passing. Ruff clean. Mypy clean across 72 source files.
+
+<div align="center">
+
+| | |
+|---|---|
+| ![Task executing](docs/screenshots/task-executing.png) | ![Task complete](docs/screenshots/task-complete.png) |
+| *Execution in progress. Active objective shown in bottom panel.* | *Final result. Completed objective with green background.* |
+
+</div>
 
 ## Quick start
 
