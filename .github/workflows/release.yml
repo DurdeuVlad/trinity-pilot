@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
       - run: uv sync --locked --extra dev
       - run: uv build
-      - run: sha256sum dist/* > dist/SHA256SUMS.txt
+      - run: uv run python scripts/build_exe.py
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:

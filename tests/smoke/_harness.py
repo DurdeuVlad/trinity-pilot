@@ -203,10 +203,17 @@ def run_smoke(
     # Unique task queue isolates this test from stale local runs.
     task_queue = f"trinity-pilot-smoke-{uuid.uuid4().hex[:8]}"
     print(f"[launch] {VENV_PYTHON} (queue={task_queue})")
+    # Redirect subprocess stdout/stderr to a log file and force UTF-8 so the
+    # FastMCP banner (box-drawing chars) doesn't crash on cp1252 stdout.
+    app_log = TRINITY_PILOT_ROOT / f"_smoke_{test_name}.log"
+    app_log_fp = open(app_log, "w", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
-        [str(VENV_PYTHON), "-m", APP_MODULE],
+        [str(VENV_PYTHON), "-X", "utf8", "-m", APP_MODULE],
         cwd=str(TRINITY_PILOT_ROOT),
-        env={**os.environ, "PYTHONPATH": str(TRINITY_PILOT_ROOT), "TRINITY_TASK_QUEUE": task_queue},
+        env={**os.environ, "PYTHONPATH": str(TRINITY_PILOT_ROOT),
+             "PYTHONIOENCODING": "utf-8", "TRINITY_TASK_QUEUE": task_queue},
+        stdout=app_log_fp,
+        stderr=subprocess.STDOUT,
     )
 
     # --- 2. Wait for window ---
@@ -240,12 +247,13 @@ def run_smoke(
 
     # --- 5. Wait ---
     print(f"[wait] Up to {task_timeout}s…")
-    wait_for_file_stable(
+    file_ready = wait_for_file_stable(
         wait_for,
         min_size=wait_min_size,
         extra_check=wait_extra_check,
         timeout=task_timeout,
     )
+    print(f"[wait] file_ready={file_ready}")
     time.sleep(3)  # grace period for last write to flush
 
     # --- 6. Verify ---
@@ -284,6 +292,10 @@ def run_smoke(
     print("[cleanup] Trinity Pilot…")
     kill_pid(proc.pid)
     time.sleep(0.5)
+    try:
+        app_log_fp.close()
+    except Exception:
+        pass
 
     # --- 10. Report ---
     if passed:

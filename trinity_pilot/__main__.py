@@ -9,12 +9,15 @@ import argparse
 import sys
 from pathlib import Path
 
-# Shared crashes directory — all crash artefacts land here.
-CRASHES_DIR = Path(__file__).parent.parent / "crashes"
+# Shared crashes directory — all crash artefacts land here. Anchored to a fixed
+# app-data dir (not the installed package location) so it stays writable even
+# when the package is installed into an admin-owned location (Program Files,
+# a shared site-packages) that the running user session can't write to.
+CRASHES_DIR = Path.home() / ".trinity-pilot" / "crashes"
 
 
 def _ensure_crashes_dir() -> Path:
-    CRASHES_DIR.mkdir(exist_ok=True)
+    CRASHES_DIR.mkdir(parents=True, exist_ok=True)
     return CRASHES_DIR
 
 
@@ -98,8 +101,13 @@ def main() -> None:
     _install_crash_hooks()
 
     try:
+        from trinity_pilot.ui.api_key_dialog import ensure_api_key
         from trinity_pilot.ui.app import run_app
-        run_app()
+        if ensure_api_key():
+            run_app()
+        else:
+            print("Initialization aborted: GEMINI_API_KEY required.", file=sys.stderr)
+            sys.exit(1)
     except ImportError as exc:
         print(f"UI unavailable (PySide6 not installed?): {exc}", file=sys.stderr)
         sys.exit(1)
