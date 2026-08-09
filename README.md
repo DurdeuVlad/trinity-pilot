@@ -309,8 +309,6 @@ Trinity Pilot was built as a bachelor's thesis project at the [Technical Univers
 - **Agent-S**: self-contained computer use
 - **Magentic-UI**: multi-agent browser/desktop orchestration
 
-Full research notes and thesis chapters: [DesktopAI_Research](https://github.com/DurdeuVlad/DesktopAI_Research).
-
 ## License
 
 [MIT](LICENSE). Do whatever you want, just don't blame me if your desktop agent deletes your files.
