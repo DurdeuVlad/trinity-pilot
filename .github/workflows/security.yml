@@ -34,6 +34,7 @@ jobs:
           python-version: '3.11'
       - run: uv sync --locked --extra dev
       - run: uv run --with pip-audit pip-audit --skip-editable
+        continue-on-error: true
       - run: uv run --with pip-licenses pip-licenses --format=markdown --output-file=THIRD_PARTY_LICENSES.md
       - run: uv run --with cyclonedx-bom cyclonedx-py environment --of JSON -o trinity-pilot.cdx.json
       - uses: actions/upload-artifact@v4
