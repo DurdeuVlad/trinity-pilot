@@ -301,7 +301,7 @@ See [SECURITY.md](SECURITY.md) and [docs/PRIVACY_AND_SAFETY.md](docs/PRIVACY_AND
 
 ## Acknowledgements
 
-Trinity Pilot was built as a bachelor's thesis project at [University Politehnica of Bucharest](https://upb.ro/), informed by research on prior desktop automation agents:
+Trinity Pilot was built as a bachelor's thesis project at the [Technical University of Cluj-Napoca](https://www.utcluj.ro/), Faculty of Automation and Computers, informed by research on prior desktop automation agents:
 
 - **UFO/UFO2/UFO3** (Microsoft): UI automation via UIA tree
 - **PC Agent**: desktop task decomposition
