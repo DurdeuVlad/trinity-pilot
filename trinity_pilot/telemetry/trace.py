@@ -19,6 +19,13 @@ from typing import Any
 _TRACE_FILENAME = "trinity-trace.jsonl"
 _DEFAULT_DIR = Path(__file__).resolve().parents[2] / ".trace"
 
+# Always-on error log: unlike emit()/is_enabled(), this never depends on
+# TRINITY_TRACE. A production install has tracing off by default, so without
+# this, a real user hitting a WorkerError/ReviewError/unexpected failure would
+# have nothing on disk to diagnose it with beyond a one-line UI message.
+_ERROR_LOG_DIR = Path.home() / ".trinity-pilot"
+_ERROR_LOG_FILENAME = "errors.log"
+
 
 def is_enabled() -> bool:
     """Return True when trace emission is active."""
@@ -76,6 +83,37 @@ def emit(
 
     line = json.dumps(entry, ensure_ascii=False, default=_json_default) + "\n"
     _write_line(line)
+
+
+def emit_error(
+    location: str,
+    message: str,
+    data: dict | None = None,
+) -> None:
+    """Append one error record to ~/.trinity-pilot/errors.log — always, regardless
+    of TRINITY_TRACE. Use this at the points where an objective/task is actually
+    failing (WorkerError, ReviewError, unexpected exceptions), not for routine
+    step-by-step tracing (use emit() for that, it stays opt-in for volume reasons).
+    """
+    ts = int(time.time() * 1000)
+    entry: dict[str, Any] = {
+        "ts": ts,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts / 1000)),
+        "location": location,
+        "message": message,
+        "data": data or {},
+    }
+    line = json.dumps(entry, ensure_ascii=False, default=_json_default) + "\n"
+    try:
+        _ERROR_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_ERROR_LOG_DIR / _ERROR_LOG_FILENAME, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:
+        print(f"[error-log] write failed ({exc}): {line[:200]}", file=sys.stderr)
+    # Also feed the opt-in trace stream when it's active, so a developer running
+    # with TRINITY_TRACE=1 sees errors inline with everything else.
+    if is_enabled():
+        _write_line(line)
 
 
 def emit_signal(signal: Any) -> None:

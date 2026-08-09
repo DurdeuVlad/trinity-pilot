@@ -556,6 +556,7 @@ class AgenticWorkerMixin:
                             task_id=task_id, objective_id=spec.objective_id,
                             step_num=steps_taken, tool_name=tool_name,
                             tokens_this_step=response.token_count,
+                            tool_args=_tx_entry.get("tool_args", {}),
                         ))
                     continue
 
@@ -697,6 +698,8 @@ class AgenticWorkerMixin:
                         step_num=steps_taken,
                         tool_name=tool_name,
                         tokens_this_step=response.token_count,
+                        tool_args={k: v for k, v in args.items() if k != "image_data"},
+                        thumbnail=img_bytes if tool_name == "screenshot" else None,
                     )
                 )
 

@@ -35,7 +35,8 @@ from trinity_pilot.orchestrator.signals import (
 )
 from trinity_pilot.planner.dag import infer_cross_domain_independence, resolve_execution_order
 from trinity_pilot.planner.planner import ObjectivePlanner
-from trinity_pilot.reviewer.reviewer import ObjectiveReviewer
+from trinity_pilot.reviewer.reviewer import ObjectiveReviewer, ReviewError
+from trinity_pilot.telemetry.trace import emit_error
 from trinity_pilot.workers.base import WorkerBlocker, WorkerError
 
 # Evidence keys safe to forward into a dependent objective's prompt context —
@@ -125,6 +126,17 @@ class AsyncTaskOrchestrator:
         self._reflection_store = ReflectionStore(self._db_path)
         self._objective_store = ObjectiveStateStore(self._db_path)
         self._mcp_pool = MCPClientPool()
+        # A prior run that crashed (process kill, power loss) can leave a task/
+        # objective stuck at RUNNING forever with nothing checking it later.
+        # Sweep those on every fresh orchestrator so state never silently stays
+        # inconsistent across a restart.
+        interrupted_tasks = self._task_store.mark_orphaned_running_as_interrupted()
+        interrupted_objectives = self._objective_store.mark_orphaned_running_as_interrupted()
+        if interrupted_tasks or interrupted_objectives:
+            emit_error(
+                "engine.py:__init__", "orphaned_state_interrupted",
+                {"task_ids": interrupted_tasks, "objective_pairs": interrupted_objectives},
+            )
         self._cancel_requested = asyncio.Event()
         self._active_dispatch_tasks: set[asyncio.Task[Any]] = set()
         self._snapshot = OrchestratorSnapshot()
@@ -300,6 +312,10 @@ class AsyncTaskOrchestrator:
                 finally:
                     self._active_dispatch_tasks.discard(dispatch_task)
                 last_evidence = dict(evidence)
+                # Charge actual LLM token usage against the objective's token budget.
+                # BudgetExceeded here is caught by the except clause below, same as a
+                # step/wall-clock overrun.
+                budget.charge_tokens(int(evidence.get("tokens_used", 0)))
                 # If worker definitively failed, skip reviewer -- no need to retry
                 if evidence.get("worker_result_status") == "failure":
                     self._attempt_store.log_attempt(
@@ -396,6 +412,10 @@ class AsyncTaskOrchestrator:
                     )
                 )
             except BudgetExceeded as exc:
+                emit_error(
+                    "engine.py:_run_objective", "budget_exceeded",
+                    {"task_id": task_id, "objective_id": objective_id, "budget_type": exc.budget_type},
+                )
                 await self.signals.put(BudgetWarning(task_id, objective_id, exc.budget_type))
                 self._objective_store.upsert(
                     task_id,
@@ -484,6 +504,10 @@ class AsyncTaskOrchestrator:
                     )
                     return {"status": "failed", "failure_reason": "blocker_needs_user_input"}
             except WorkerError as exc:
+                emit_error(
+                    "engine.py:_run_objective", "worker_error",
+                    {"task_id": task_id, "objective_id": objective_id, "error": str(exc)},
+                )
                 # Preserve any evidence built before the error; add error field.
                 last_evidence = {**last_evidence, "error": str(exc)}
                 self._attempt_store.log_attempt(
@@ -516,6 +540,53 @@ class AsyncTaskOrchestrator:
                     "failure_reason": worker_error_reason,
                     "evidence": last_evidence,
                 }
+            except ReviewError as exc:
+                # The planner gets a JSON-repair retry for malformed/truncated LLM output;
+                # the reviewer didn't, and this exception previously propagated uncaught —
+                # orphaning the objective at ObjectiveState.RUNNING forever (the task-level
+                # status still ended up FAILED via the outer plan loop, but this row never
+                # updated). Treat exactly like WorkerError: a definitive attempt failure.
+                emit_error(
+                    "engine.py:_run_objective", "review_error",
+                    {"task_id": task_id, "objective_id": objective_id, "error": str(exc)},
+                )
+                last_evidence = {**last_evidence, "error": str(exc)}
+                self._attempt_store.log_attempt(
+                    AttemptLog(
+                        attempt_id, objective_id, task_id, attempt_number,
+                        "failed", FailureReason.ENVIRONMENT_DIVERGENCE, last_evidence,
+                    )
+                )
+                self._objective_store.upsert(
+                    task_id, objective_id, ObjectiveState.FAILED,
+                    step_count=budget.steps_used(), token_count=budget.tokens_used(),
+                    failure_reason="review_error",
+                )
+                await self.signals.put(ObjectiveFailed(task_id, objective_id, "review_error"))
+                return {"status": "failed", "failure_reason": "review_error", "evidence": last_evidence}
+            except Exception as exc:
+                # Defense in depth: any exception not covered by the specific handlers
+                # above (a bug in an unexpected code path, a new failure mode from a
+                # future change) must still resolve the objective's persisted state
+                # rather than leaving it orphaned at RUNNING forever.
+                emit_error(
+                    "engine.py:_run_objective", "unexpected_error",
+                    {"task_id": task_id, "objective_id": objective_id, "error": str(exc), "exc_type": type(exc).__name__},
+                )
+                last_evidence = {**last_evidence, "error": str(exc)}
+                self._attempt_store.log_attempt(
+                    AttemptLog(
+                        attempt_id, objective_id, task_id, attempt_number,
+                        "failed", FailureReason.ENVIRONMENT_DIVERGENCE, last_evidence,
+                    )
+                )
+                self._objective_store.upsert(
+                    task_id, objective_id, ObjectiveState.FAILED,
+                    step_count=budget.steps_used(), token_count=budget.tokens_used(),
+                    failure_reason="unexpected_error",
+                )
+                await self.signals.put(ObjectiveFailed(task_id, objective_id, "unexpected_error"))
+                return {"status": "failed", "failure_reason": "unexpected_error", "evidence": last_evidence}
 
             # BH-008: stuck threshold must be reachable under default max_attempts (3).
             stuck_threshold = min(

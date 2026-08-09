@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from trinity_pilot.ui.action_overlay import ActionOverlay
+from trinity_pilot.ui.activity_panel import LiveActivityPanel
 from trinity_pilot.ui.chat_widget import ChatState, ChatWidget
 from trinity_pilot.ui.stream_worker import StreamWorker
 from trinity_pilot.ui.theme import (
@@ -162,9 +164,26 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._wire_kill_paths()
 
+        # Live action visualization — docked panel + click/toast overlay.
+        # Both are additive: they only render off signals the orchestrator
+        # already emits, so there is no extra AI cost and no window
+        # minimizing/interference with whatever else runs on the machine.
+        self._activity_panel = LiveActivityPanel()
+        self._action_overlay = ActionOverlay()
+        self._activity_panel.show()
+
     def set_bridge(self, bridge: object) -> None:
         self._bridge = bridge
         self._chat.set_bridge(bridge)
+        if hasattr(bridge, "step_occurred"):
+            bridge.step_occurred.connect(self._on_step_occurred)
+
+    def _on_step_occurred(self, signal: object) -> None:
+        from trinity_pilot.orchestrator.signals import WorkerStepSignal
+
+        self._activity_panel.append_event(signal)
+        if isinstance(signal, WorkerStepSignal):
+            self._action_overlay.show_action(signal.tool_name, signal.tool_args)
 
     def set_settings(self, settings: Any) -> None:
         self._settings = settings
@@ -517,6 +536,7 @@ class MainWindow(QMainWindow):
         from trinity_pilot.telemetry.trace import emit
 
         self._stop_requested = False
+        self._activity_panel.reset()
         emit(
             "app.py:_handle_new_task",
             "new_task_submitted",
@@ -1027,7 +1047,7 @@ class MainWindow(QMainWindow):
             # Surface crash/error prominently in chat.
             if final_status in ("crashed", "failed") and error_msg:
                 from trinity_pilot.__main__ import CRASHES_DIR
-                hint = "\n\nCrash report saved to: `crashes/`" if CRASHES_DIR.exists() else ""
+                hint = f"\n\nCrash report saved to: `{CRASHES_DIR}`" if CRASHES_DIR.exists() else ""
                 self._chat.add_ai_message(
                     f"❌ Task crashed: **{error_msg}**{hint}",
                     thought_prompt=tb_msg or error_msg,
@@ -1153,6 +1173,11 @@ class MainWindow(QMainWindow):
         self.log("[SYSTEM] Emergency stop (Ctrl+Shift+Q).")
         self._handle_stop()
 
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt override
+        self._activity_panel.close()
+        self._action_overlay.close()
+        super().closeEvent(event)
+
 
 def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
     """Catch unhandled exceptions in Qt slots — PySide6 swallows them silently.
@@ -1174,7 +1199,7 @@ def _install_qt_exception_hook(window_ref: "list[MainWindow]") -> None:
         try:
             win = window_ref[0] if window_ref else None
             if win and hasattr(win, "_chat"):
-                hint = "See crashes/ folder for full trace." if crash_path else ""
+                hint = f"Full trace saved to: {crash_path}" if crash_path else ""
                 win._chat.add_ai_message(
                     f"⚠️ Unhandled error: {exc_type.__name__}: {exc_value}\n{hint}",
                     thought_prompt="crash",
@@ -1257,7 +1282,19 @@ def run_app() -> None:
         finally:
             _startup_trace("playwright_preflight_finished")
 
+    def desktop_automation_readiness() -> None:
+        _startup_trace("desktop_preflight_started")
+        try:
+            ready, message = Settings.desktop_automation_preflight()
+            prefix = "[SYSTEM]" if ready else "[WARNING]"
+            startup_relay.status.emit(f"{prefix} {message}")
+        except Exception as exc:
+            startup_relay.status.emit(f"[WARNING] Desktop automation readiness failed: {exc}")
+        finally:
+            _startup_trace("desktop_preflight_finished")
+
     QTimer.singleShot(0, start_backend)
     threading.Thread(target=playwright_readiness, name="playwright-readiness", daemon=True).start()
+    threading.Thread(target=desktop_automation_readiness, name="desktop-readiness", daemon=True).start()
     _startup_trace("event_loop_entered")
     sys.exit(app.exec())

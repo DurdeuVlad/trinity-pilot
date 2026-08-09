@@ -692,6 +692,7 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
                 )
             evidence["worker_result_status"] = result.status
             evidence["worker_result_summary"] = result.summary
+            evidence["tokens_used"] = result.tokens_used
         except asyncio.TimeoutError:
             raise WorkerError(
                 f"Desktop timeout after {timeout_seconds}s for '{spec.objective_id}'"

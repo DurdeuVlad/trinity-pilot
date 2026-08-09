@@ -19,24 +19,54 @@ from trinity_pilot.orchestrator.fsm import ObjectiveState
 class TaskStore:
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self._conn: sqlite3.Connection = open_db(db_path)
+        # AttemptStore/ObjectiveStateStore already serialize their writes with a
+        # lock; this one didn't, despite check_same_thread=False allowing any
+        # async task/thread to use the connection concurrently — interleaved
+        # execute()/commit() calls from different tasks could produce
+        # non-atomic multi-statement sequences. Matches the existing pattern.
+        self._lock = threading.Lock()
 
     def save_task(self, task: TaskRecord) -> None:
         objectives_json = json.dumps([o.to_dict() for o in task.objectives])
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO tasks (task_id, user_request, status, objectives_json)
-            VALUES (?, ?, ?, ?)
-            """,
-            (task.task_id, task.user_request, task.status.value, objectives_json),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO tasks (task_id, user_request, status, objectives_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (task.task_id, task.user_request, task.status.value, objectives_json),
+            )
+            self._conn.commit()
 
     def update_status(self, task_id: str, status: TaskStatus) -> None:
-        self._conn.execute(
-            "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-            (status.value, task_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
+                (status.value, task_id),
+            )
+            self._conn.commit()
+
+    def mark_orphaned_running_as_interrupted(self) -> list[str]:
+        """Resolve any task left at RUNNING by a prior crash (process kill, power
+        loss — anything that skipped the normal completion/failure path).
+
+        Without this, a crashed run leaves a RUNNING row forever with nothing
+        checking it later — the user has no signal that a specific task was
+        left mid-flight on their next launch. Call once at orchestrator startup.
+        Returns the task_ids that were resolved.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT task_id FROM tasks WHERE status=?", (TaskStatus.RUNNING.value,)
+            ).fetchall()
+            task_ids = [row["task_id"] for row in rows]
+            if task_ids:
+                self._conn.executemany(
+                    "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
+                    [(TaskStatus.FAILED.value, task_id) for task_id in task_ids],
+                )
+                self._conn.commit()
+            return task_ids
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         row = self._conn.execute(
@@ -198,6 +228,36 @@ class ObjectiveStateStore:
             "SELECT * FROM objective_states WHERE task_id=? AND objective_id=?",
             (task_id, objective_id),
         ).fetchone()
+
+    def mark_orphaned_running_as_interrupted(self) -> list[tuple[str, str]]:
+        """Resolve any objective left at RUNNING/STUCK/STEERED by a prior crash.
+
+        A bug or an unhandled exception in a code path added later could still
+        leave a row stuck in one of these transient states forever with nothing
+        ever checking it again — call once at orchestrator startup so state
+        never silently stays inconsistent across a restart. Returns the
+        (task_id, objective_id) pairs that were resolved.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT task_id, objective_id FROM objective_states WHERE state IN (?, ?, ?)",
+                (ObjectiveState.RUNNING.value, ObjectiveState.STUCK.value, ObjectiveState.STEERED.value),
+            ).fetchall()
+            pairs = [(row["task_id"], row["objective_id"]) for row in rows]
+            if pairs:
+                self._conn.executemany(
+                    """
+                    UPDATE objective_states
+                    SET state=?, failure_reason=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE task_id=? AND objective_id=?
+                    """,
+                    [
+                        (ObjectiveState.FAILED.value, "interrupted_by_restart", task_id, objective_id)
+                        for task_id, objective_id in pairs
+                    ],
+                )
+                self._conn.commit()
+            return pairs
 
     def list_by_task(self, task_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(

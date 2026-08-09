@@ -437,10 +437,23 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
             # tests/e2e/_gui_driver.py. Without --disable-gpu, Chromium's first
             # GPU init on a freshly-booted VM can block indefinitely.
             try:
-                browser = await pw.chromium.launch(
-                    headless=False,
-                    args=["--no-sandbox", "--disable-gpu", "--use-gl=swiftshader"],
+                browser = await asyncio.wait_for(
+                    pw.chromium.launch(
+                        headless=False,
+                        args=["--no-sandbox", "--disable-gpu", "--use-gl=swiftshader"],
+                    ),
+                    # Bounded explicitly rather than relying solely on the outer
+                    # per-objective timeout (up to 600s for browser objectives) —
+                    # a stalled GPU-init handshake on a cold VM should fail fast
+                    # and let `async with async_playwright()` tear down the driver
+                    # connection promptly instead of hanging for the full budget.
+                    timeout=60.0,
                 )
+            except asyncio.TimeoutError as exc:
+                raise WorkerError(
+                    "browser_launch_failed: Playwright Chromium did not start within 60s "
+                    "(possible GPU-init hang on a cold VM). Original error: launch timed out."
+                ) from exc
             except Exception as exc:
                 raise WorkerError(
                     "browser_launch_failed: Playwright Chromium could not start. "
@@ -464,6 +477,7 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
                 result = await self.run_loop(spec, evidence)
                 evidence["worker_result_status"] = result.status
                 evidence["worker_result_summary"] = result.summary
+                evidence["tokens_used"] = result.tokens_used
 
             except WorkerBlocker:
                 raise
@@ -491,8 +505,17 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
                     evidence["trace_path"] = trace_path
                 except Exception:
                     pass
-                await context.close()
-                await browser.close()
+                # Each close() call is independently guarded — if context.close()
+                # raises (e.g. the renderer already died), browser.close() must
+                # still run or the headless Chromium process leaks indefinitely.
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
     def _register_page(self, page: Any) -> None:
         """Track a new page/tab (initial page or a popup/new-tab) and wire its handlers."""

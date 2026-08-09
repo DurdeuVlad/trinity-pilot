@@ -31,6 +31,23 @@ _DISPATCH_TIMEOUT_DEFAULTS: dict[DomainType, float] = {
 }
 
 _MCP_DIR = Path(__file__).parent
+# MCP server subprocesses are spawned as bare scripts (`python desktop_server.py`),
+# not via `-m`, so sys.path[0] is trinity_pilot/mcp/, not the repo root — `import
+# trinity_pilot` inside them fails unless the package happens to be pip-installed.
+# Ensure the repo root is always on PYTHONPATH for spawned servers, regardless of
+# how (or from where) the parent process itself was launched.
+_REPO_ROOT = _MCP_DIR.parent.parent
+
+
+def _spawn_env() -> dict[str, str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    repo_root = str(_REPO_ROOT)
+    parts = [p for p in existing.split(os.pathsep) if p]
+    if repo_root not in parts:
+        parts.insert(0, repo_root)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
 
 _SERVER_SCRIPTS: dict[DomainType, str] = {
     DomainType.BROWSER: str(_MCP_DIR / "browser_server.py"),
@@ -66,11 +83,25 @@ class MCPClientPool:
             # MCP's stdio client defaults to a minimal env (PATH only) for
             # security — pass the full parent env through explicitly so the
             # spawned server subprocess gets GEMINI_API_KEY, model overrides, etc.
-            transport = PythonStdioTransport(script_path=script, env=dict(os.environ))
+            transport = PythonStdioTransport(script_path=script, env=_spawn_env())
             client = Client(transport)
             await client.__aenter__()
             self._clients[domain] = client
         return client
+
+    async def _evict_client(self, domain: DomainType) -> None:
+        """Drop a cached client so the next dispatch spawns a fresh subprocess.
+
+        Without this, a server subprocess that crashed or wedged mid-run stays
+        cached forever — every subsequent objective for that domain would keep
+        hitting the same dead transport for the rest of the orchestrator run.
+        """
+        client = self._clients.pop(domain, None)
+        if client is not None:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     async def dispatch(self, domain: DomainType, spec: ObjectiveSpec) -> dict[str, Any]:
         """Dispatch one objective through the real MCP server for its domain.
@@ -78,25 +109,53 @@ class MCPClientPool:
         Mirrors the contract of `await worker.execute(spec)`: returns the
         evidence dict on success, raises WorkerBlocker/WorkerError on failure
         — identical to the in-process path, so callers need no branching.
+
+        On a connect/transport failure, evicts the (possibly dead) cached
+        client and retries once against a freshly spawned subprocess before
+        giving up — a single crashed server process should degrade one
+        objective, not permanently break its whole domain for the run.
         """
         tool_name = _TOOL_NAMES.get(domain)
         if tool_name is None:
             raise WorkerError(f"No MCP tool configured for domain '{domain.value}'")
 
-        client = await self._get_client(domain)
         default_timeout = _DISPATCH_TIMEOUT_DEFAULTS.get(domain, 180.0)
         dispatch_timeout = float(spec.metadata.get("timeout_seconds", default_timeout))
-        try:
-            result = await asyncio.wait_for(
-                client.call_tool(tool_name, {"spec_dict": spec.to_dict()}),
-                timeout=dispatch_timeout,
-            )
-        except asyncio.TimeoutError as exc:
+
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                client = await self._get_client(domain)
+            except WorkerError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                await self._evict_client(domain)
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    client.call_tool(tool_name, {"spec_dict": spec.to_dict()}),
+                    timeout=dispatch_timeout,
+                )
+                last_exc = None
+                break
+            except asyncio.TimeoutError as exc:
+                # A timeout doesn't necessarily mean the transport is dead
+                # (the server may just be slow on this one call) — don't evict,
+                # just fail this dispatch.
+                raise WorkerError(
+                    f"MCP dispatch to '{domain.value}' timed out after {dispatch_timeout:.0f}s"
+                ) from exc
+            except Exception as exc:  # transport failure, server crash, etc.
+                last_exc = exc
+                await self._evict_client(domain)
+                continue
+
+        if last_exc is not None:
             raise WorkerError(
-                f"MCP dispatch to '{domain.value}' timed out after {dispatch_timeout:.0f}s"
-            ) from exc
-        except Exception as exc:  # transport failure, server crash, etc.
-            raise WorkerError(f"MCP transport failure dispatching '{domain.value}': {exc}") from exc
+                f"MCP transport failure dispatching '{domain.value}' "
+                f"(retried once with a fresh server process): {last_exc}"
+            ) from last_exc
 
         payload = result.data if hasattr(result, "data") else result
         if not isinstance(payload, dict) or "mcp_status" not in payload:
@@ -125,7 +184,7 @@ class MCPClientPool:
     async def call_sensor(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a read-only sensor tool for independent review verification."""
         if self._sensor_client is None:
-            transport = PythonStdioTransport(script_path=_SENSOR_SERVER_SCRIPT, env=dict(os.environ))
+            transport = PythonStdioTransport(script_path=_SENSOR_SERVER_SCRIPT, env=_spawn_env())
             self._sensor_client = Client(transport)
             await self._sensor_client.__aenter__()
         result = await self._sensor_client.call_tool(tool_name, arguments)

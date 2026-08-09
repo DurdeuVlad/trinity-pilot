@@ -678,6 +678,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
                 )
                 evidence["worker_result_status"] = result.status
                 evidence["worker_result_summary"] = result.summary
+                evidence["tokens_used"] = result.tokens_used
             except asyncio.TimeoutError:
                 cleanup_failed_execution()
                 raise WorkerError(

@@ -17,6 +17,7 @@ class _WorkerThread(QThread):
     status_changed = Signal(str)
     log_message = Signal(str)
     task_finished = Signal(str, object)  # task_id, result dict
+    step_signal = Signal(object)  # orchestrator Signal instance (see orchestrator/signals.py)
 
     def __init__(
         self,
@@ -91,6 +92,7 @@ class _WorkerThread(QThread):
             try:
                 signal = await asyncio.wait_for(queue.get(), timeout=0.25)
                 emit_signal(signal)
+                self.step_signal.emit(signal)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -201,6 +203,11 @@ class _GuiCallbackRelay(QObject):
 class WorkflowBridge(QObject):
     """Connects MainWindow submit/stop events to local asyncio orchestration."""
 
+    # Forwards every orchestrator Signal (WorkerStepSignal, ObjectiveStarted, ...)
+    # to the Qt main thread, for live action visualization. Purely additive —
+    # no effect on task execution if nothing is connected.
+    step_occurred = Signal(object)
+
     def __init__(self, settings: Settings, db_path: str = "trinity_pilot.db") -> None:
         super().__init__()
         self._settings = settings
@@ -228,6 +235,13 @@ class WorkflowBridge(QObject):
             status=TaskStatus.RUNNING,
         )
         self._store.save_task(record)
+
+        # Guard against overlapping worker threads: normally the UI disables
+        # submission while a task runs, but replacing self._worker here without
+        # waiting for the prior thread to actually finish would let two
+        # _WorkerThreads run concurrently if that guard is ever bypassed.
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
 
         self._worker = _WorkerThread(
             user_request,
@@ -286,6 +300,17 @@ class WorkflowBridge(QObject):
             self._on_worker_finished,
             Qt.ConnectionType.DirectConnection,
         )
+        # Always wired (independent of main_thread_callbacks): live action
+        # visualization is opt-in on the listener side (nothing connects to
+        # step_occurred unless a UI panel subscribes to it). Guarded with
+        # getattr so test doubles that stand in for _WorkerThread without
+        # this signal keep working.
+        step_signal = getattr(self._worker, "step_signal", None)
+        if step_signal is not None:
+            step_signal.connect(
+                self.step_occurred.emit,
+                Qt.ConnectionType.QueuedConnection,
+            )
         self._worker.start()
         return task_id
 

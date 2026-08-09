@@ -14,19 +14,40 @@ _MAX_RETRIES = 2
 _RETRY_BACKOFF_S = 1.5
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """503s (ServerError) and 429 rate-limits are worth a short backoff+retry.
+
+    Other 4xx ClientErrors (401/403 auth, 400 bad request, 404 model not found)
+    are not transient — retrying them just delays a failure that will never
+    succeed, so those re-raise immediately instead of burning the retry budget.
+    """
+    if isinstance(exc, genai_errors.ServerError):
+        return True
+    if isinstance(exc, genai_errors.ClientError):
+        return exc.code == 429
+    # Network-level failures (DNS, connection refused, socket timeout) surface
+    # as plain OSError/ConnectionError from the underlying HTTP client, not as
+    # a genai_errors subclass — these are transient too.
+    return isinstance(exc, (ConnectionError, TimeoutError, OSError))
+
+
 async def _generate_with_retry(call: Callable[[], Any]) -> Any:
     """Retry a blocking generate_content call without blocking the event loop.
 
     Gemini returns 503 UNAVAILABLE ("high demand") under sustained load, which
     is common when running large evaluation suites back-to-back. Retrying with
     a short backoff clears most of these without surfacing a planning failure.
+    429 rate-limits and transient network failures get the same treatment;
+    non-retryable errors (auth, bad request) fail immediately.
     """
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, call)
-        except genai_errors.ServerError as exc:
+        except Exception as exc:
+            if not _is_retryable(exc):
+                raise
             last_exc = exc
             if attempt < _MAX_RETRIES:
                 await asyncio.sleep(_RETRY_BACKOFF_S * (attempt + 1))
@@ -158,7 +179,7 @@ class GeminiProvider(LLMProvider):
         response = await asyncio.wait_for(
             _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
-                    contents=contents,
+                    contents=contents,  # type: ignore[arg-type]
                     config=config,
                 )),
             timeout=effective_timeout,
@@ -205,12 +226,12 @@ class GeminiProvider(LLMProvider):
         contents = _build_contents(messages)
         config = genai_types.GenerateContentConfig(
             system_instruction=system if system else None,
-            tools=tools,
+            tools=tools,  # type: ignore[arg-type]
         )
         response = await asyncio.wait_for(
             _generate_with_retry(lambda: self._get_client().models.generate_content(
                     model=self._model_name,
-                    contents=contents,
+                    contents=contents,  # type: ignore[arg-type]
                     config=config,
                 )),
             timeout=effective_timeout,

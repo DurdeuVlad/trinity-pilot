@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Union
+from typing import Any, Union
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,11 @@ class WorkerStepSignal:
     tool_name: str
     tokens_this_step: int
     ts: float = field(default_factory=time.time)
+    # Non-image tool args (e.g. click coordinates), for driving UI feedback.
+    # Never populated with image_data — this is forwarded to Qt UI code, kept small.
+    tool_args: dict[str, Any] = field(default_factory=dict)
+    # JPEG bytes of the last screenshot tool call, if any — for a live thumbnail.
+    thumbnail: bytes | None = None
 
 
 Signal = Union[

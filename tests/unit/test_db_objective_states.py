@@ -1,5 +1,7 @@
 """Tests for objective_states table and db.py updates (AC-2.2)."""
 from trinity_pilot.memory.db import open_db
+from trinity_pilot.memory.store import ObjectiveStateStore
+from trinity_pilot.orchestrator.fsm import ObjectiveState
 
 
 def test_objective_states_table_created():
@@ -60,3 +62,32 @@ def test_existing_tables_still_created():
     assert "attempt_logs" in tables
     assert "reflections" in tables
     assert "objective_states" in tables
+
+
+def test_mark_orphaned_running_as_interrupted_resolves_transient_states():
+    """RUNNING/STUCK/STEERED left by a crashed prior run must resolve to FAILED
+    with a clear failure_reason, not silently stay inconsistent forever."""
+    store = ObjectiveStateStore(":memory:")
+    store.upsert("t-1", "obj-running", ObjectiveState.RUNNING)
+    store.upsert("t-1", "obj-stuck", ObjectiveState.STUCK)
+    store.upsert("t-1", "obj-steered", ObjectiveState.STEERED)
+    store.upsert("t-1", "obj-done", ObjectiveState.DONE)
+    store.upsert("t-1", "obj-failed", ObjectiveState.FAILED)
+
+    resolved = store.mark_orphaned_running_as_interrupted()
+
+    assert set(resolved) == {("t-1", "obj-running"), ("t-1", "obj-stuck"), ("t-1", "obj-steered")}
+    for objective_id in ("obj-running", "obj-stuck", "obj-steered"):
+        row = store.get("t-1", objective_id)
+        assert row["state"] == ObjectiveState.FAILED.value
+        assert row["failure_reason"] == "interrupted_by_restart"
+    # Already-terminal states must be left untouched.
+    assert store.get("t-1", "obj-done")["state"] == ObjectiveState.DONE.value
+    assert store.get("t-1", "obj-failed")["failure_reason"] != "interrupted_by_restart"
+
+
+def test_mark_orphaned_running_as_interrupted_no_op_when_none_transient():
+    store = ObjectiveStateStore(":memory:")
+    store.upsert("t-1", "obj-done", ObjectiveState.DONE)
+
+    assert store.mark_orphaned_running_as_interrupted() == []

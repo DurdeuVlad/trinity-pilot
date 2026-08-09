@@ -84,6 +84,28 @@ class TestTaskStore:
         assert task is not None
         assert task.user_request == "second"
 
+    def test_mark_orphaned_running_as_interrupted(self):
+        """A task left RUNNING by a crashed prior run must be resolved, not
+        silently stay inconsistent forever across a restart."""
+        store = TaskStore(":memory:")
+        store.save_task(TaskRecord(task_id="t-done", user_request="finished ok"))
+        store.update_status("t-done", TaskStatus.COMPLETED)
+        store.save_task(TaskRecord(task_id="t-orphan", user_request="crashed mid-flight"))
+        store.update_status("t-orphan", TaskStatus.RUNNING)
+
+        resolved = store.mark_orphaned_running_as_interrupted()
+
+        assert resolved == ["t-orphan"]
+        assert store.get_task("t-orphan").status == TaskStatus.FAILED
+        assert store.get_task("t-done").status == TaskStatus.COMPLETED
+
+    def test_mark_orphaned_running_as_interrupted_no_op_when_none_running(self):
+        store = TaskStore(":memory:")
+        store.save_task(TaskRecord(task_id="t-1", user_request="ok"))
+        store.update_status("t-1", TaskStatus.COMPLETED)
+
+        assert store.mark_orphaned_running_as_interrupted() == []
+
 
 class TestAttemptStore:
     def test_log_and_retrieve_attempt(self):
