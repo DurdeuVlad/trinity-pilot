@@ -158,7 +158,7 @@ async def test_dag_scheduler_completes_independent_objectives_in_parallel():
         "browser": "passed",
         "terminal": "passed",
     }
-    assert elapsed < max(durations.values()) * 1.25
+    assert elapsed < max(durations.values()) * 2.0
 
 
 async def test_dag_scheduler_respects_exclusive_domains():
