@@ -105,7 +105,7 @@ class TestWorkflowBridge:
         assert len(callback_threads) == 3
         assert all(callback_threads)
 
-    def test_headless_callbacks_are_synchronous(self, tmp_path):
+    def test_headless_callbacks_are_synchronous(self, qtbot, tmp_path):
         bridge = WorkflowBridge(
             settings=_settings(),
             db_path=str(tmp_path / "headless-bridge.db"),
@@ -123,5 +123,8 @@ class TestWorkflowBridge:
             )
 
             assert done.wait(timeout=1.0)
+
+            if bridge._worker is not None:
+                bridge._worker.wait(2000)
 
         assert callbacks == ["log", "status", "done"]
