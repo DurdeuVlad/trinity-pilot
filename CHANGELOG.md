@@ -5,8 +5,9 @@
 - **Provider selection.** Added a shared OpenAI Responses API provider and factory with `LLM_PROVIDER=openai|gemini`, preserving Gemini compatibility.
 - **Default model.** The shipped `.env.example` selects OpenAI `gpt-5.6-luna`; the provider switch covers planning, workers, review, analysis, clarification, and streaming.
 - **Tool and vision parity.** OpenAI function-call history preserves `call_id`, existing tool schemas are converted to Responses tools, and screenshots are sent as input images.
+- **Reasoning continuity.** Responses reasoning and function-call output items are replayed in tool-call continuations so reasoning-capable models retain their required context.
 - **Local setup.** The ignored local `.env` is prepared with the OpenAI provider and an empty `OPENAI_API_KEY` placeholder until the user supplies a real API key.
-- **Verification.** 400 unit tests, focused OpenAI/config/factory/streaming tests, Ruff, mypy, locked dependency validation, PyInstaller, ZIP integrity, and packaged `--version` smoke checks pass.
+- **Verification.** 401 unit tests, focused OpenAI/config/factory/streaming/reasoning tests, Ruff, mypy, locked dependency validation, PyInstaller, ZIP integrity, and packaged `--version` smoke checks pass.
 
 ## 2026-08-21: Publish-readiness completion
 

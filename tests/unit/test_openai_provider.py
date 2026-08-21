@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from trinity_pilot.llm.base import LLMMessage
+from trinity_pilot.llm.openai import _messages_to_input
 from trinity_pilot.workers.agentic_mixin import _finish_decl, _make_tool
 
 
@@ -138,3 +139,16 @@ class TestOpenAIProvider:
             "type": "input_image",
             "image_url": "data:image/png;base64,cG5nLWJ5dGVz",
         }
+
+    def test_reasoning_and_function_output_items_are_replayed(self):
+        message = LLMMessage(
+            role="tool_call",
+            content='{"name":"finish","args":{}}',
+            raw_provider_content=[
+                {"type": "reasoning", "id": "rs_123", "summary": []},
+                {"type": "function_call", "call_id": "call_123", "name": "finish", "arguments": "{}"},
+            ],
+            tool_call_id="call_123",
+        )
+
+        assert _messages_to_input([message]) == message.raw_provider_content

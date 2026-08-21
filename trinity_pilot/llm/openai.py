@@ -55,10 +55,26 @@ def _to_openai_tools(tools: list[Any]) -> list[dict[str, Any]]:
     return converted
 
 
+def _serialise_output_item(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump(exclude_none=True, by_alias=True)
+    if hasattr(item, "to_dict"):
+        return item.to_dict()
+    raise TypeError(f"Unsupported OpenAI output item: {type(item)!r}")
+
+
 def _messages_to_input(messages: list[LLMMessage]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
         if message.role == "tool_call":
+            if message.raw_provider_content:
+                raw_items = message.raw_provider_content
+                if not isinstance(raw_items, list):
+                    raw_items = [raw_items]
+                items.extend(_serialise_output_item(item) for item in raw_items)
+                continue
             data = json.loads(message.content)
             items.append(
                 {
