@@ -12,7 +12,7 @@ Thanks for helping improve Trinity Pilot. It is early-stage desktop automation s
 ## Local checks
 
 ```bash
-uv sync --locked --extra dev --extra windows
+uv sync --locked --extra dev
 uv run ruff check .
 uv run mypy trinity_pilot
 uv run pytest tests/unit tests/integration -v
