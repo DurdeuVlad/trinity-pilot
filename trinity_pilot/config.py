@@ -24,7 +24,13 @@ class ConfigError(Exception):
 
 @dataclass
 class Settings:
-    gemini_api_key: str
+    # Direct construction defaults to Gemini for backwards-compatible tests and
+    # integrations; .env.example selects OpenAI for the shipped local setup.
+    gemini_api_key: str = ""
+    llm_provider: str = "gemini"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5.6-luna"
+    openai_timeout_seconds: float = 120.0
     gemini_planner_model: str = "gemini-2.5-flash"
     gemini_worker_model: str = "gemini-2.5-flash"
     gemini_timeout_seconds: float = 120.0
@@ -33,12 +39,23 @@ class Settings:
     debug_mode: bool = False
 
     def validate(self) -> None:
-        if not self.gemini_api_key:
-            raise ConfigError("GEMINI_API_KEY is required but not set.")
+        self.llm_provider = self.llm_provider.strip().lower()
+        if self.llm_provider not in {"openai", "gemini"}:
+            raise ConfigError(
+                f"Unsupported LLM_PROVIDER {self.llm_provider!r}; use 'openai' or 'gemini'."
+            )
+        if self.llm_provider == "openai" and not self.openai_api_key:
+            raise ConfigError("OPENAI_API_KEY is required when LLM_PROVIDER=openai.")
+        if self.llm_provider == "gemini" and not self.gemini_api_key:
+            raise ConfigError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini.")
         if self.gemini_timeout_seconds <= 0:
             raise ConfigError(
                 f"GEMINI_TIMEOUT_SECONDS must be positive, got {self.gemini_timeout_seconds!r} "
                 "— a zero or negative value would make every LLM call time out instantly."
+            )
+        if self.openai_timeout_seconds <= 0:
+            raise ConfigError(
+                f"OPENAI_TIMEOUT_SECONDS must be positive, got {self.openai_timeout_seconds!r}."
             )
         if self.stuck_threshold_steps <= 0:
             raise ConfigError(
@@ -112,13 +129,19 @@ class Settings:
         if dotenv_path is not None:
             load_dotenv(dotenv_path=dotenv_path, override=True)
 
-        timeout_raw = os.getenv("GEMINI_TIMEOUT_SECONDS", "120.0")
-        try:
-            gemini_timeout_seconds = float(timeout_raw)
-        except ValueError as exc:
-            raise ConfigError(
-                f"GEMINI_TIMEOUT_SECONDS must be a number, got {timeout_raw!r}."
-            ) from exc
+        provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+        if not provider:
+            provider = "openai" if os.getenv("OPENAI_API_KEY") else "gemini"
+
+        def _timeout(name: str) -> float:
+            raw = os.getenv(name, "120.0")
+            try:
+                return float(raw)
+            except ValueError as exc:
+                raise ConfigError(f"{name} must be a number, got {raw!r}.") from exc
+
+        gemini_timeout_seconds = _timeout("GEMINI_TIMEOUT_SECONDS")
+        openai_timeout_seconds = _timeout("OPENAI_TIMEOUT_SECONDS")
 
         threshold_raw = os.getenv("STUCK_THRESHOLD_STEPS", "3")
         try:
@@ -130,6 +153,10 @@ class Settings:
 
         settings = cls(
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            llm_provider=provider,
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+            openai_timeout_seconds=openai_timeout_seconds,
             gemini_planner_model=os.getenv("GEMINI_PLANNER_MODEL", "gemini-2.5-flash"),
             gemini_worker_model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
             gemini_timeout_seconds=gemini_timeout_seconds,

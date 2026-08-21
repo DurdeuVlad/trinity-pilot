@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-08-21: OpenAI provider switch
+
+- **Provider selection.** Added a shared OpenAI Responses API provider and factory with `LLM_PROVIDER=openai|gemini`, preserving Gemini compatibility.
+- **Default model.** The shipped `.env.example` selects OpenAI `gpt-5.6-luna`; the provider switch covers planning, workers, review, analysis, clarification, and streaming.
+- **Tool and vision parity.** OpenAI function-call history preserves `call_id`, existing tool schemas are converted to Responses tools, and screenshots are sent as input images.
+- **Local setup.** The ignored local `.env` is prepared with the OpenAI provider and an empty `OPENAI_API_KEY` placeholder until the user supplies a real API key.
+- **Verification.** 400 unit tests, focused OpenAI/config/factory/streaming tests, Ruff, mypy, locked dependency validation, PyInstaller, ZIP integrity, and packaged `--version` smoke checks pass.
+
+## 2026-08-21: Publish-readiness completion
+
+- **Release archive.** The PyInstaller build now verifies `trinity-pilot.exe` and creates `dist/trinity-pilot-win64.zip` with the executable at the archive root; CI and release workflows upload the explicit archive asset.
+- **Portable first-run setup.** Frozen builds persist the Gemini key under `%USERPROFILE%\\.trinity-pilot\\.env`, with an override for controlled environments; source checkouts continue using the working-directory `.env`.
+- **Runtime version consistency.** CLI and MCP server manifests/resources use the installed package version instead of independent hardcoded copies.
+- **Desktop safety fix.** Calculator typing protection now considers only the active or declared target window, preventing unrelated open windows from blocking input.
+- **Verification.** 479 unit/integration/UI tests, Ruff, mypy, locked dependency validation, Python package build, and Windows PyInstaller + ZIP smoke checks pass.
+
 ## 2026-08-09: Open-source publish readiness
 
 - **Production hardening.** Orphan objective recovery (mark stale objectives failed on next run), per-objective token budget tracking with charge-on-completion, ReviewError propagation, MCP client pool lifecycle hardening, worker close guards, structured error telemetry (emit_error), Gemini SDK type fixes, config validation + preflight checks.

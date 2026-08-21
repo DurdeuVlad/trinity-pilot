@@ -28,11 +28,12 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from trinity_pilot import __version__
 from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
 
 mcp = FastMCP(
     name="trinity-pilot-sensor",
-    version="0.1.0",
+    version=__version__,
 )
 
 SERVER_NAME = "trinity-pilot-sensor"
@@ -64,7 +65,7 @@ def health() -> str:
 
 @mcp.resource("version://sensor")
 def version() -> str:
-    return "0.1.0"
+    return __version__
 
 
 # ---------------------------------------------------------------------------

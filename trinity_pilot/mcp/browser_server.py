@@ -39,6 +39,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from trinity_pilot import __version__
 from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.mcp.base_server import ControlState
 from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
@@ -47,7 +48,7 @@ from trinity_pilot.workers.browser_worker import BrowserWorker
 
 mcp = FastMCP(
     name="trinity-pilot-browser",
-    version="0.1.0",
+    version=__version__,
 )
 
 SERVER_NAME = "trinity-pilot-browser"
@@ -123,7 +124,7 @@ def health() -> str:
 
 @mcp.resource("version://browser")
 def version() -> str:
-    return "0.1.0"
+    return __version__
 
 
 # ---------------------------------------------------------------------------

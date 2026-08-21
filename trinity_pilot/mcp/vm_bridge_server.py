@@ -20,9 +20,11 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from trinity_pilot import __version__
+
 mcp = FastMCP(
     name="vm-bridge",
-    version="0.1.0",
+    version=__version__,
 )
 
 VBOXMANAGE = os.environ.get(

@@ -1,7 +1,7 @@
 """Browser domain end-to-end tests.
 
 These tests run against the live orchestrator via WorkflowBridge.
-They require GEMINI_API_KEY and Playwright to be installed.
+They require the configured LLM API key and Playwright to be installed.
 
 Run with:
     pytest tests/e2e/test_browser_e2e.py -v --timeout=180

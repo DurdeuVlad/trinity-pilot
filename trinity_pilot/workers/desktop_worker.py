@@ -490,11 +490,8 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
 
     def __init__(self, llm: LLMProvider | None = None) -> None:
         if llm is None:
-            from trinity_pilot.llm.gemini import GeminiProvider
-            llm = GeminiProvider(
-                api_key=os.environ.get("GEMINI_API_KEY", ""),
-                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-            )
+            from trinity_pilot.llm.factory import create_provider_from_env
+            llm = create_provider_from_env("worker")
         super().__init__(llm=llm)
         # Title-regex of the window the agent last asked to focus.
         # Re-asserted automatically before every input tool so keystrokes
@@ -1605,13 +1602,12 @@ class DesktopWorker(AgenticWorkerMixin, DomainWorker):
     def _calculator_window_open(self) -> bool:
         if sys.platform != "win32":
             return False
-        try:
-            from pywinauto import findwindows
-            return bool(findwindows.find_windows(title_re=r"(?i)calculator"))
-        except Exception:
-            title = (self._get_active_window_title() or "").lower()
-            target = (self._target_window or "").lower()
-            return "calculator" in title or "calculator" in target
+        active = (self._get_active_window_title() or "").lower()
+        target = (self._target_window or "").lower()
+        # Only block typing when Calculator is the active or declared target.
+        # Scanning all visible windows lets an unrelated open Calculator veto
+        # text input intended for another application.
+        return "calculator" in active or "calculator" in target
 
     @staticmethod
     def _calculator_text_to_keys(text: str) -> list[str] | None:

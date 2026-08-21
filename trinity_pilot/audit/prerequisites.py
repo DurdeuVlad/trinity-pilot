@@ -66,9 +66,14 @@ def check_live_prerequisites(output_root: str | Path = ".audit-runs") -> Prerequ
     if not checks["interactive_desktop"]:
         missing.append(PrerequisiteIssue("no_interactive_desktop", "No interactive Windows desktop session detected"))
 
-    checks["gemini_api_key"] = bool(os.getenv("GEMINI_API_KEY"))
-    if not checks["gemini_api_key"]:
-        missing.append(PrerequisiteIssue("missing_gemini_api_key", "GEMINI_API_KEY is not set"))
+    provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if not provider:
+        provider = "openai" if os.getenv("OPENAI_API_KEY") else "gemini"
+    api_key_name = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
+    check_name = f"{provider}_api_key"
+    checks[check_name] = bool(os.getenv(api_key_name))
+    if not checks[check_name]:
+        missing.append(PrerequisiteIssue(f"missing_{check_name}", f"{api_key_name} is not set"))
 
     import_errors: dict[str, str | None] = {}
     for name, module in {

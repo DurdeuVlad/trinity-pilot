@@ -9,6 +9,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from trinity_pilot import __version__
+
 # Shared crashes directory — all crash artefacts land here. Anchored to a fixed
 # app-data dir (not the installed package location) so it stays writable even
 # when the package is installed into an admin-owned location (Program Files,
@@ -89,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="trinity-pilot 0.1.0",
+        version=f"trinity-pilot {__version__}",
     )
     return parser
 
@@ -106,7 +108,7 @@ def main() -> None:
         if ensure_api_key():
             run_app()
         else:
-            print("Initialization aborted: GEMINI_API_KEY required.", file=sys.stderr)
+            print("Initialization aborted: configured LLM API key required.", file=sys.stderr)
             sys.exit(1)
     except ImportError as exc:
         print(f"UI unavailable (PySide6 not installed?): {exc}", file=sys.stderr)

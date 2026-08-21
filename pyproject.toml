@@ -37,6 +37,7 @@ dependencies = [
     "aiosqlite>=0.19",
     # LLM
     "google-genai>=2.0.1",
+    "openai>=2.0.0",
     # Safety
     "pyautogui>=0.9.54",
     # Desktop automation (installed automatically on Windows)

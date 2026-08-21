@@ -668,7 +668,7 @@ class MainWindow(QMainWindow):
                 import json as _json
 
                 from trinity_pilot.llm.base import LLMMessage
-                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.factory import create_provider_for_settings
 
                 if not settings:
                     # No config — can't automate; respond as chat.
@@ -680,12 +680,9 @@ class MainWindow(QMainWindow):
                     relay.direct_response.emit("chat", task)
                     return
 
-                # Use the fast worker model (flash-lite) with a tight timeout so the
+                # Use the configured worker model with a tight timeout so the
                 # clarification check never meaningfully delays the planning phase.
-                provider = GeminiProvider(
-                    api_key=settings.gemini_api_key,
-                    model=settings.gemini_worker_model,
-                )
+                provider = create_provider_for_settings(settings, "worker")
                 prompt = (
                     f'Task: "{task}"\n\n'
                     "Step 1 — classify the intent:\n"
@@ -881,8 +878,9 @@ class MainWindow(QMainWindow):
             return
 
         self._stream_worker = StreamWorker(
-            api_key=self._settings.gemini_api_key,
-            model=self._settings.gemini_planner_model,
+            provider=self._settings.llm_provider,
+            api_key=(self._settings.openai_api_key if self._settings.llm_provider == "openai" else self._settings.gemini_api_key),
+            model=(self._settings.openai_model if self._settings.llm_provider == "openai" else self._settings.gemini_planner_model),
             prompt=prompt,
             system=system,
             parent=self,
@@ -1126,8 +1124,9 @@ class MainWindow(QMainWindow):
             "(the objectives you will break this into). Be concise."
         )
         self._stream_worker = StreamWorker(
-            api_key=self._settings.gemini_api_key,
-            model=self._settings.gemini_planner_model,
+            provider=self._settings.llm_provider,
+            api_key=(self._settings.openai_api_key if self._settings.llm_provider == "openai" else self._settings.gemini_api_key),
+            model=(self._settings.openai_model if self._settings.llm_provider == "openai" else self._settings.gemini_planner_model),
             prompt=prompt,
             parent=self,
         )

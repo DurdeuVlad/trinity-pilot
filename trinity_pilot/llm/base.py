@@ -7,13 +7,15 @@ from typing import Any
 
 @dataclass
 class LLMMessage:
-    role: str  # "user" | "model" | "system"
+    role: str  # "user" | "model" | "system" | "tool_call" | "tool_result"
     content: str
     # Optional provider-specific raw object.  GeminiProvider uses this to store
     # the original Content object for "tool_call" turns so that thought_signature
     # (required by Gemini 2.5+ thinking models) is replayed verbatim without any
     # re-serialisation loss.
     raw_provider_content: Any = None
+    # OpenAI Responses function calls need the call_id on both the call and its output.
+    tool_call_id: str | None = None
     # Optional inline image for multimodal messages (reviewer vision).
     image_data: bytes | None = None
     image_mime: str = "image/jpeg"

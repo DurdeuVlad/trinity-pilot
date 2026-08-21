@@ -16,6 +16,7 @@ from trinity_pilot.core.types import (
     TaskStatus,
 )
 from trinity_pilot.llm.gemini import GeminiProvider
+from trinity_pilot.llm.openai import OpenAIProvider
 from trinity_pilot.mcp.client_pool import MCPClientPool
 from trinity_pilot.memory.reflection import ReflectionStore
 from trinity_pilot.memory.store import AttemptStore, ObjectiveStateStore, TaskStore
@@ -149,6 +150,20 @@ class AsyncTaskOrchestrator:
             status=self._snapshot.status,
         )
 
+    def _build_provider(self, role: str):
+        if self._settings.llm_provider == "openai":
+            return OpenAIProvider(
+                api_key=self._settings.openai_api_key,
+                model=self._settings.openai_model,
+                default_timeout=self._settings.openai_timeout_seconds,
+            )
+        model = self._settings.gemini_planner_model if role == "planner" else self._settings.gemini_worker_model
+        return GeminiProvider(
+            api_key=self._settings.gemini_api_key,
+            model=model,
+            default_timeout=self._settings.gemini_timeout_seconds,
+        )
+
     def cancel(self) -> None:
         self._cancel_requested.set()
         # Cancel the task wrapping each active MCP call.  This makes Stop
@@ -159,11 +174,7 @@ class AsyncTaskOrchestrator:
                 dispatch_task.cancel()
 
     async def plan(self, user_request: str) -> list[ObjectiveSpec]:
-        provider = GeminiProvider(
-            api_key=self._settings.gemini_api_key,
-            model=self._settings.gemini_planner_model,
-            default_timeout=self._settings.gemini_timeout_seconds,
-        )
+        provider = self._build_provider("planner")
         return await ObjectivePlanner(provider).plan(user_request)
 
     async def run(
@@ -261,20 +272,12 @@ class AsyncTaskOrchestrator:
         self._objective_store.upsert(task_id, objective_id, ObjectiveState.RUNNING)
         await self.signals.put(ObjectiveStarted(task_id, objective_id))
 
-        reviewer_provider = GeminiProvider(
-            api_key=self._settings.gemini_api_key,
-            model=self._settings.gemini_worker_model,
-            default_timeout=self._settings.gemini_timeout_seconds,
-        )
+        reviewer_provider = self._build_provider("worker")
         try:
             reviewer = ObjectiveReviewer(reviewer_provider, sensor_call=self._mcp_pool.call_sensor)
         except TypeError:  # Compatibility with narrowly mocked reviewers in integrations.
             reviewer = ObjectiveReviewer(reviewer_provider)
-        analyser_provider = GeminiProvider(
-            api_key=self._settings.gemini_api_key,
-            model=self._settings.gemini_worker_model,
-            default_timeout=self._settings.gemini_timeout_seconds,
-        )
+        analyser_provider = self._build_provider("worker")
         analyser = OrchestratorAnalyser(analyser_provider)
         last_evidence: dict[str, Any] = {}
         retry_context: list[dict[str, Any]] = []

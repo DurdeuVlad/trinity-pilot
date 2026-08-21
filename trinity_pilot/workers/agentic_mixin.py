@@ -500,6 +500,7 @@ class AgenticWorkerMixin:
             tool_call = response.tool_calls[0]
             tool_name: str = tool_call["name"]
             args: dict[str, Any] = tool_call.get("args", {})
+            tool_call_id = tool_call.get("call_id")
             _tx_entry["tool_name"] = tool_name
             _tx_entry["tool_args"] = {k: v for k, v in args.items() if k != "image_data"}
 
@@ -511,6 +512,7 @@ class AgenticWorkerMixin:
                     role="tool_call",
                     content=json.dumps({"name": tool_name, "args": args}),
                     raw_provider_content=getattr(response, "raw_model_content", None),
+                    tool_call_id=tool_call_id,
                 )
             )
 
@@ -549,6 +551,7 @@ class AgenticWorkerMixin:
                     messages.append(LLMMessage(
                         role="tool_result",
                         content=json.dumps({"name": tool_name, "result": _blocked_obs}),
+                        tool_call_id=tool_call_id,
                     ))
                     steps_taken += 1
                     if effective_signals is not None:
@@ -686,6 +689,7 @@ class AgenticWorkerMixin:
                     content=json.dumps({"name": tool_name, "result": observation}),
                     image_data=img_bytes,
                     image_mime="image/jpeg",
+                    tool_call_id=tool_call_id,
                 )
             )
 

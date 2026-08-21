@@ -337,18 +337,15 @@ class WorkflowBridge(QObject):
             try:
                 import asyncio
 
-                from trinity_pilot.llm.gemini import GeminiProvider
+                from trinity_pilot.llm.factory import create_provider_for_settings
                 from trinity_pilot.planner.planner import ObjectivePlanner
 
                 emit(
                     "bridge.py:plan_only",
                     "planner_thread_started",
-                    {"model": self._settings.gemini_planner_model},
+                    {"model": self._settings.openai_model if self._settings.llm_provider == "openai" else self._settings.gemini_planner_model},
                 )
-                provider = GeminiProvider(
-                    api_key=self._settings.gemini_api_key,
-                    model=self._settings.gemini_planner_model,
-                )
+                provider = create_provider_for_settings(self._settings, "planner")
                 planner = ObjectivePlanner(provider=provider)
                 loop = asyncio.new_event_loop()
                 try:

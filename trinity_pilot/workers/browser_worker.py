@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import re
 import tempfile
 from pathlib import Path
@@ -334,11 +333,8 @@ class BrowserWorker(AgenticWorkerMixin, DomainWorker):
 
     def __init__(self, llm: LLMProvider | None = None) -> None:
         if llm is None:
-            from trinity_pilot.llm.gemini import GeminiProvider
-            llm = GeminiProvider(
-                api_key=os.environ.get("GEMINI_API_KEY", ""),
-                model=os.getenv("GEMINI_WORKER_MODEL", "gemini-2.5-flash"),
-            )
+            from trinity_pilot.llm.factory import create_provider_from_env
+            llm = create_provider_from_env("worker")
         super().__init__(llm=llm)
         self._page: Any = None
         self._pages: list[Any] = []

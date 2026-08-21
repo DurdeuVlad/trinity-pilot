@@ -6,7 +6,7 @@ from PySide6.QtCore import QThread, Signal
 
 
 class StreamWorker(QThread):
-    """Streams a Gemini response in a background thread, emitting chunks to the UI."""
+    """Streams the selected provider's response in a background thread."""
 
     chunk_received = Signal(str)
     stream_done = Signal(str)
@@ -14,6 +14,7 @@ class StreamWorker(QThread):
 
     def __init__(
         self,
+        provider: str,
         api_key: str,
         model: str,
         prompt: str,
@@ -21,6 +22,7 @@ class StreamWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._provider = provider
         self._api_key = api_key
         self._model = model
         self._prompt = prompt
@@ -28,6 +30,9 @@ class StreamWorker(QThread):
 
     def run(self) -> None:
         try:
+            if self._provider == "openai":
+                self._run_openai()
+                return
             client = genai.Client(api_key=self._api_key)
             config = (
                 genai_types.GenerateContentConfig(system_instruction=self._system)
@@ -50,3 +55,22 @@ class StreamWorker(QThread):
             self.stream_done.emit(full_text)
         except Exception as exc:  # noqa: BLE001
             self.stream_error.emit(str(exc))
+
+    def _run_openai(self) -> None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=self._api_key)
+        stream = client.responses.create(
+            model=self._model,
+            instructions=self._system or None,
+            input=self._prompt,
+            stream=True,
+        )
+        full_text = ""
+        for event in stream:
+            if getattr(event, "type", None) != "response.output_text.delta":
+                continue
+            text = getattr(event, "delta", "") or ""
+            full_text += text
+            self.chunk_received.emit(text)
+        self.stream_done.emit(full_text)

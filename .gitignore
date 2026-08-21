@@ -70,6 +70,7 @@ archive/
 
 # Testing
 .pytest_cache/
+.mypy_cache/
 *.cover
 
 # IDEs

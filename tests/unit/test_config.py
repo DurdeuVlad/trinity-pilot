@@ -15,6 +15,7 @@ class TestSettings:
             # Ensure key is absent/empty
             env = {k: v for k, v in os.environ.items() if k != "GEMINI_API_KEY"}
             env["GEMINI_API_KEY"] = ""
+            env["LLM_PROVIDER"] = "gemini"
             with patch.dict(os.environ, env, clear=True):
                 with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
                     Settings.from_env()
@@ -75,6 +76,24 @@ class TestSettings:
         with patch.dict(os.environ, env, clear=True):
             s = Settings.from_env()
         assert s.gemini_api_key == "only-key"
+
+    def test_from_env_supports_openai_gpt56_luna(self):
+        env = {
+            "LLM_PROVIDER": "openai",
+            "OPENAI_API_KEY": "openai-key",
+            "OPENAI_MODEL": "gpt-5.6-luna",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            s = Settings.from_env()
+
+        assert s.llm_provider == "openai"
+        assert s.openai_api_key == "openai-key"
+        assert s.openai_model == "gpt-5.6-luna"
+
+    def test_openai_configuration_requires_openai_key(self):
+        s = Settings(llm_provider="openai", openai_api_key="")
+        with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+            s.validate()
 
     def test_gemini_timeout_seconds_defaults_to_120(self):
         env = {"GEMINI_API_KEY": "test-key"}

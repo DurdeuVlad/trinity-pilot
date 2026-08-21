@@ -40,6 +40,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from trinity_pilot import __version__
 from trinity_pilot.core.types import ObjectiveSpec
 from trinity_pilot.mcp.base_server import ControlState
 from trinity_pilot.mcp.tool_registry import ToolManifest, ToolMetadata
@@ -48,7 +49,7 @@ from trinity_pilot.workers.desktop_worker import DesktopWorker
 
 mcp = FastMCP(
     name="trinity-pilot-desktop",
-    version="0.1.0",
+    version=__version__,
 )
 
 SERVER_NAME = "trinity-pilot-desktop"
@@ -96,7 +97,7 @@ def health() -> str:
 
 @mcp.resource("version://desktop")
 def version() -> str:
-    return "0.1.0"
+    return __version__
 
 
 # ---------------------------------------------------------------------------

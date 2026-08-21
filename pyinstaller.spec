@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
@@ -19,10 +18,11 @@ hidden_imports = [
     'fastmcp',
     'mcp',
     'google.genai',
+    'openai',
     'trinity_pilot',
 ] + collect_submodules('trinity_pilot')
 
-datas = collect_data_files('qtmaterial', include_py_files=True) if 'qtmaterial' in sys.modules else []
+datas = collect_data_files('qt_material', include_py_files=True)
 
 a = Analysis(
     ['trinity_pilot/__main__.py'],

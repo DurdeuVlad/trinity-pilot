@@ -51,15 +51,22 @@ def qapp():
 
 
 # ---------------------------------------------------------------------------
-# Settings â€” session-scoped; skip whole session if no API key
+# Settings â€” session-scoped; skip whole session if no configured API key
 # ---------------------------------------------------------------------------
+
+def _configured_api_key() -> str:
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if not provider:
+        provider = "openai" if os.environ.get("OPENAI_API_KEY") else "gemini"
+    return os.environ.get(f"{provider.upper()}_API_KEY", "")
+
 
 @pytest.fixture(scope="session")
 def e2e_settings() -> Settings:
-    """Load Settings from environment. Skip session if GEMINI_API_KEY is absent."""
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    """Load Settings from environment. Skip session if the selected key is absent."""
+    api_key = _configured_api_key()
     if not api_key:
-        pytest.skip("GEMINI_API_KEY not set â€” skipping e2e tests")
+        pytest.skip("Configured LLM API key not set â€” skipping e2e tests")
     return Settings.from_env()
 
 
@@ -138,14 +145,14 @@ def desktop_available():
 def app(request):
     """Fresh Trinity Pilot GUI instance per test. Process is killed on teardown.
 
-    Skipped automatically on non-Windows or if GEMINI_API_KEY is absent.
+    Skipped automatically on non-Windows or if the configured LLM API key is absent.
     Each test gets an isolated app instance with a clean DB state.
     """
     if sys.platform != "win32":
         pytest.skip("GUI tests require Windows")
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = _configured_api_key()
     if not api_key:
-        pytest.skip("GEMINI_API_KEY not set â€” skipping GUI e2e tests")
+        pytest.skip("Configured LLM API key not set â€” skipping GUI e2e tests")
 
     from tests.e2e._gui_driver import AppDriver
 

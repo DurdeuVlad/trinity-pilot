@@ -9,7 +9,7 @@ Type a task in plain English. Trinity Pilot decomposes it into typed objectives,
 [![CI](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/DurdeuVlad/trinity-pilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://www.python.org/downloads/)
-[![Tests: 475](https://img.shields.io/badge/Tests-381U%209I%2085UI-brightgreen.svg)](#running-tests)
+[![Tests: 400+](https://img.shields.io/badge/Tests-400%2B-brightgreen.svg)](#running-tests)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](#safety-and-data-handling)
 
 </div>
@@ -39,10 +39,10 @@ You type something like:
 
 Trinity Pilot:
 
-1. **Plans.** An `ObjectivePlanner` (Gemini) decomposes the request into a typed `ObjectiveSpec` DAG with dependencies, domains, risk classes, and success checklists.
+1. **Plans.** An `ObjectivePlanner` (OpenAI by default; Gemini is also supported) decomposes the request into a typed `ObjectiveSpec` DAG with dependencies, domains, risk classes, and success checklists.
 2. **Dispatches.** An async orchestrator routes each objective to the right worker: `BrowserWorker` (Playwright), `TerminalWorker` (asyncio subprocess), or `DesktopWorker` (pywinauto UIA).
 3. **Executes.** Each worker runs a ReAct loop with real tools: navigate, click, type, read DOM, run commands, drive UI elements. No screenshot-guessing.
-4. **Reviews.** A separate `ObjectiveReviewer` (Gemini) examines the evidence (screenshots, stdout, DOM snapshots, file existence) and returns a typed `ReviewResult`: pass, or fail with a specific `FailureReason`.
+4. **Reviews.** A separate `ObjectiveReviewer` (OpenAI by default; Gemini is also supported) examines the evidence (screenshots, stdout, DOM snapshots, file existence) and returns a typed `ReviewResult`: pass, or fail with a specific `FailureReason`.
 5. **Retries.** Failed objectives get a recovery hint and retry with the failure context injected into the next attempt. Up to 3 attempts per objective.
 6. **Persists.** Every task, attempt, evidence bundle, and reflection is stored in SQLite (WAL mode) for post-hoc analysis.
 
@@ -63,7 +63,7 @@ Each objective moves through a typed state machine. Reviews gate transitions. Bu
 ```text
 PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
                                    │
-                          ObjectivePlanner (Gemini)
+                 ObjectivePlanner (OpenAI / Gemini)
                                    │
                           ObjectiveSpec DAG (typed)
                                    │
@@ -74,7 +74,7 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
               │                    │                     │
               └────────────────────┼────────────────────┘
                                    ▼
-                       ObjectiveReviewer (Gemini)
+                 ObjectiveReviewer (OpenAI / Gemini)
                                    │
                        SQLite WAL state + evidence stores
 ```
@@ -91,7 +91,7 @@ PySide6 UI → WorkflowBridge → AsyncTaskOrchestrator
 | Terminal domain | asyncio subprocess: structured commands, not raw shell |
 | Desktop-app domain | pywinauto UIA backend → PyAutoGUI fallback |
 | Memory/evidence | SQLite: WAL mode, JSON columns, FTS5 |
-| LLM provider | Gemini 2.5 Flash (free tier), swappable via `LLMProvider` ABC |
+| LLM provider | OpenAI `gpt-5.6-luna` by default; Gemini selectable via `LLMProvider` ABC |
 
 </div>
 
@@ -175,7 +175,7 @@ Known systematic failures:
 - RS-04 (count .py files and total lines): 0/3. Agent produces the first value but fails before extracting the second (multi-command composition limit).
 - SC-01 (vague prompt clarification): 0/3. Agent proceeds to planning instead of asking for clarification on maximally vague input.
 
-Test suite: 381 unit tests, 9 integration tests, 85 UI tests (475 total), all passing. Ruff clean. Mypy clean across 72 source files.
+Test suite: 385 unit tests, 9 integration tests, 85 UI tests (479 total), all passing. Ruff clean. Mypy clean across 72 source files.
 
 <div align="center">
 
@@ -191,8 +191,8 @@ Test suite: 381 unit tests, 9 integration tests, 85 UI tests (475 total), all pa
 ### Option A: Download standalone executable (no Python setup required)
 
 1. Download the latest `trinity-pilot-win64.zip` from [Releases](https://github.com/DurdeuVlad/trinity-pilot/releases).
-2. Extract the archive and launch `trinity-pilot.exe`.
-3. Enter your free Gemini API key in the startup configuration dialog (or set `GEMINI_API_KEY` in environment).
+2. Extract the archive and launch the `trinity-pilot.exe` at the archive root.
+3. Enter your OpenAI API key in the startup configuration dialog (or set `OPENAI_API_KEY` in environment).
 
 ### Option B: Developer setup with `uv`
 
@@ -209,15 +209,19 @@ uv run playwright install chromium
 uv run python -m trinity_pilot
 ```
 
-If `GEMINI_API_KEY` is not present, Trinity Pilot will open a native setup wizard to save your key to `.env`.
+If the selected provider's API key is not present, Trinity Pilot will open a native setup wizard to save it to `.env`.
 
-### Get a free Gemini API key
+### Configure the LLM provider
 
-1. Go to [Google AI Studio](https://aistudio.google.com)
-2. Create a free API key
-3. Paste it into the startup dialog or set `GEMINI_API_KEY` in your environment
+OpenAI is the default local configuration:
 
-The free tier is sufficient for personal use. No billing required.
+```dotenv
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-5.6-luna
+```
+
+To use Gemini instead, set `LLM_PROVIDER=gemini`, `GEMINI_API_KEY`, and the optional Gemini model settings. The provider switch is shared by planning, worker execution, review, analysis, UI clarification, and streaming.
 
 ## Example tasks
 
@@ -242,7 +246,7 @@ Trinity Pilot handles cross-domain tasks that span browser, terminal, and deskto
 ```text
 trinity_pilot/
   core/types.py          ObjectiveSpec, enums, ReviewResult, AttemptLog
-  llm/                   LLMProvider ABC + async GeminiProvider
+  llm/                   LLMProvider ABC + async OpenAI/Gemini providers and factory
   planner/               ObjectivePlanner: JSON plan → ObjectiveSpec list + DAG
   reviewer/              ObjectiveReviewer: evidence → typed ReviewResult
   orchestrator/
@@ -274,11 +278,16 @@ uv run python scripts/build_exe.py
 ```
 
 The resulting standalone executable package is built under `dist/trinity-pilot/`.
+The script also creates `dist/trinity-pilot-win64.zip`; the archive contains the
+packaged executable at its root and is the release asset users should download.
 
 ## Running tests
 
 ```bash
-# Run unit, integration, and UI tests (475 tests, ~20s)
+# Run the deterministic unit suite (400 tests, ~20s)
+uv run pytest tests/unit -v
+
+# Run unit, integration, and UI tests
 uv run pytest tests/unit tests/integration tests/ui -v
 
 # Run test coverage
@@ -289,13 +298,13 @@ uv run ruff check .
 uv run mypy trinity_pilot
 ```
 
-GUI, desktop, and real-model suites require a controlled Windows environment with `GEMINI_API_KEY`. They open real applications and drive the live desktop.
+GUI, desktop, and real-model suites require a controlled Windows environment with the selected provider's API key. They open real applications and drive the live desktop.
 
 ## Safety and data handling
 
 Trinity Pilot is not sandboxed. Terminal workers execute local PowerShell commands with user permissions; browser and desktop workers act directly on the desktop. Review tasks before execution and use a VM or low-privilege account for untrusted work.
 
-When Gemini is configured, task prompts and execution evidence (screenshots, terminal output, UI element text) are sent to Google's Gemini API. No data is stored remotely. All state is local SQLite.
+When a cloud provider is configured, task prompts and execution evidence (screenshots, terminal output, UI element text) are sent to that provider's API. No data is stored remotely by Trinity Pilot. All state is local SQLite.
 
 See [SECURITY.md](SECURITY.md) and [docs/PRIVACY_AND_SAFETY.md](docs/PRIVACY_AND_SAFETY.md) for the full safety policy.
 

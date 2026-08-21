@@ -13,6 +13,7 @@ import uuid
 
 from fastmcp import FastMCP
 
+from trinity_pilot import __version__
 from trinity_pilot.config import ConfigError, Settings
 from trinity_pilot.core.types import TaskStatus
 from trinity_pilot.memory.store import AttemptStore, TaskStore
@@ -34,7 +35,7 @@ except ConfigError as _e:
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     name="trinity-pilot-orchestrator",
-    version="0.1.0",
+    version=__version__,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,7 +50,7 @@ def health() -> str:
 
 @mcp.resource("version://orchestrator")
 def version() -> str:
-    return "0.1.0"
+    return __version__
 
 
 # ---------------------------------------------------------------------------

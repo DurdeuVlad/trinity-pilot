@@ -4,6 +4,7 @@ from trinity_pilot.audit.prerequisites import check_live_prerequisites
 
 def test_prerequisite_multi_missing_result(tmp_path, monkeypatch):
     monkeypatch.setattr(prerequisites.sys, "platform", "linux")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(prerequisites, "_import_error", lambda module: "missing")
 
@@ -17,6 +18,7 @@ def test_prerequisite_multi_missing_result(tmp_path, monkeypatch):
 
 def test_prerequisite_all_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(prerequisites.sys, "platform", "win32")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "key")
     monkeypatch.setenv("SESSIONNAME", "Console")
     monkeypatch.setattr(prerequisites, "_import_error", lambda module: None)
@@ -29,6 +31,7 @@ def test_prerequisite_all_pass(tmp_path, monkeypatch):
 
 def test_prerequisite_allows_pywinauto_without_pyautogui(tmp_path, monkeypatch):
     monkeypatch.setattr(prerequisites.sys, "platform", "win32")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "key")
     monkeypatch.setenv("SESSIONNAME", "Console")
     monkeypatch.setattr(
@@ -44,3 +47,16 @@ def test_prerequisite_allows_pywinauto_without_pyautogui(tmp_path, monkeypatch):
     assert result.checks["desktop_input_backend"] is True
     assert result.checks["pyautogui"] is False
     assert [warning.code for warning in result.warnings] == ["pyautogui_unavailable"]
+
+
+def test_prerequisite_supports_openai_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(prerequisites.sys, "platform", "win32")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("SESSIONNAME", "Console")
+    monkeypatch.setattr(prerequisites, "_import_error", lambda module: None)
+
+    result = check_live_prerequisites(tmp_path)
+
+    assert result.passed is True
+    assert result.checks["openai_api_key"] is True

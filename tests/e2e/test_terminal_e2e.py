@@ -1,7 +1,7 @@
 """Terminal domain end-to-end tests.
 
 These tests run against the live orchestrator via WorkflowBridge.
-They require GEMINI_API_KEY to be set.
+They require the configured LLM API key to be set.
 
 Run with:
     pytest tests/e2e/test_terminal_e2e.py -v --timeout=120

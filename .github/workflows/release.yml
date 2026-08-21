@@ -25,13 +25,16 @@ jobs:
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/*
+          subject-path: dist/trinity-pilot-win64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: trinity-pilot-${{ github.sha }}
-          path: dist/
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/trinity-pilot-win64.zip
       - name: Attach artifacts to the published release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/trinity-pilot-win64.zip --clobber
