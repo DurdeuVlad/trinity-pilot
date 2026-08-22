@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-22: E2E safety and provider hardening
+
+- **Provider reliability.** OpenAI Responses tool continuations preserve the dispatched function-call item and reasoning context without replaying unrelated calls.
+- **Desktop isolation.** GUI tests bind to the intended Trinity Pilot window, protect the local `.env` byte-for-byte, preserve target focus across dialogs, and normalize planner-emitted UIA locators and hotkeys.
+- **Terminal evidence.** Command output is normalized and redacted, Python child processes use the worker runtime, and file/directory artifacts are recorded with independent readback evidence.
+- **Reviewer evidence.** File readback and artifact paths remain available to downstream verification without allowing sanitized output to masquerade as raw stdout.
+- **Verification.** Unit/integration/UI tests: 512 passed; Ruff, mypy, locked-dependency validation, and package build pass. The GUI happy suites report 28/29 (96.6%), above the accepted 85% gate; T9 remains a documented non-blocking E2E failure.
+
 ## 2026-08-21: OpenAI provider switch
 
 - **Provider selection.** Added a shared OpenAI Responses API provider and factory with `LLM_PROVIDER=openai|gemini`, preserving Gemini compatibility.

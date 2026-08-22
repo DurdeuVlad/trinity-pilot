@@ -6,7 +6,9 @@ unavoidable 12s Qt startup window.
 """
 from __future__ import annotations
 
+import atexit
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -32,6 +34,62 @@ VENV_PY = str(APP_DIR / ".venv" / "Scripts" / "python.exe")
 PYTHON = VENV_PY if Path(VENV_PY).exists() else sys.executable
 SCREENSHOTS_DIR = Path(os.path.expanduser("~")) / ".ai" / "screenshots" / "e2e"
 DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
+
+
+_ACTIVE_ENV_GUARDS: set["_ProtectedEnvFile"] = set()
+
+
+class _ProtectedEnvFile:
+    """Protect the test configuration from GUI and terminal side effects."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._existed = path.exists()
+        self._contents = path.read_bytes() if self._existed else None
+        self._mode = stat.S_IMODE(path.stat().st_mode) if self._existed else None
+        self._closed = False
+        _ACTIVE_ENV_GUARDS.add(self)
+        self._make_read_only()
+
+    def _make_read_only(self) -> None:
+        if self.path.exists():
+            try:
+                os.chmod(self.path, stat.S_IREAD)
+            except OSError:
+                pass
+
+    def _make_writable(self) -> None:
+        if self.path.exists():
+            try:
+                os.chmod(self.path, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+
+    def restore(self) -> None:
+        """Restore the exact pre-test bytes and original file state."""
+        if self._closed:
+            return
+        self._make_writable()
+        try:
+            if self._existed:
+                if not self.path.exists() or self.path.read_bytes() != self._contents:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self.path.write_bytes(self._contents or b"")
+                if self._mode is not None and self.path.exists():
+                    os.chmod(self.path, self._mode)
+            elif self.path.exists():
+                self.path.unlink()
+        finally:
+            self._closed = True
+            _ACTIVE_ENV_GUARDS.discard(self)
+
+
+def _release_active_env_guards() -> None:
+    for guard in tuple(_ACTIVE_ENV_GUARDS):
+        guard.restore()
+
+
+atexit.register(_release_active_env_guards)
 
 # ---------------------------------------------------------------------------
 # Status constants
@@ -134,11 +192,13 @@ class AppDriver:
         win: Any,
         hwnd: int = 0,
         db_path: Path | None = None,
+        env_guard: _ProtectedEnvFile | None = None,
     ) -> None:
         self._proc = proc
         self._win = win
         self._hwnd = hwnd
         self._db_path = db_path  # temp DB — cleaned up in close()
+        self._env_guard = env_guard
         self.infra_checkpoints = {
             "app_launched": False,
             "window_connected": False,
@@ -153,32 +213,23 @@ class AppDriver:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _send_emergency_wake(win: Any, timeout: float, *, source: str) -> str:
-        """OS-level wake: send Ctrl+Shift+Q (emergency stop) and wait for STATUS_READY.
+    def _wait_for_ready_without_input(win: Any, timeout: float, *, source: str) -> str:
+        """Wait for Ready without sending a command to the application.
 
-        Intentionally UIA-free on the send side — pywinauto.keyboard.send_keys
-        uses SendInput, which does not depend on the target window's message
-        loop being responsive. Use this BEFORE any UIA probing (set_focus /
-        descendants) when the app may be stalled: UIA calls against a stalled
-        Qt event loop can block for minutes even though SendInput resolves
-        instantly (observed: 434.5s burned probing a frozen window before a
-        keyboard shortcut unstuck it in <1s — see 2026-06-29 trace analysis).
+        Ctrl+Shift+Q is the product's real emergency-stop shortcut. The test
+        harness must not use it as an automatic responsiveness probe because a
+        slow but healthy workflow could be cancelled by the harness itself.
         """
         try:
             from tests.e2e._debug_log import dbg
         except Exception:
             dbg = None
         if dbg:
-            dbg("_gui_driver.py:_send_emergency_wake", "wake_sent",
+            dbg("_gui_driver.py:_wait_for_ready_without_input", "ready_probe_started",
                 {"source": source}, hypothesis_id="H-wake-fastpath")
-        try:
-            from pywinauto.keyboard import send_keys
-            send_keys("^+q")
-        except Exception:
-            pass
         status = AppDriver._wait_static(win, {STATUS_READY}, timeout)
         if dbg:
-            dbg("_gui_driver.py:_send_emergency_wake", "wake_result",
+            dbg("_gui_driver.py:_wait_for_ready_without_input", "ready_probe_finished",
                 {"source": source, "status": status}, hypothesis_id="H-wake-fastpath")
         return status
 
@@ -186,13 +237,14 @@ class AppDriver:
     def _recover_to_ready(win: Any, timeout: float = 45.0) -> str:
         """Best-effort reset when TRINITY_CONNECT_EXISTING left app mid-task.
 
-        Order matters: try the OS-level keyboard wake FIRST. It does not
-        depend on the app's Qt event loop being responsive, whereas the UIA
-        fallback below (set_focus/descendants) can block for minutes against
-        a stalled window.
+        Probe first without input, then use the explicit Stop button only when
+        recovering an intentionally reused app instance. Never send the
+        product's emergency-stop shortcut as a generic wake signal.
         """
         fast_timeout = min(timeout, 10.0)
-        status = AppDriver._send_emergency_wake(win, fast_timeout, source="recover_to_ready_fast")
+        status = AppDriver._wait_for_ready_without_input(
+            win, fast_timeout, source="recover_to_ready_probe"
+        )
         if status == STATUS_READY:
             return status
 
@@ -217,7 +269,9 @@ class AppDriver:
         except Exception:
             pass
         remaining = max(timeout - fast_timeout, 1.0)
-        return AppDriver._send_emergency_wake(win, remaining, source="recover_to_ready_fallback")
+        return AppDriver._wait_for_ready_without_input(
+            win, remaining, source="recover_to_ready_stop_button"
+        )
 
     @classmethod
     def launch(cls, *, _fresh_launch: bool = False) -> "AppDriver":
@@ -237,6 +291,8 @@ class AppDriver:
 
         mark_startup("launch-enter")
         from dotenv import load_dotenv
+        _release_active_env_guards()
+        env_guard = _ProtectedEnvFile(APP_DIR / ".env")
         load_dotenv(APP_DIR / ".env", override=True)
         mark_startup("dotenv-loaded")
 
@@ -575,11 +631,18 @@ class AppDriver:
                             real_pid = children[0].pid
                     except Exception:
                         pass
+                    # The application exposes auxiliary top-level windows (the
+                    # Live activity panel and click overlay).  top_window() can
+                    # select one of those instead of the main Trinity Pilot
+                    # window, whose status label is the launch readiness signal.
+                    # Bind by the main window title so status polling cannot
+                    # silently read the auxiliary panel's "Idle" label.
                     app = Application(backend="uia").connect(
+                        title="Trinity Pilot",
                         process=real_pid,
                         timeout=1,
                     )
-                    hwnd = app.top_window().handle
+                    hwnd = app.window(title="Trinity Pilot").handle
                     break
                 except ElementAmbiguousError as exc:
                     # Qt exposes a virtual root element alongside the real window.
@@ -587,9 +650,14 @@ class AppDriver:
                     _last_exc_type = None  # progress: different exception shape seen
                     _repeat_count = 0
                     for el in exc.elements:
-                        if getattr(el, "handle", None):
-                            hwnd = el.handle
-                            break
+                        if not getattr(el, "handle", None):
+                            continue
+                        try:
+                            if el.window_text().strip() == "Trinity Pilot":
+                                hwnd = el.handle
+                                break
+                        except Exception:
+                            continue
                     if hwnd:
                         app = Application(backend="uia").connect(handle=hwnd)
                         break
@@ -680,13 +748,6 @@ class AppDriver:
                 f"Trinity Pilot window not found within 1200s (exit code: {rc})\n"
                 f"Startup log:\n{startup_log}"
             )
-        # hwnd found — clean up log file silently (process still running, may fail)
-        if _stderr_path is not None:
-            try:
-                _stderr_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
         win = app.window(handle=hwnd)
         got = cls._wait_static(win, {STATUS_READY}, timeout=60)
         if got != STATUS_READY:
@@ -707,11 +768,37 @@ class AppDriver:
                 return cls.launch(_fresh_launch=True)
             if got != STATUS_READY:
                 if proc is not None and not connect_existing:
-                    proc.terminate()
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
+                startup_log = ""
+                if _stderr_path is not None:
+                    try:
+                        _stderr_fh.flush()
+                        startup_log = _stderr_path.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        pass
+                    try:
+                        _stderr_fh.close()
+                    except Exception:
+                        pass
+                    try:
+                        _stderr_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 raise RuntimeError(
-                    f"App did not reach Ready within 60s; last status={got!r}"
+                    f"App did not reach Ready within 60s; last status={got!r}. "
+                    f"Startup log:\n{startup_log}"
                 )
-        driver = cls(proc, win, hwnd=hwnd, db_path=_db_path)
+        if _stderr_path is not None:
+            try:
+                _stderr_fh.close()
+                _stderr_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        driver = cls(proc, win, hwnd=hwnd, db_path=_db_path, env_guard=env_guard)
         driver.infra_checkpoints["app_launched"] = True
         driver.infra_checkpoints["window_connected"] = True
         if dbg:
@@ -724,6 +811,14 @@ class AppDriver:
 
     def close(self) -> None:
         """Close Trinity Pilot gracefully via WM_CLOSE, force-kill only as fallback."""
+        def _remove_temp_db() -> None:
+            if self._db_path:
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        Path(str(self._db_path) + suffix).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
         # Try graceful close first: send WM_CLOSE so Qt can clean up.
         if self._hwnd:
             try:
@@ -737,6 +832,10 @@ class AppDriver:
             self._proc.wait(timeout=5)
             self.infra_checkpoints["graceful_close"] = True
             time.sleep(1)
+            if self._env_guard:
+                self._env_guard.restore()
+                self._env_guard = None
+            _remove_temp_db()
             return
         except Exception:
             pass
@@ -761,12 +860,10 @@ class AppDriver:
                 pass
         time.sleep(1)
         # Clean up the temp DB created for this test run.
-        if self._db_path:
-            for suffix in ("", "-wal", "-shm"):
-                try:
-                    Path(str(self._db_path) + suffix).unlink(missing_ok=True)
-                except Exception:
-                    pass
+        _remove_temp_db()
+        if self._env_guard:
+            self._env_guard.restore()
+            self._env_guard = None
 
     # ------------------------------------------------------------------
     # Status reading
@@ -797,21 +894,14 @@ class AppDriver:
         return self._read_status(self._win)
 
     def wait_for(self, targets: set[str], timeout: float = 60.0,
-                 stall_nudge_after: float = 75.0) -> str:
+                 stall_nudge_after: float = 0.0) -> str:
         """Poll status label until a target matches or timeout. Returns matched value.
 
-        If the status string is observed completely unchanged for
-        `stall_nudge_after` seconds AFTER execution has started (i.e. we are
-        waiting on real work, not idling at Ready pre-submission), send a
-        single one-shot OS-level wake nudge (Ctrl+Shift+Q, via
-        _send_emergency_wake) and keep polling. This is a conservative
-        trigger — it requires zero status change, not "slow" progress, and
-        fires at most once per wait_for call. Pass stall_nudge_after<=0 to
-        disable. See 2026-06-29 trace analysis: a worker stall after
-        ObjectiveStarted went undetected for 360s (this timeout) plus another
-        434.5s in teardown before a keyboard wake cleared it in <2s — this
-        nudge lets the same kind of stall self-clear in ~stall_nudge_after
-        seconds instead of waiting for the full timeout + teardown detour.
+        `stall_nudge_after` is retained for call-site compatibility but is
+        intentionally disabled by default. The harness must not send keyboard
+        input while a task is running because the app's emergency shortcut can
+        cancel a valid long-running workflow. A timeout is safer and produces
+        evidence of a real stall without mutating task state.
 
         Raises TrinityPilotCrashedError immediately if the process exits during the wait
         so callers can distinguish infra crashes from genuine task failures.
@@ -861,8 +951,9 @@ class AppDriver:
                     pass
                 return s
 
-            # One-shot stall nudge: only once execution has genuinely started,
-            # and only after a long stretch of ZERO status change (not "slow").
+            # Observe a possible stall without sending input to the app. In
+            # particular, never send Ctrl+Shift+Q here: it is the product's
+            # emergency-stop shortcut, not a harmless wake signal.
             if (not _nudge_sent
                     and stall_nudge_after > 0
                     and self.infra_checkpoints.get("execution_started", False)
@@ -878,12 +969,8 @@ class AppDriver:
                     }, hypothesis_id="H-wake-fastpath")
                 except Exception:
                     pass
-                try:
-                    AppDriver._send_emergency_wake(self._win, 5.0, source="wait_for_stall_nudge")
-                except Exception:
-                    pass
-                # Reset the change-tracking baseline so we don't immediately
-                # re-evaluate against the pre-nudge timestamp on the next tick.
+                # Reset the diagnostic baseline without changing application
+                # state, so the observation is emitted at most once.
                 _last_status_change_t = time.monotonic()
 
             time.sleep(0.5)

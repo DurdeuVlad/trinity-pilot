@@ -6,7 +6,12 @@ import tempfile
 
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
 from trinity_pilot.llm.base import LLMProvider, LLMResponse
-from trinity_pilot.workers.desktop_worker import DesktopWorker
+from trinity_pilot.workers.desktop_worker import (
+    DesktopWorker,
+    _button_locator_strategies,
+    _click_button_locator,
+    _normalise_click_button_args,
+)
 
 # ---------------------------------------------------------------------------
 # Mock LLM
@@ -110,12 +115,64 @@ class TestDesktopWorkerAgenticPath:
         assert any("Wrote file" in entry for entry in evidence["action_log"])
 
 
+def test_click_button_accepts_uia_locator_shape_from_model():
+    assert _normalise_click_button_args({
+        "control": {"control_type": "Button", "title": "Save"},
+    }) == ("Save", None, "Button")
+    assert _normalise_click_button_args({
+        "title_re": "(?i)(don't save|discard)",
+    }) == (None, "(?i)(don't save|discard)", "Button")
+
+
+def test_click_button_builds_exact_and_regex_locator_strategies():
+    strategies = _button_locator_strategies("Desktop", None, "Button")
+    assert strategies[0] == {"title": "Desktop", "control_type": "Button"}
+    assert strategies[-1] == {"title_re": "(?i)Desktop"}
+
+
+def test_click_button_accepts_top_level_uia_locator_shape():
+    assert _click_button_locator({
+        "automation_id": "1001",
+        "control_type": "Edit",
+    }) == {"auto_id": "1001", "control_type": "Edit"}
+
+
 class TestDesktopWorkerPressKey:
     def test_pywinauto_key_sequence_maps_calculator_operators(self):
         assert DesktopWorker._pywinauto_key_sequence("multiply") == "{*}"
         assert DesktopWorker._pywinauto_key_sequence("add") == "{+}"
         assert DesktopWorker._pywinauto_key_sequence("return") == "{ENTER}"
         assert DesktopWorker._pywinauto_key_sequence("1") == "1"
+
+    def test_normalise_hotkey_keys_accepts_comma_and_plus_forms(self):
+        assert DesktopWorker._normalise_hotkey_keys("ctrl,s") == ["ctrl", "s"]
+        assert DesktopWorker._normalise_hotkey_keys("ctrl+shift+s") == ["ctrl", "shift", "s"]
+        assert DesktopWorker._normalise_hotkey_keys(" ctrl + shift + s ") == ["ctrl", "shift", "s"]
+
+    def test_foreground_target_is_preserved_for_owned_modal_window(self):
+        class User32:
+            def GetAncestor(self, hwnd, _kind):
+                return 100 if hwnd == 200 else 0
+
+            def GetWindow(self, _hwnd, _kind):
+                return 0
+
+        assert DesktopWorker._foreground_belongs_to_target(User32(), 100, 200)
+
+    def test_common_out_of_process_save_dialog_is_preserved(self):
+        class User32:
+            def GetWindowTextLengthW(self, _hwnd):
+                return len("Save As")
+
+            def GetWindowTextW(self, _hwnd, buf, _length):
+                buf.value = "Save As"
+
+        assert DesktopWorker._foreground_is_common_modal_dialog(User32(), 200)
+
+    def test_intentional_close_is_detected_from_action_log(self):
+        assert DesktopWorker._intentional_close_recorded(["Hotkey: alt+f4"])
+        assert DesktopWorker._intentional_close_recorded(["Hotkey: alt,f4"])
+        assert not DesktopWorker._intentional_close_recorded(["Hotkey: ctrl+s"])
 
     def test_pyautogui_key_name_maps_calculator_operators(self):
         assert DesktopWorker._pyautogui_key_name("multiply") == "multiply"

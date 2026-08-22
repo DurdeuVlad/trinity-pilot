@@ -50,9 +50,13 @@ _PORTABLE_EVIDENCE_KEYS = (
     "written_files",
     "written_files_verified",
     "created_files",
+    "file_path",
+    "file_paths",
+    "observed_paths",
     "worker_result_summary",
     "visible_text",
     "stdout",
+    "file_readback",
     "exit_code",
     "workspace",
 )

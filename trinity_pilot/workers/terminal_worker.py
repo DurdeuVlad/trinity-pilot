@@ -37,13 +37,69 @@ _CMD_TIMEOUT = 60.0
 _SECRET_ENV_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
 
+def _normalise_process_output(output: str) -> str:
+    """Remove shell record terminators while preserving internal output lines."""
+    return output.rstrip("\r\n")
+
+
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?im)^(\s*[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*\s*=\s*).*$"
+)
+
+
+def _safe_file_observation(text: str) -> str:
+    """Make file readbacks useful to reviewers without exposing credentials."""
+    return _SENSITIVE_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
+
+
+def _append_file_readback(evidence: dict[str, Any], text: str) -> None:
+    """Accumulate sanitized file evidence without changing command stdout."""
+    previous = str(evidence.get("file_readback", ""))
+    combined = f"{previous}\n{text}" if previous else text
+    combined = combined[-_MAX_OUTPUT_CHARS:]
+    evidence["file_readback"] = combined
+
+
+def _append_stdout_observation(evidence: dict[str, Any], text: str) -> None:
+    """Accumulate concise action confirmations in the command-output channel."""
+    previous = str(evidence.get("stdout", ""))
+    combined = f"{previous}\n{text}" if previous else text
+    combined = combined[-_MAX_OUTPUT_CHARS:]
+    evidence["stdout"] = combined
+    evidence["stdout_raw"] = combined
+
+
 def _scrubbed_child_env() -> dict[str, str]:
     """Return the environment allowed to be inherited by terminal commands."""
-    return {
+    env = {
         name: value
         for name, value in os.environ.items()
         if not any(part in name.upper() for part in _SECRET_ENV_NAME_PARTS)
     }
+    runtime_dir = str(Path(sys.executable).resolve().parent)
+    path_entries = env.get("PATH", "").split(os.pathsep)
+    env["PATH"] = os.pathsep.join(
+        [runtime_dir, *(entry for entry in path_entries if entry.casefold() != runtime_dir.casefold())]
+    )
+    return env
+
+
+def _pin_runtime_python(command: str) -> str:
+    """Resolve bare Python commands to the interpreter hosting Trinity Pilot."""
+    runtime = Path(sys.executable).resolve()
+    if runtime.name.casefold() not in {"python.exe", "python"}:
+        return command
+    quoted = "'" + str(runtime).replace("'", "''") + "'"
+    command = re.sub(
+        r"(?i)(?<![\w.])&\s+python(?:\.exe)?(?=\s|$)",
+        lambda _: f"& {quoted}",
+        command,
+    )
+    return re.sub(
+        r"(?i)(?<![\w.&])python(?:\.exe)?(?=\s|$)",
+        lambda _: f"& {quoted}",
+        command,
+    )
 
 # Windows: CREATE_NEW_PROCESS_GROUP so timeout kill can target the whole tree.
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -242,7 +298,7 @@ def _kill_process_tree(pid: int, job: _WinJobObject | None = None) -> None:
     except Exception:
         pass
 
-_QUOTED_WIN_PATH_RE = re.compile(r'"([A-Za-z]:\\[^"]+\.[A-Za-z0-9]{1,8})"')
+_QUOTED_WIN_PATH_RE = re.compile(r"[\"']([A-Za-z]:\\[^\"']+)[\"']")
 
 
 def _record_created_files_from_command(command: str, evidence: dict[str, Any]) -> None:
@@ -252,13 +308,27 @@ def _record_created_files_from_command(command: str, evidence: dict[str, Any]) -
     real, successful run_command-based file creation without this — a recurring bug class
     (see CHANGELOG "Fixes" entries for T6 and HH04).
 
-    Heuristic: any quoted absolute Windows path mentioned in the command that exists as a
-    file on disk after the command succeeded was very likely just created or written by it.
+    Heuristic: any quoted absolute Windows path mentioned in the command that exists on
+    disk after the command succeeded is useful artifact evidence. Files are recorded in
+    ``created_files``; verified directories are recorded in ``observed_paths`` and the
+    common directory root is exposed as ``file_path`` for planners that request a path
+    artifact even when the artifact is a directory tree.
     """
     created_files = evidence.setdefault("created_files", [])
+    observed_paths = evidence.setdefault("observed_paths", [])
     for path in _QUOTED_WIN_PATH_RE.findall(command):
         if path not in created_files and os.path.isfile(path):
             created_files.append(path)
+        elif path not in observed_paths and os.path.isdir(path):
+            observed_paths.append(path)
+    if len(created_files) == 1:
+        evidence.setdefault("file_path", created_files[0])
+    elif observed_paths:
+        evidence.setdefault("file_paths", list(observed_paths))
+        try:
+            evidence.setdefault("file_path", os.path.commonpath(observed_paths))
+        except ValueError:
+            evidence.setdefault("file_path", observed_paths[0])
 
 
 _TERMINAL_SYSTEM = """\
@@ -313,6 +383,13 @@ RULES:
 - Call finish when the objective is done or definitively cannot be completed.
 - Call report_blocking only if you genuinely cannot proceed without external input.
 - If write_file returns PERMISSION DENIED, call finish immediately with status=failure — OS permission errors are definitive and cannot be retried.
+- Before updating an existing file, read its current contents and preserve every existing
+  field, marker, and line that the goal does not explicitly replace. Prefer additive updates
+  when the goal says to append or retain prior output. Before finish, reread the complete
+  artifact and verify every named requirement is still present.
+- Never invent null, blank, or placeholder values for a field the goal says to preserve or
+  calculate. Read the source artifact, carry the exact value forward, and verify the final
+  artifact contains that value before calling finish.
 - For file copy or move operations, ALWAYS use absolute paths for BOTH source and destination.
   Example: Copy-Item "C:\\Users\\trinity\\Desktop\\source.txt" "C:\\Users\\trinity\\Desktop\\dest.txt"
   Never use relative paths for Desktop file operations.
@@ -638,6 +715,8 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             "objective_id": spec.objective_id,
             "stdout": "",
             "stderr": "",
+            "stdout_raw": "",
+            "stderr_raw": "",
             "exit_code": None,
             "created_files": [],
             "workspace": workspace,
@@ -645,7 +724,11 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             "action_log": [],
             "shell_raw_used": shell_raw,
         }
-        timeout_seconds = int(spec.metadata.get("timeout_seconds", 60))
+        # GUI happy-path terminal objectives include multiple OpenAI tool turns;
+        # the old 60s default expired while a command was still being awaited,
+        # even though the outer GUI wait allows substantially longer workflows.
+        # Explicit per-objective timeouts remain authoritative.
+        timeout_seconds = int(spec.metadata.get("timeout_seconds", 120))
 
         def cleanup_failed_execution() -> None:
             shutil.rmtree(workspace, ignore_errors=True)
@@ -717,8 +800,12 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             cwd = evidence.get("workspace") or tempfile.gettempdir()
             shell_raw = bool(evidence.get("shell_raw_used", False))
             stdout, stderr, exit_code = await self._run_command(command, cwd=cwd, shell_raw=shell_raw)
-            evidence["stdout"] = stdout[-_MAX_OUTPUT_CHARS:]
-            evidence["stderr"] = stderr[-_MAX_OUTPUT_CHARS:]
+            stdout_limited = stdout[-_MAX_OUTPUT_CHARS:]
+            stderr_limited = stderr[-_MAX_OUTPUT_CHARS:]
+            evidence["stdout_raw"] = stdout_limited
+            evidence["stderr_raw"] = stderr_limited
+            evidence["stdout"] = _normalise_process_output(stdout_limited)
+            evidence["stderr"] = _normalise_process_output(stderr_limited)
             evidence["exit_code"] = exit_code
             evidence["action_log"].append(f"run_command: exit={exit_code} cmd={command[:100]}")
             if exit_code == 0:
@@ -740,6 +827,15 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
                 )
             if path not in evidence["created_files"]:
                 evidence["created_files"].append(path)
+            evidence.setdefault("file_path", path)
+            evidence.setdefault("exit_code", 0)
+            safe_content = _safe_file_observation(content[:_MAX_OUTPUT_CHARS])
+            evidence[f"file_content_{Path(path).name}"] = safe_content
+            _append_stdout_observation(
+                evidence,
+                f"write_file: path={path}\nexit_code=0\n{safe_content}",
+            )
+            _append_file_readback(evidence, safe_content)
             return result
 
         elif tool_name == "read_file":
@@ -756,7 +852,9 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
                 return f"read_file failed: {path}: {type(exc).__name__}: {exc}"
             truncated = len(data) > _READ_FILE_CAP
             body = data[:_READ_FILE_CAP]
-            return f"read_file: {path} ({len(data)} chars{', truncated' if truncated else ''})\n{body}"
+            safe_body = _safe_file_observation(body)
+            _append_file_readback(evidence, safe_body)
+            return f"read_file: {path} ({len(data)} chars{', truncated' if truncated else ''})\n{safe_body}"
 
         elif tool_name == "read_file_range":
             path = args["path"]
@@ -824,6 +922,8 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             verified = os.path.isfile(destination)
             if verified and destination not in evidence["created_files"]:
                 evidence["created_files"].append(destination)
+            evidence.setdefault("file_path", destination)
+            evidence.setdefault("exit_code", 0)
             evidence["action_log"].append(f"copy_file: {source} -> {destination} verified_exists={verified}")
             return f"copy_file: {source} -> {destination} verified_exists={verified}"
 
@@ -839,6 +939,8 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             source_gone = not os.path.exists(source)
             if dest_ok and destination not in evidence["created_files"]:
                 evidence["created_files"].append(destination)
+            evidence.setdefault("file_path", destination)
+            evidence.setdefault("exit_code", 0)
             if source_gone:
                 evidence.setdefault("deleted_files", []).append(source)
             evidence["action_log"].append(f"move_file: {source} -> {destination} dest_exists={dest_ok} source_gone={source_gone}")
@@ -960,6 +1062,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
         .exe grandchildren (git.exe, hostname.exe, python.exe) are torn down and
         cannot keep stdout pipes open past the timeout (BH-003 / T13).
         """
+        command = _pin_runtime_python(command)
         extra = _subprocess_kwargs()
         job = _WinJobObject()
         proc = None
@@ -967,6 +1070,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             if shell_raw:
                 proc = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
@@ -976,6 +1080,7 @@ class TerminalWorker(AgenticWorkerMixin, DomainWorker):
             else:
                 proc = await asyncio.create_subprocess_exec(
                     "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,

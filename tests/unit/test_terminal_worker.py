@@ -6,7 +6,13 @@ import pytest
 from trinity_pilot.core.types import DomainType, ObjectiveSpec, RiskClass
 from trinity_pilot.llm.base import LLMProvider, LLMResponse
 from trinity_pilot.workers.base import WorkerError
-from trinity_pilot.workers.terminal_worker import TerminalWorker
+from trinity_pilot.workers.terminal_worker import (
+    TerminalWorker,
+    _append_file_readback,
+    _normalise_process_output,
+    _record_created_files_from_command,
+    _safe_file_observation,
+)
 
 # ---------------------------------------------------------------------------
 # Mock LLM
@@ -82,6 +88,26 @@ def _spec(goal: str, **kwargs) -> ObjectiveSpec:
 # ---------------------------------------------------------------------------
 
 class TestTerminalWorker:
+    def test_process_output_normalization_removes_transport_newlines_only(self):
+        assert _normalise_process_output("tp-hello\r\n\r\n") == "tp-hello"
+        assert _normalise_process_output("first\r\nsecond\r\n") == "first\r\nsecond"
+        assert _normalise_process_output("") == ""
+
+    def test_file_observation_redacts_secret_assignments(self):
+        observed = _safe_file_observation(
+            "LLM_PROVIDER=openai\nOPENAI_API_KEY=should-not-appear\nvalue=ok"
+        )
+        assert "should-not-appear" not in observed
+        assert "OPENAI_API_KEY=[REDACTED]" in observed
+        assert "value=ok" in observed
+
+    def test_file_readback_accumulates_multiple_actions(self):
+        evidence = {}
+        _append_file_readback(evidence, "alpha.txt")
+        _append_file_readback(evidence, "beta.txt")
+        assert evidence["file_readback"] == "alpha.txt\nbeta.txt"
+        assert "stdout" not in evidence
+
     async def test_echo_command_captured_in_stdout(self):
         llm = _MockLLM([
             _run_command("echo hello world"),
@@ -170,6 +196,36 @@ class TestTerminalWorker:
         worker = TerminalWorker(llm=llm)
         evidence = await worker.execute(spec)
         assert out_path in evidence["created_files"]
+        assert evidence["file_content_output.txt"] == "content"
+        assert evidence["file_readback"] == "content"
+        assert out_path in evidence["stdout"]
+        assert "exit_code=0" in evidence["stdout"]
+
+    async def test_verified_directory_paths_are_recorded_as_artifacts(self, tmp_path):
+        paths = [tmp_path / name for name in ("one", "two", "three")]
+        for path in paths:
+            path.mkdir()
+        command = "New-Item -ItemType Directory -Path " + ",".join(
+            f"'{path}'" for path in paths
+        )
+        evidence = {"created_files": []}
+
+        _record_created_files_from_command(command, evidence)
+
+        assert evidence["observed_paths"] == [str(path) for path in paths]
+        assert evidence["file_paths"] == [str(path) for path in paths]
+        assert evidence["file_path"] == str(tmp_path)
+
+    async def test_read_file_populates_reviewer_readback(self, tmp_path):
+        path = tmp_path / "report.txt"
+        path.write_text("HH01_OK\nfile_count: 2\nbyte_count: 10\n", encoding="utf-8")
+        llm = _MockLLM([_tool("read_file", path=str(path)), _finish()])
+        worker = TerminalWorker(llm=llm)
+
+        evidence = await worker.execute(_spec("read the report"))
+
+        assert "HH01_OK" in evidence["file_readback"]
+        assert "byte_count: 10" in evidence["file_readback"]
 
     async def test_deterministic_tier_verify_tag_folded_into_transcript_observation(self):
         llm = _MockLLM([

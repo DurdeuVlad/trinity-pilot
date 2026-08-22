@@ -73,7 +73,22 @@ def _messages_to_input(messages: list[LLMMessage]) -> list[dict[str, Any]]:
                 raw_items = message.raw_provider_content
                 if not isinstance(raw_items, list):
                     raw_items = [raw_items]
-                items.extend(_serialise_output_item(item) for item in raw_items)
+                serialised_items = [_serialise_output_item(item) for item in raw_items]
+                # The worker intentionally dispatches one function call at a
+                # time. Responses may return several function_call items in a
+                # single output, but replaying all of them while appending only
+                # one function_call_output causes the API to reject the next
+                # turn with "No tool output found" for the undispatched calls.
+                # Keep reasoning and non-call items, plus only the call whose
+                # output the worker is about to provide.
+                if message.tool_call_id:
+                    serialised_items = [
+                        item
+                        for item in serialised_items
+                        if item.get("type") != "function_call"
+                        or item.get("call_id") == message.tool_call_id
+                    ]
+                items.extend(serialised_items)
                 continue
             data = json.loads(message.content)
             items.append(

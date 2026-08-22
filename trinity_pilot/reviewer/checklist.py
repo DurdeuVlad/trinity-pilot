@@ -100,6 +100,11 @@ async def _evaluate_item(
     provider: LLMProvider,
 ) -> dict[str, Any]:
     sensor_data = {key: evidence.get(key) for key in item.sensors if key in evidence}
+    # File observations are a separate evidence channel from process stdout.
+    # Include them when present so artifact checklists can verify written files
+    # without mistaking file contents (such as script source) for command output.
+    if evidence.get("file_readback") and "file_readback" not in sensor_data:
+        sensor_data["file_readback"] = evidence["file_readback"]
     screenshot_b64 = sensor_data.pop("screenshot", "") if "screenshot" in sensor_data else ""
 
     user_msg = CHECKLIST_ITEM_USER_TEMPLATE.format(

@@ -152,3 +152,20 @@ class TestOpenAIProvider:
         )
 
         assert _messages_to_input([message]) == message.raw_provider_content
+
+    def test_only_dispatched_function_call_is_replayed(self):
+        message = LLMMessage(
+            role="tool_call",
+            content='{"name":"write_file","args":{}}',
+            raw_provider_content=[
+                {"type": "reasoning", "id": "rs_456", "summary": []},
+                {"type": "function_call", "call_id": "call_write", "name": "write_file", "arguments": "{}"},
+                {"type": "function_call", "call_id": "call_read", "name": "read_file", "arguments": "{}"},
+            ],
+            tool_call_id="call_write",
+        )
+
+        assert _messages_to_input([message]) == [
+            {"type": "reasoning", "id": "rs_456", "summary": []},
+            {"type": "function_call", "call_id": "call_write", "name": "write_file", "arguments": "{}"},
+        ]

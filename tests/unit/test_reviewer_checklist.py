@@ -76,6 +76,20 @@ async def test_single_item_pass():
 
 
 @pytest.mark.asyncio
+async def test_file_readback_is_available_without_polluting_stdout():
+    checklist = (ChecklistItem(instruction="artifact contains HH01_OK", sensors=("stdout",)),)
+    provider = _QueuedProvider([{"passed": True, "notes": "file readback contains the token"}])
+    result = await evaluate_checklist(
+        _make_spec(checklist),
+        {"stdout": "command output only", "file_readback": "HH01_OK\n"},
+        provider,
+    )
+    assert result is not None
+    assert result.passed is True
+    assert provider.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_single_item_fail_vetoes_objective():
     checklist = (ChecklistItem(instruction="stdout contains ok", sensors=("stdout",)),)
     provider = _QueuedProvider([{"passed": False, "notes": "stdout was empty"}])

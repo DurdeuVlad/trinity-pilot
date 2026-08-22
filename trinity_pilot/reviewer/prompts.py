@@ -66,6 +66,8 @@ Rules:
   that the objective failed. Only set "passed": false when the data you DO have
   actively contradicts the instruction.
 - If a screenshot image is attached, read it as part of the sensor data.
+- `file_readback` is sanitized content independently read from written files;
+  it is not additional process stdout. Use it to verify artifact contents.
 
 Return ONLY valid JSON. No prose, no markdown.
 
