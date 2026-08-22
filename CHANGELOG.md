@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-22: OSS README refresh
+
+- **Open-source landing page.** Expanded the README with project status, capabilities, screenshots, release/source installation, provider configuration, workflow overview, verification table, safety guidance, known limitations, contribution instructions, and research context.
+- **Documentation split.** Kept implementation detail in `docs/TECHNICAL_OVERVIEW.md` while making the README useful to both new users and contributors.
+- **Documentation accuracy.** Fixed the README platform badge anchor, reconciled provider and database-path wording in `docs/PRIVACY_AND_SAFETY.md`, and ignored known local E2E artifacts at the repository root.
+
+## 2026-08-22: README and technical overview
+
+- **README.** Shortened the landing page, restored the four existing screenshots, and replaced stale test claims with the current 512-test collection and accepted 28/29 live GUI result.
+- **Technical guide.** Moved architecture, execution, provider, safety, evaluation, and repository-layout detail to `docs/TECHNICAL_OVERVIEW.md`.
+
 ## 2026-08-22: E2E safety and provider hardening
 
 - **Provider reliability.** OpenAI Responses tool continuations preserve the dispatched function-call item and reasoning context without replaying unrelated calls.

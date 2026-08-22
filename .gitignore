@@ -34,6 +34,8 @@ secrets.json
 config/secrets/
 
 # Runtime & temp
+/Desktop/
+/temp_infra.json
 _runtime/
 sessions/
 .audit-runs/
