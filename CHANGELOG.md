@@ -7,6 +7,7 @@
 - **Terminal evidence.** Command output is normalized and redacted, Python child processes use the worker runtime, and file/directory artifacts are recorded with independent readback evidence.
 - **Reviewer evidence.** File readback and artifact paths remain available to downstream verification without allowing sanitized output to masquerade as raw stdout.
 - **Verification.** Unit/integration/UI tests: 512 passed; Ruff, mypy, locked-dependency validation, and package build pass. The GUI happy suites report 28/29 (96.6%), above the accepted 85% gate; T9 remains a documented non-blocking E2E failure.
+- **Release workflow.** Build attestation is conditional on repository visibility so private repositories can still publish their verified package and Windows ZIP assets.
 
 ## 2026-08-21: OpenAI provider switch
 

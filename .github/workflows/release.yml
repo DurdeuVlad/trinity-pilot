@@ -23,6 +23,7 @@ jobs:
       - run: uv build
       - run: uv run python scripts/build_exe.py
       - name: Attest release artifacts
+        if: ${{ github.event.repository.visibility == 'public' }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/trinity-pilot-win64.zip
