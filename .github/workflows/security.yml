@@ -37,7 +37,7 @@ jobs:
         continue-on-error: true
       - run: uv run --with pip-licenses pip-licenses --format=markdown --output-file=THIRD_PARTY_LICENSES.md
       - run: uv run --with cyclonedx-bom cyclonedx-py environment --of JSON -o trinity-pilot.cdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: security-reports-${{ github.sha }}
           path: |

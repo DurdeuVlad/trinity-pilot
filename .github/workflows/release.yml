@@ -27,7 +27,7 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/trinity-pilot-win64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: trinity-pilot-${{ github.sha }}
           path: |
